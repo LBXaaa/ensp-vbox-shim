@@ -50,6 +50,7 @@ eNSP_Client.exe → eNSP_VBoxServer.exe → VBox52.dll (垫片) → VBoxSVC.exe 
 
 | 目录 | 内容 |
 |------|------|
+| [`installer/`](installer/) | **一键整合包**：双击 `安装.bat` 自动检测路径并打补丁(推荐普通用户用) |
 | [`src/`](src/)         | 垫片源码：`vbox52_proxy.cpp`、`vbox52_thunks.asm`、`spoof_thunks.cpp`、`imachine_entries.asm`、`vbox52.def` |
 | [`build/`](build/)     | `build.bat`（32 位 MSVC）和我们预编译好的 `VBox52.dll` |
 | [`patches/`](patches/) | `patch_var_plugin.py` 及 AR 插件补丁的规格说明 |
@@ -59,8 +60,23 @@ eNSP_Client.exe → eNSP_VBoxServer.exe → VBox52.dll (垫片) → VBoxSVC.exe 
 
 ## 安装
 
-前提：已经装好 **VirtualBox 7.2.x** 和 **华为 eNSP**；若要自行重新编译，还需要
-一套 32 位 MSVC 工具链。注册表和 `Program Files` 的改动需要管理员权限。
+### 一键整合包(推荐)
+
+不想手动敲命令,用 [`installer/`](installer/):
+
+1. 先装好原版 eNSP 和官方 VirtualBox 7.2.x;
+2. 双击 **`installer\安装.bat`**,UAC 弹窗点"是";
+3. 它会自动检测 eNSP/VBox 装在哪、拷垫片 DLL、写版本伪装、按真实路径生成
+   CLSID 项、给 AR 插件打补丁,4 步全程无需手动指定路径。
+
+还原:双击 **`installer\卸载.bat`**。只想看当前状态不改动:
+`install.ps1 -Check`。详见 [installer/README.md](installer/README.md)。
+
+### 手动安装
+
+想完全掌控每一步,或要自行重新编译,前提:已经装好 **VirtualBox 7.2.x** 和
+**华为 eNSP**;自行编译还需要一套 32 位 MSVC 工具链。注册表和 `Program Files`
+的改动需要管理员权限。
 
 ```bat
 :: 1. 垫片 —— 编译（或直接用 build\VBox52.dll）后拷进 eNSP
