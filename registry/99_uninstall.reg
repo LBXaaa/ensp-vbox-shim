@@ -1,0 +1,23 @@
+Windows Registry Editor Version 5.00
+
+; ===========================================================================
+;  99_uninstall.reg
+;  Restore the real VirtualBox 7.2.8 version strings.
+;
+;  This reverses 01_version_spoof.reg only. It does NOT undo the CLSID
+;  InprocServer32 hijack from 02_clsid_inprocserver.reg, because that key is
+;  owned by Oracle's installer and its correct value depends on your VBox
+;  build. To fully restore VirtualBox's native COM registration, run a Repair
+;  (or reinstall) of VirtualBox 7.2.8 -- see registry/README.md.
+;
+;  Real values verified from the installed binaries (VBoxSVC.exe etc. all
+;  report FileVersion 7.2.8.173730).
+; ===========================================================================
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Oracle\VirtualBox]
+"Version"="7.2.8"
+"VersionExt"="7.2.8r173730"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Oracle\VirtualBox]
+"Version"="7.2.8"
+"VersionExt"="7.2.8r173730"

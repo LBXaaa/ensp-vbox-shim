@@ -1,0 +1,26 @@
+# Build intermediates (the shipped build/VBox52.dll is kept on purpose)
+build/*.obj
+build/*.lib
+build/*.exp
+build/*.pdb
+build/*.ilk
+
+# Patcher backups
+*.bak
+*.bak_*
+
+# Runtime / diagnostic logs
+*.log
+
+# Reverse-engineering scratch output (the curated .md in analysis/output is kept)
+analysis/output/*.json
+analysis/output/*.csv
+
+# Local RE database / large scratch
+ruvector.db
+*.db
+
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini

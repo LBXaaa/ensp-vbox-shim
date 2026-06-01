@@ -1,0 +1,27 @@
+Windows Registry Editor Version 5.00
+
+; ===========================================================================
+;  01_version_spoof.reg
+;  Make the registry report VirtualBox 5.2.x so eNSP's version gate passes.
+;
+;  The machine actually has VirtualBox 7.2.8 installed (the binaries report
+;  7.2.8.173730). eNSP refuses to talk to anything that isn't 5.2.x, so the
+;  shim install rewrites only the Version / VersionExt strings. InstallDir and
+;  PythonApiInstallDir are left untouched (they already point at the real
+;  Oracle install).
+;
+;  eNSP is a 32-bit process and reads the WOW6432Node view; the 64-bit view is
+;  set too for consistency with tools that read it.
+;
+;  Adjust nothing here unless your VirtualBox install path differs.
+; ===========================================================================
+
+; --- 64-bit view ---
+[HKEY_LOCAL_MACHINE\SOFTWARE\Oracle\VirtualBox]
+"Version"="5.2.44"
+"VersionExt"="5.2.44r139111"
+
+; --- 32-bit view (WOW6432Node) -- the one eNSP reads ---
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Oracle\VirtualBox]
+"Version"="5.2.44"
+"VersionExt"="5.2.44r139111"
