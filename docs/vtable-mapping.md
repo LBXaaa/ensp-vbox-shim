@@ -1,134 +1,128 @@
-# IVirtualBox vtable mapping (5.2 → 7.2)
+# IVirtualBox vtable 映射（5.2 → 7.2）
 
-The proxy in `src/` presents a **5.2-shaped `IVirtualBox` vtable** and forwards
-each slot to the **real 7.2.8 object** at its remapped index. This file is the
-authoritative slot table; it is transcribed directly from
-`src/vbox52_proxy.cpp` (`g_vbox52_vtable[]`) and `src/vbox52_thunks.asm`.
+`src/` 里的代理对外呈现一张 **5.2 形状的 `IVirtualBox` vtable**，并把每个槽位
+按重映射后的索引转发给**真实的 7.2.8 对象**。本文件是权威的槽位表；它直接从
+`src/vbox52_proxy.cpp`（`g_vbox52_vtable[]`）和 `src/vbox52_thunks.asm` 誊录而来。
 
-## Why the layouts differ
+## 为什么布局不同
 
-VBox 7.x is **not** a uniform shift of 5.2:
+VBox 7.x **不是** 5.2 的统一平移：
 
-1. **Different base interface.** 5.2 `IVirtualBox : IUnknown` (3 base slots:
-   QueryInterface, AddRef, Release). 7.2 `IVirtualBox : IDispatch` (7 base slots:
-   + GetTypeInfoCount, GetTypeInfo, GetIDsOfNames, Invoke). Everything past the
-   base shifts by +4.
-2. **New properties inserted mid-table** — `guestOSFamilies`, `hostOnlyNetworks`,
-   `cloudNetworks`, `cloudProviderManager`.
-3. **New methods inserted AND existing methods reordered** — e.g. 5.2
-   `createDHCPServer` is the 3rd method but in 7.2 it is the 22nd. 17 new methods
-   total.
+1. **基础接口不同。** 5.2 `IVirtualBox : IUnknown`（3 个基础槽位：
+   QueryInterface、AddRef、Release）。7.2 `IVirtualBox : IDispatch`（7 个基础
+   槽位：再加 GetTypeInfoCount、GetTypeInfo、GetIDsOfNames、Invoke）。基础之后
+   的一切都平移 +4。
+2. **表中间插入了新属性** —— `guestOSFamilies`、`hostOnlyNetworks`、
+   `cloudNetworks`、`cloudProviderManager`。
+3. **既插入了新方法，又把原有方法重排了序** —— 例如 5.2 `createDHCPServer` 是
+   第 3 个方法，但在 7.2 里是第 22 个。新增方法共 17 个。
 
-So past `get_guestOSTypes` the offset is no longer a constant `+4`. Every slot is
-mapped individually below.
+所以越过 `get_guestOSTypes` 之后，偏移就不再是恒定的 `+4` 了。下面每个槽位都
+单独映射。
 
-## The proxy vtable (what eNSP sees)
+## 代理 vtable（eNSP 看到的）
 
-53 slots, `[0]`–`[52]`. Three kinds of slot:
+53 个槽位，`[0]`–`[52]`。三类槽位：
 
-- **spoof** — handled locally, returns a hardcoded 5.2 string, does **not** touch
-  the real object (`src/spoof_thunks.cpp`).
-- **forward → 7.2[N]** — naked thunk reads `realVBox` from `[ecx+12]` and
-  tail-jumps the real 7.2 vtable at index `N` (`src/vbox52_thunks.asm`,
-  `UNI_THUNK_DIAG`).
-- **wrap** — forwards, then wraps the returned/!passed `IMachine*` in a
-  `MachineProxy` so the caller gets a 5.2-shaped machine too
-  (`src/imachine_entries.asm`).
+- **spoof（伪装）** —— 本地处理，返回写死的 5.2 字符串，**不**碰真实对象
+  （`src/spoof_thunks.cpp`）。
+- **forward → 7.2[N]（转发）** —— 裸 thunk 从 `[ecx+12]` 读出 `realVBox`，按
+  索引 `N` 尾跳真实 7.2 vtable（`src/vbox52_thunks.asm`，`UNI_THUNK_DIAG`）。
+- **wrap（包裹）** —— 转发，然后把返回/传入的 `IMachine*` 包进一个
+  `MachineProxy`，让调用方也拿到一个 5.2 形状的 machine
+  （`src/imachine_entries.asm`）。
 
-| 5.2 slot | method | kind | → 7.2 |
+| 5.2 槽位 | 方法 | 类别 | → 7.2 |
 |---:|---|---|---:|
-| 0  | QueryInterface | IUnknown (forward) | 0 |
-| 1  | **clone precondition probe** | special (`ret 0xc`, **not** AddRef) | — |
-| 2  | Release | IUnknown (forward) | 2 |
-| 3  | get_version | spoof `"5.2.22"` | — |
-| 4  | get_versionNormalized | spoof `"5.2.22"` | — |
-| 5  | get_revision | spoof `"22"` | — |
-| 6  | get_packageType | spoof `"5.2.22"` | — |
-| 7  | get_APIVersion | forward | 11 |
-| 8  | get_APIRevision | forward | 12 |
-| 9  | get_homeFolder | forward | 13 |
-| 10 | get_settingsFilePath | forward | 14 |
-| 11 | get_host | forward | 15 |
-| 12 | get_systemProperties | forward | 16 |
-| 13 | get_machines | forward | 17 |
-| 14 | get_machineGroups | forward | 18 |
-| 15 | get_hardDisks | forward | 19 |
-| 16 | get_DVDImages | forward | 20 |
-| 17 | get_floppyImages | forward | 21 |
-| 18 | get_progressOperations | forward | 22 |
-| 19 | get_guestOSTypes | forward | 23 |
-| 20 | get_sharedFolders | forward | 25 |
-| 21 | get_performanceCollector | forward | 26 |
-| 22 | get_DHCPServers | forward | 27 |
-| 23 | get_NATNetworks | forward | 28 |
-| 24 | get_eventSource | forward | 29 |
-| 25 | get_extensionPackManager | forward | 30 |
-| 26 | get_internalNetworks | forward | 31 |
-| 27 | get_genericNetworkDrivers | forward | 33 |
-| 28 | composeMachineFilename | forward | 36 |
-| 29 | createAppliance | forward | 44 |
-| 30 | createDHCPServer | forward | 57 |
-| 31 | createMachine | forward | 38 |
-| 32 | createMedium | forward | 46 |
-| 33 | createNATNetwork | forward | 60 |
-| 34 | createSharedFolder | forward | 51 |
-| 35 | createUnattendedInstaller | forward | 45 |
-| 36 | findDHCPServerByNetworkName | forward | 58 |
-| 37 | findMachine | **wrap** (IMachine result) | 41 |
-| 38 | findNATNetworkByName | forward | 61 |
-| 39 | getExtraData | forward | 54 |
-| 40 | getExtraDataKeys | forward | 53 |
-| 41 | getGuestOSType | forward | 48 |
-| 42 | getMachineStates | forward | 43 |
-| 43 | getMachinesByGroups | forward | 42 |
-| 44 | openMachine | **wrap** (IMachine result) | 39 |
-| 45 | openMedium | forward | 47 |
-| 46 | registerMachine | **wrap** (IMachine arg) | 40 |
-| 47 | removeDHCPServer | forward | 59 |
-| 48 | removeNATNetwork | forward | 62 |
-| 49 | removeSharedFolder | forward | 52 |
-| 50 | setExtraData | forward | 55 |
-| 51 | setSettingsSecret | forward | 56 |
-| 52 | checkFirmwarePresent | forward | 70 |
+| 0  | QueryInterface | IUnknown（转发） | 0 |
+| 1  | **clone 前置条件探测** | 特殊（`ret 0xc`，**非** AddRef） | — |
+| 2  | Release | IUnknown（转发） | 2 |
+| 3  | get_version | 伪装 `"5.2.22"` | — |
+| 4  | get_versionNormalized | 伪装 `"5.2.22"` | — |
+| 5  | get_revision | 伪装 `"22"` | — |
+| 6  | get_packageType | 伪装 `"5.2.22"` | — |
+| 7  | get_APIVersion | 转发 | 11 |
+| 8  | get_APIRevision | 转发 | 12 |
+| 9  | get_homeFolder | 转发 | 13 |
+| 10 | get_settingsFilePath | 转发 | 14 |
+| 11 | get_host | 转发 | 15 |
+| 12 | get_systemProperties | 转发 | 16 |
+| 13 | get_machines | 转发 | 17 |
+| 14 | get_machineGroups | 转发 | 18 |
+| 15 | get_hardDisks | 转发 | 19 |
+| 16 | get_DVDImages | 转发 | 20 |
+| 17 | get_floppyImages | 转发 | 21 |
+| 18 | get_progressOperations | 转发 | 22 |
+| 19 | get_guestOSTypes | 转发 | 23 |
+| 20 | get_sharedFolders | 转发 | 25 |
+| 21 | get_performanceCollector | 转发 | 26 |
+| 22 | get_DHCPServers | 转发 | 27 |
+| 23 | get_NATNetworks | 转发 | 28 |
+| 24 | get_eventSource | 转发 | 29 |
+| 25 | get_extensionPackManager | 转发 | 30 |
+| 26 | get_internalNetworks | 转发 | 31 |
+| 27 | get_genericNetworkDrivers | 转发 | 33 |
+| 28 | composeMachineFilename | 转发 | 36 |
+| 29 | createAppliance | 转发 | 44 |
+| 30 | createDHCPServer | 转发 | 57 |
+| 31 | createMachine | 转发 | 38 |
+| 32 | createMedium | 转发 | 46 |
+| 33 | createNATNetwork | 转发 | 60 |
+| 34 | createSharedFolder | 转发 | 51 |
+| 35 | createUnattendedInstaller | 转发 | 45 |
+| 36 | findDHCPServerByNetworkName | 转发 | 58 |
+| 37 | findMachine | **包裹**（IMachine 返回值） | 41 |
+| 38 | findNATNetworkByName | 转发 | 61 |
+| 39 | getExtraData | 转发 | 54 |
+| 40 | getExtraDataKeys | 转发 | 53 |
+| 41 | getGuestOSType | 转发 | 48 |
+| 42 | getMachineStates | 转发 | 43 |
+| 43 | getMachinesByGroups | 转发 | 42 |
+| 44 | openMachine | **包裹**（IMachine 返回值） | 39 |
+| 45 | openMedium | 转发 | 47 |
+| 46 | registerMachine | **包裹**（IMachine 入参） | 40 |
+| 47 | removeDHCPServer | 转发 | 59 |
+| 48 | removeNATNetwork | 转发 | 62 |
+| 49 | removeSharedFolder | 转发 | 52 |
+| 50 | setExtraData | 转发 | 55 |
+| 51 | setSettingsSecret | 转发 | 56 |
+| 52 | checkFirmwarePresent | 转发 | 70 |
 
-### Notes on the special slots
+### 特殊槽位说明
 
-- **Slot [1] is a clone precondition probe, not AddRef.** In practice eNSP's
-  *only* call through this object is slot [1]: a `__thiscall` with three stack
-  args and `ret 0xc`, of the shape
-  `HRESULT m(this, BSTR base, BSTR snapshot, HRESULT* pOut)`. The thunk forwards
-  to `helper_clone_check(realVBox, base, snap, pOut)`. Putting AddRef here (a
-  `ret 4` shape) drifted eNSP's stack by 8 bytes and crashed it — the slot
-  contract was recovered empirically. `AddRef` therefore has **no** live slot in
-  the proxy vtable (a minimal `thunk_AR` exists in the asm but is unused).
-- **Slots [3]–[6] are spoofed locally.** Forwarding `get_version` to the real
-  object would answer `7.2.8`; eNSP must read `5.2.x`. This is the in-process
-  half of the version spoof (the registry half is in `registry/`).
-- **Slots [37]/[44]/[46] wrap `IMachine`.** `IMachine` has the same 5.2→7.2
-  drift; see below.
+- **槽位 [1] 是 clone 前置条件探测，不是 AddRef。** 实际上 eNSP 通过这个对象的
+  *唯一*调用就是槽位 [1]：一个带三个栈参、`ret 0xc` 的 `__thiscall`，形状为
+  `HRESULT m(this, BSTR base, BSTR snapshot, HRESULT* pOut)`。该 thunk 转发给
+  `helper_clone_check(realVBox, base, snap, pOut)`。在这里放 AddRef（`ret 4` 的
+  形状）会让 eNSP 的栈漂移 8 字节并崩溃——这个槽位契约是靠实测复原的。因此
+  `AddRef` 在代理 vtable 里**没有**活动槽位（asm 里存在一个极简的 `thunk_AR`，
+  但未被使用）。
+- **槽位 [3]–[6] 在本地伪装。** 把 `get_version` 转发给真实对象会回答
+  `7.2.8`；而 eNSP 必须读到 `5.2.x`。这是版本伪装的进程内那一半（注册表那一半
+  在 `registry/`）。
+- **槽位 [37]/[44]/[46] 包裹 `IMachine`。** `IMachine` 有同样的 5.2→7.2 漂移；
+  见下文。
 
-## IMachine wrapping
+## IMachine 包裹
 
-`findMachine`/`openMachine` return an `IMachine*`, and `registerMachine` takes
-one. The returned 7.2 machine is wrapped in a `MachineProxy`
-(`src/imachine_entries.asm`):
+`findMachine`/`openMachine` 返回一个 `IMachine*`，而 `registerMachine` 接收一
+个。返回的 7.2 machine 被包进一个 `MachineProxy`（`src/imachine_entries.asm`）：
 
 ```
-MachineProxy:  +0 vtable(5.2-shaped)   +8 real 7.2 IMachine   +12 per-slot 7.2-index map
+MachineProxy:  +0 vtable(5.2 形状)   +8 真实 7.2 IMachine   +12 逐槽 7.2 索引映射表
 ```
 
-Unlike `IVirtualBox` (one hand-written thunk per slot), the `IMachine` thunks
-(`im_e_N`) are **table-driven**: each reads the real machine from `[this+8]` and
-its destination 7.2 index from `map[N]` (`[this+12]`), then tail-jumps. The map
-table encodes the same kind of 5.2→7.2 remap shown above, for `IMachine`.
+与 `IVirtualBox`（每槽一段手写 thunk）不同，`IMachine` 的 thunk（`im_e_N`）是
+**查表驱动**的：每段从 `[this+8]` 读出真实 machine、从 `map[N]`（`[this+12]`）
+读出目的地 7.2 索引，然后尾跳。这张映射表为 `IMachine` 编码了与上面所示同一种
+5.2→7.2 重映射。
 
-## Reference: full 7.2.8 IVirtualBox layout
+## 参考：完整的 7.2.8 IVirtualBox 布局
 
-The destination side, for cross-checking the `→ 7.2` column. `IDispatch` base
-`[0]`–`[6]`; properties `[7]`–`[35]`; methods `[36]`–`[73]`. **bold** = new in
-7.x (no 5.2 equivalent).
+目的地一侧，用于交叉核对 `→ 7.2` 那一列。`IDispatch` 基础 `[0]`–`[6]`；属性
+`[7]`–`[35]`；方法 `[36]`–`[73]`。**加粗** = 7.x 新增（无 5.2 对应）。
 
-| 7.2 | method | 7.2 | method |
+| 7.2 | 方法 | 7.2 | 方法 |
 |---:|---|---:|---|
 | 7  | get_version              | 41 | findMachine |
 | 8  | get_versionNormalized    | 42 | getMachinesByGroups |
@@ -165,11 +159,10 @@ The destination side, for cross-checking the `→ 7.2` column. `IDispatch` base
 | 39 | openMachine              | 73 | **getTrackedObjectIds** |
 | 40 | registerMachine          |    | |
 
-## Relationship to the VAR_Plugin patch
+## 与 VAR_Plugin 补丁的关系
 
-The AR plugin calls a real 7.2 `IVirtualBox` directly through hard-coded **5.2**
-offsets, so it needs the *same* remap baked in as a byte patch. The
-`patches/var_plugin_ar1000v.md` displacement table is exactly the `→ 7.2` column
-above, expressed as `slot × 4` (e.g. `findMachine` 37→41 ⇒ disp `0x94`→`0xA4`).
-The plugin only references a subset of methods (`createSharedFolder` [34]
-through `checkFirmwarePresent` [52]), so only those slots appear in the patch.
+AR 插件通过写死的 **5.2** 偏移直接调用真实的 7.2 `IVirtualBox`，所以它需要把
+*同一套*重映射作为字节补丁烤进去。`patches/var_plugin_ar1000v.md` 里的位移表
+正是上面那一列 `→ 7.2`，以 `槽位 × 4` 表达（例如 `findMachine` 37→41 ⇒ 位移
+`0x94`→`0xA4`）。该插件只引用了方法中的一个子集（`createSharedFolder` [34] 到
+`checkFirmwarePresent` [52]），所以补丁里只出现那些槽位。

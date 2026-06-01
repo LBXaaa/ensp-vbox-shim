@@ -1,47 +1,46 @@
 # patches/
 
-Binary patches applied to **Huawei eNSP** files so they cooperate with
-VirtualBox 7.x. These scripts edit your *own* installed copies in place; this
-repo ships **no** Huawei or Oracle binaries.
+施加到 **华为 eNSP** 文件上的二进制补丁，让它们与 VirtualBox 7.x 协作。这些
+脚本是就地修改**你自己**已经装好的那份拷贝；本仓库**不**包含任何华为或 Oracle
+的二进制文件。
 
-## Files
+## 文件
 
-| file | purpose |
-|------|---------|
-| `patch_var_plugin.py`   | applies / restores the VAR_Plugin.dll vtable remap |
-| `var_plugin_ar1000v.md` | full spec: the 28 call sites, slot derivation, instruction shape |
+| 文件 | 用途 |
+|------|------|
+| `patch_var_plugin.py`   | 施加 / 还原 VAR_Plugin.dll 的 vtable 重映射 |
+| `var_plugin_ar1000v.md` | 完整规格：28 个调用站点、槽位推导、指令形态 |
 
-## VAR_Plugin.dll (ar1000v)
+## VAR_Plugin.dll（ar1000v）
 
-The AR router plugin calls a real 7.2 `IVirtualBox` through hard-coded **5.2**
-vtable offsets. On 7.x those offsets hit the wrong methods and AR crashes on
-start. The patch rewrites 28 dispatch sites (29 bytes) to the correct 7.2 slots.
-It changes only `call [reg+disp]` displacement bytes — the file size is
-unchanged and the edit is fully reversible.
+AR 路由器插件会通过写死的 **5.2** vtable 偏移去调用真实的 7.2 `IVirtualBox`。
+在 7.x 上这些偏移会打到错误的方法，AR 一启动就崩。这处补丁把 28 个分派站点
+（29 字节）改写到正确的 7.2 槽位。它只改 `call [reg+disp]` 里的位移字节——
+文件大小不变，改动完全可逆。
 
 ```bat
-:: inspect (read-only)
+:: 查看（只读）
 python patch_var_plugin.py --check   "C:\Program Files\Huawei\eNSP\plugin\ar1000v\VAR_Plugin.dll"
 
-:: patch (writes a .bak next to the dll first)
+:: 打补丁（会先在 dll 旁边写一份 .bak）
 python patch_var_plugin.py           "C:\Program Files\Huawei\eNSP\plugin\ar1000v\VAR_Plugin.dll"
 
-:: revert
+:: 还原
 python patch_var_plugin.py --restore "C:\Program Files\Huawei\eNSP\plugin\ar1000v\VAR_Plugin.dll"
 ```
 
-### Safety guarantees
+### 安全保证
 
-- The patcher only accepts the **2019 factory build** (size 393216, pristine
-  SHA256 `5ae6817a…`). Anything else is refused.
-- Before writing, every target byte is checked to hold its expected pre-patch
-  value (defense in depth on top of the whole-file hash).
-- After writing, the result is re-hashed and must equal the known patched
-  SHA256 (`f0107975…`), or the file is not saved.
-- A `.bak` copy is made unless you pass `--no-backup`.
+- 补丁器只接受 **2019 出厂版**（大小 393216，原始 SHA256 `5ae6817a…`）。其它
+  一律拒绝。
+- 写入前，会逐一核对每个目标字节是否仍是补丁前的预期值（在整文件哈希之上再加
+  一层纵深防御）。
+- 写入后，会对结果重新求哈希，必须等于已知的补丁后 SHA256（`f0107975…`），
+  否则不保存。
+- 除非你加 `--no-backup`，否则都会先做一份 `.bak`。
 
-### Requirements
+### 环境要求
 
 - Python 3.x
-- The plugin is 32-bit; the patch is architecture-agnostic (it edits bytes), so
-  no toolchain is needed — just Python.
+- 插件是 32 位的；但补丁与架构无关（它只改字节），所以不需要任何工具链——
+  有 Python 就行。
