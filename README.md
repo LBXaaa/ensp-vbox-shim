@@ -46,11 +46,19 @@ eNSP_Client.exe → eNSP_VBoxServer.exe → VBox52.dll (垫片) → VBoxSVC.exe 
 [docs/vtable-mapping.md](docs/vtable-mapping.md)，哪些是承重件、哪些只是诊断件
 见 [docs/manifest.md](docs/manifest.md)。
 
+## 关于启动速度
+
+因为本机开着 WSL2/Hyper-V，VirtualBox 7.x 没法直接用 VT-x 硬件加速，只能跑在
+Hyper-V 之上（VBox 界面里会显示一只“乌龟”图标）。代价是**网络设备启动明显变
+慢**：单台 AR/AC 等设备从点“开始”到完全起来，**3-5 分钟属正常**，请耐心等待，
+不是卡死。这是开启虚拟化组件后的固有代价，与本垫片无关——纯净（未开虚拟化）的
+机器上会快得多，但那种机器本就能直接装 VBox 5.2，也就用不到这套垫片了。
+
 ## 仓库结构
 
 | 目录 | 内容 |
 |------|------|
-| [`installer/`](installer/) | **一键整合包**：双击 `安装.bat` 自动检测路径并打补丁(推荐普通用户用) |
+| [`installer/`](installer/) | **一键整合包**源文件：双击 `安装.bat` 自动检测路径并打补丁(打包好的 zip 见 [Releases](../../releases)) |
 | [`src/`](src/)         | 垫片源码：`vbox52_proxy.cpp`、`vbox52_thunks.asm`、`spoof_thunks.cpp`、`imachine_entries.asm`、`vbox52.def` |
 | [`build/`](build/)     | `build.bat`（32 位 MSVC）和我们预编译好的 `VBox52.dll` |
 | [`patches/`](patches/) | `patch_var_plugin.py` 及 AR 插件补丁的规格说明 |
@@ -62,15 +70,17 @@ eNSP_Client.exe → eNSP_VBoxServer.exe → VBox52.dll (垫片) → VBoxSVC.exe 
 
 ### 一键整合包(推荐)
 
-不想手动敲命令,用 [`installer/`](installer/):
+不想手动敲命令,去 **[Releases](../../releases)** 下载最新的整合包 zip:
 
 1. 先装好原版 eNSP 和官方 VirtualBox 7.2.x;
-2. 双击 **`installer\安装.bat`**,UAC 弹窗点"是";
-3. 它会自动检测 eNSP/VBox 装在哪、拷垫片 DLL、写版本伪装、按真实路径生成
-   CLSID 项、给 AR 插件打补丁,4 步全程无需手动指定路径。
+2. 下载并解压整合包 zip;
+3. 双击 **`安装.bat`**,UAC 弹窗点"是";
+4. 它会自动检测 eNSP/VBox 装在哪、拷垫片 DLL、写版本伪装、按真实路径生成
+   CLSID 项、给 AR 插件打补丁,全程无需手动指定路径。
 
-还原:双击 **`installer\卸载.bat`**。只想看当前状态不改动:
-`install.ps1 -Check`。详见 [installer/README.md](installer/README.md)。
+还原:双击 **`卸载.bat`**。只想看当前状态不改动:`install.ps1 -Check`。
+整合包里的脚本与说明就是仓库 [`installer/`](installer/) 目录的内容,详见
+[installer/README.md](installer/README.md)。
 
 ### 手动安装
 
