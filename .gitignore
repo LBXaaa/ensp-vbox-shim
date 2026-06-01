@@ -25,8 +25,5 @@ Thumbs.db
 .DS_Store
 desktop.ini
 
-# AI assistant instructions (kept locally, not part of the repo)
-CLAUDE.md
-
 # Release artifacts (uploaded to GitHub Releases, not tracked in-repo)
 Releases/
