@@ -21,9 +21,6 @@
 
 ![eNSP 的 AR 设备运行在真实的 VirtualBox 7.2.8 上，拓扑连通](docs/images/ensp-running-on-vbox72.png)
 
-> 开着 Hyper-V 的机器上，eNSP 的 AR 设备正运行在货真价实的 VirtualBox
-> **7.2.8**（右侧 About 框）上；拓扑连通，ping 0% 丢包（左下控制台）。
-
 ## 工作原理
 
 三处改动，让 eNSP 把 7.2 当成 5.2：
