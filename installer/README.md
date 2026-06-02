@@ -8,7 +8,9 @@
 |------|------|
 | `安装.bat` | 安装入口。双击即可,自动请求管理员权限(UAC) |
 | `卸载.bat` | 卸载/还原入口。双击即可,自动提权 |
+| `注册设备.bat` | 注册基础设备 VM 到 VirtualBox。**不提权**,用平时启动 eNSP 的账户双击 |
 | `install.ps1` | 实际干活的 PowerShell 脚本(被上面两个 .bat 调用) |
+| `register_vms.ps1` | 注册脚本(被 `注册设备.bat` 调用) |
 | `payload/VBox52.dll` | 预编译好的 COM/vtable 垫片,安装时拷进 eNSP\tools\ |
 
 ## 怎么用
@@ -19,6 +21,18 @@
 2. 双击 **`安装.bat`**。
 3. 弹出 UAC 窗口点"是"(写注册表 + 改 Program Files 需要管理员权限)。
 4. 看窗口里的 4 步是否都 ✓,结束后启动 eNSP 拉一台设备试试。
+
+### 注册设备 VM(设备起不来时)
+
+eNSP 在 VirtualBox 7.x 上**无法自动注册**基础设备 VM(`AR_Base`、`WLAN_*_Base`),这些是拖设备时的克隆源,没注册上设备就起不来;`安装.bat` 不做这步。**用平时启动 eNSP 的账户**(不要用管理员)双击 **`注册设备.bat`**:扫 `vboxserver\` 下的基础盘,未注册的注册、已注册的先注销再重注册一遍(清掉半坏的注册状态)。幂等、可逆——注销不加 `--delete`,不动磁盘。
+
+只想看会做什么、不改动:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File register_vms.ps1 -Check
+```
+
+为什么不提权:VM 注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,必须与启动 eNSP 的账户一致;用管理员跑可能写进别的账户、eNSP 反而看不到。
 
 ### 卸载还原
 

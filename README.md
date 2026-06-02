@@ -78,6 +78,15 @@ Hyper-V 之上（VBox 界面里会显示一只“乌龟”图标）。代价是*
 整合包里的脚本与说明就是仓库 [`installer/`](installer/) 目录的内容,详见
 [installer/README.md](installer/README.md)。
 
+#### 设备起不来?先注册基础 VM
+
+eNSP 在 VirtualBox 7.x 上**无法自动注册**它的基础设备 VM(`AR_Base`、
+`WLAN_*_Base`)——这些是 eNSP 拖设备时的克隆源,没注册上,设备就起不来。
+`安装.bat` 不做这步(它只管垫片/注册表/插件补丁)。需要时**用平时启动 eNSP
+的账户**(别用管理员)双击 **`注册设备.bat`**:它扫 `vboxserver\` 下的基础盘,
+未注册的注册、已注册的先注销再重注册一遍,清掉半坏的注册状态;幂等、可逆
+(注销不加 `--delete`,不动磁盘)。只想看会做什么:`register_vms.ps1 -Check`。
+
 ### 手动安装
 
 想完全掌控每一步,或要自行重新编译,前提:已经装好 **VirtualBox 7.2.x** 和
