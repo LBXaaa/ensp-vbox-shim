@@ -6,8 +6,15 @@ title ensp-vbox-shim 一键安装
 rem ---- 检测管理员权限,没有就自动提权重新运行本脚本 ----
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo 正在请求管理员权限,请在弹出的 UAC 窗口点"是"...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    echo ============================================================
+    echo   ! 需要管理员权限!
+    echo.
+    echo   安装垫片需要写入注册表(HKLM)和 Program Files,
+    echo   请关闭本窗口,右键点击 安装.bat,选择
+    echo   "以管理员身份运行"。
+    echo ============================================================
+    echo.
+    pause
     exit /b
 )
 

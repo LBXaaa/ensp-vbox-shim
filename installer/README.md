@@ -56,10 +56,13 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -EnspDir "D:\Program Files\
 
 ## 它到底改了什么(安装的 4 步)
 
-1. **部署垫片 DLL** —— 把 `payload\VBox52.dll` 拷到 `eNSP\tools\VBox52.dll`。若已存在同名文件,先备份为 `VBox52.dll.orig.bak`。
+1. **部署垫片 DLL** —— 把 `payload\VBox52.dll` 覆盖到 eNSP 树内**全部 4 个加载位置**:`tools\`、`vboxserver\`、eNSP 根目录、`plugin\ngfw\tools\ngfw\`。每个位置先查 hash:已经是同一版本就跳过,否则备份原文件为 `.orig.bak` 后覆盖。
+
 2. **写版本伪装** —— 注册表 `HKLM\SOFTWARE\Oracle\VirtualBox` 的 `Version` 改成 `5.2.44`(64 位 + 32 位 WOW6432Node 两个视图都写)。eNSP 启动时检查这个值,装的是 7.x 它会拒跑。
-3. **劫持 CLSID InprocServer32** —— 把 `CLSID\{B1A7A4F2-...}\InprocServer32` 的默认值指向**第 1 步实际拷进去的那个 DLL 的真实路径**。这一步是脚本(而非静态 .reg)的核心原因:路径随你的 eNSP 装在哪而变,必须运行时生成。
-4. **给 AR 插件打补丁** —— 对 `eNSP\plugin\ar1000v\VAR_Plugin.dll` 施加 28 站点字节补丁(把 5.2 的 vtable 槽位偏移重映射到 7.2 的)。打补丁前自动备份 `.bak`。没装 AR 设备包就跳过,不影响其它设备。
+
+3. **劫持 CLSID InprocServer32** —— 把 `CLSID\{B1A7A4F2-...}\InprocServer32` 的默认值指向 `tools\VBox52.dll` 的实际路径。路径随 eNSP 安装位置动态生成。
+
+4. **覆盖 AR 插件** —— 用 `payload\VAR_Plugin.dll`(预构建的已补丁版)直接覆盖 `plugin\ar1000v\VAR_Plugin.dll`,备份原文件为 `.orig.bak`。不再运行时打字节补丁。
 
 四步详细原理见仓库 `docs/architecture.md`。
 
@@ -79,16 +82,14 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -EnspDir "D:\Program Files\
 
 VBox 自己的安装器会把这个 CLSID 改回 Oracle 原生的 proxy/stub。其余三项(版本号、AR 插件、垫片 DLL)卸载脚本已自动还原。
 
-## 字节补丁的安全性
+## 覆盖的安全性
 
-`VAR_Plugin.dll` 的补丁是**可逆**的,且有 4 层校验:
+所有覆盖都是**可逆**的:每个被替换的文件,脚本先把原文件备份为 `原文件名.orig.bak`,卸载时(双击 `卸载.bat`)自动从 `.orig.bak` 恢复。
 
-1. 文件大小必须等于出厂值 `393216` 字节;
-2. 打补丁前对整个文件算 SHA256,确认是已知的出厂版(不是别的构建、不是已经打过的);
-3. 逐字节核对 28 个站点当前值与预期"原值"一致才动手;
-4. 写完后重新算一次 SHA256,确认结果等于已知的"已打补丁版"哈希。
-
-任何一层不匹配就**放弃**并报错,绝不写半截。出厂哈希 `5ae6817a...`,打补丁后 `f0107975...`。
+完整性:
+1. `payload\VBox52.dll` 和 `payload\VAR_Plugin.dll` 部署前先校验 SHA256,确保整合包未被篡改;
+2. 目标位置如果已是相同版本(same hash),直接跳过,不重复覆盖;
+3. 覆盖完成后才算成功,不写半截。
 
 ## 排错
 
