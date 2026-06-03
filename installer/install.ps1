@@ -12,7 +12,7 @@
       2. 版本伪装           → 注册表 Oracle\VirtualBox Version=5.2.44
       3. CLSID InprocServer → 指向我们的 DLL(按真实路径生成)
       4. VAR_Plugin.dll     → 覆盖 payload 中预构建的已补丁版本
-      5. VC++ 运行时        → 清主目录 x64 毒件 + 部署 x86 运行时到 VBox\x86\(修 error 40 / 0x800700C1)
+      5. VC++ 运行时(x86) → 部署到 VBox\x86\ 子目录(干净机缺它会 error 40 / 0x800700C1)
 
     用法(一般经 安装.bat / 卸载.bat 自动提权调用):
       powershell -ExecutionPolicy Bypass -File install.ps1            # 安装
@@ -40,21 +40,9 @@ $DLL_NAME     = "VBox52.dll"
 $DLL_SHA256       = "4cbb1ace15f768291a6d3da4afcbf11201a4a630e738bd2c2d69fe68e8af3306"
 $VARP_SHA256      = "f0107975ba1b04325af2d31189ee92833233c1163f4553600207789977f94451"
 
-# VC++ 运行时(x64)—— 【毒件清除清单,不再部署】。
-# 旧版 installer 曾把微软签名的这三件塞进 VBox 主目录(误诊"VBoxSVC 缺 x64 运行时")。
-# 实为大坑:VBox 7.x 进程加固(hardening)要求主目录所有 DLL 用 Oracle build 证书签名,
-# VBoxHeadless 加载 VBoxRT.dll 时撞上非 Oracle 签名的它们 → -5657 → VBoxRT 加载失败
-# → startvm exit 1 → eNSP error 40。已活验证:移走后 VM 正常启动(CRT import 自动
-# 重定向到系统 msvcp_win.dll)。本清单现仅用于检测并清除遗留毒件,绝不再向主目录部署。
-$VCRT_FILES = @(
-    @{ Name = "VCRUNTIME140.dll" },
-    @{ Name = "VCRUNTIME140_1.dll" },
-    @{ Name = "MSVCP140.dll" }
-)
-
-# VC++ 运行时(x86)—— error 40 / 0x800700C1 的真正修法。
+# VC++ 运行时(x86)—— error 40 / 0x800700C1 的修法。
 # 32 位 eNSP 经 COM marshal IVirtualBox 时加载 x86\VBoxProxyStub-x86.dll,它(经 VBoxRT-x86.dll)
-# 需要 x86 的 VCRUNTIME140.dll + MSVCP140.dll。干净机这俩都缺 → 加载器沿 PATH 抓到上面那组 x64 版
+# 需要 x86 的 VCRUNTIME140.dll + MSVCP140.dll。干净机这俩都缺 → 加载器沿 PATH 抓到主目录的 x64 版
 # → ERROR_BAD_EXE_FORMAT(0xC1)。必须放进 x86\ 子目录(DLL 搜索顺序第一步命中,不受 PATH 污染)。
 # 已活验证:把这俩 x86 版放进 x86\ 后,LoadLibraryEx(proxystub) 从 err=193 翻成 OK。
 # VCRUNTIME140_1.dll 非必需(proxystub 依赖树不含它)。
@@ -173,27 +161,6 @@ function Restore-FromBak($DestPath) {
     else { Write-Info "无备份,跳过: $(Split-Path $DestPath -Leaf)" }
 }
 
-# 清除旧版塞进 VBox 主目录的 x64 VC 运行时毒件(触发 hardening -5657 / error 40)。
-# 有 .orig.bak -> 还原 Oracle 签名原件;无 .orig.bak -> 仅当当前文件是非 Oracle 签名时删除
-# (避免误删 VBox 7.2 自带的 Oracle 签名同名件)。
-function Remove-VboxRuntimePoison($DestPath) {
-    if (-not (Test-Path $DestPath)) { return }
-    $leaf = Split-Path $DestPath -Leaf
-    $bak = "$DestPath.orig.bak"
-    if (Test-Path $bak) {
-        Copy-Item $bak $DestPath -Force; Remove-Item $bak -Force
-        Write-OK "已还原 Oracle 原件并清除备份: $leaf"
-        return
-    }
-    $sig = (Get-AuthenticodeSignature $DestPath).SignerCertificate.Subject
-    if ($sig -and $sig -match 'Oracle') {
-        Write-Info "保留(Oracle 签名,VBox 自带): $leaf"
-    } else {
-        Remove-Item $DestPath -Force
-        Write-OK "已清除非 Oracle 签名毒件: $leaf  [$sig]"
-    }
-}
-
 # ---------------------------------------------------------------------------
 # 注册表写入辅助(两个视图)
 # ---------------------------------------------------------------------------
@@ -249,25 +216,24 @@ function Do-Install {
     $varp = Join-Path $EnspDir "plugin\ar1000v\VAR_Plugin.dll"
     Deploy-PayloadFile "VAR_Plugin.dll" $varp $VARP_SHA256
 
-    Write-Step "5/5 清除主目录 x64 毒件 + 部署 x86 运行时到 x86\ 子目录"
+    Write-Step "5/5 部署 x86 VC++ 运行时到 VBox\x86\ 子目录"
     if ($VBoxDir) {
-        # 清除旧版误塞进主目录的 x64 VC 运行时(触发 VBoxHeadless hardening -5657 → error 40)。
-        # 主目录的 CRT 依赖由系统 msvcp_win.dll 满足,无需我们供给。
-        foreach ($f in $VCRT_FILES) {
-            Remove-VboxRuntimePoison (Join-Path $VBoxDir $f.Name)
-        }
-        # x86 运行时:proxystub-x86.dll(经 VBoxRT-x86.dll)需要 x86 VCRUNTIME140 + MSVCP140。
-        # 放进 x86\ 子目录是 DLL 搜索顺序第一步,修 0x800700C1。x86\ 不被 64 位 VBoxHeadless
-        # 的 hardening 触及,安全。
+        # proxystub-x86.dll(经 VBoxRT-x86.dll)需要 x86 VCRUNTIME140 + MSVCP140。
+        # 放进 x86\ 子目录是 DLL 搜索顺序第一步,修 0x800700C1。
+        # x86\ 是 VBox 7.x 自带的 32 位组件目录,正常安装必有;不在则跳过(疑似异常安装)。
         $x86sub = Join-Path $VBoxDir "x86"
-        foreach ($f in $VCRT_X86_FILES) {
-            Deploy-PayloadFile "msvcrt-x86\$($f.Name)" (Join-Path $x86sub $f.Name) $f.Hash
+        if (Test-Path $x86sub) {
+            foreach ($f in $VCRT_X86_FILES) {
+                Deploy-PayloadFile "msvcrt-x86\$($f.Name)" (Join-Path $x86sub $f.Name) $f.Hash
+            }
+            Write-OK "x86 运行时已就位(32 位 COM 激活不再 0x800700C1)"
+        } else {
+            Write-Warn "VBox\x86\ 子目录不存在,跳过 x86 运行时部署(VBox 安装异常?)。"
         }
-        Write-OK "x86 运行时已就位(32 位 COM 激活不再 0x800700C1)"
     } else {
         Write-Warn "未定位 VirtualBox 目录,跳过 x86 运行时部署。"
         Write-Warn "若设备启动报 0x800700C1,手动把 payload\msvcrt-x86\*.dll"
-        Write-Warn "复制到 VBoxSVC.exe 同目录的 x86\ 子目录(不要放主目录,会触发 hardening)。"
+        Write-Warn "复制到 VBoxSVC.exe 同目录的 x86\ 子目录。"
     }
 
     Write-Host "`n============================================================" -ForegroundColor Green
@@ -309,11 +275,8 @@ function Do-Uninstall {
     Write-Warn "请对 VirtualBox 7.2 跑一次【修复】(应用和功能 → VirtualBox → 修改/修复),"
     Write-Warn "它会把 $CLSID_VBOX 改回 Oracle 原生 proxy/stub。"
 
-    Write-Step "5/5 清除主目录 x64 毒件 + 还原 x86\ 子目录运行时"
+    Write-Step "5/5 还原 x86\ 子目录的 VC++ 运行时"
     if ($VBoxDir) {
-        foreach ($f in $VCRT_FILES) {
-            Remove-VboxRuntimePoison (Join-Path $VBoxDir $f.Name)
-        }
         $x86sub = Join-Path $VBoxDir "x86"
         foreach ($f in $VCRT_X86_FILES) {
             Restore-FromBak (Join-Path $x86sub $f.Name)
@@ -368,16 +331,6 @@ function Do-Check {
     } else { Write-Info "VAR_Plugin.dll : 未找到(没装 AR 包)" }
 
     if ($VBoxDir) {
-        Write-Info "VBox 主目录 x64 毒件检测(应全部清除):"
-        foreach ($f in $VCRT_FILES) {
-            $dst = Join-Path $VBoxDir $f.Name
-            if (Test-Path $dst) {
-                $sig = (Get-AuthenticodeSignature $dst).SignerCertificate.Subject
-                $tag = if ($sig -and $sig -match 'Oracle') { "Oracle 签名(VBox 自带,正常)" }
-                       else { "★毒件!非 Oracle 签名 → 会致 startvm error 40,应清除" }
-            } else { $tag = "不存在 ✓(主目录无须此文件)" }
-            Write-Info "  $($f.Name) : $tag"
-        }
         Write-Info "VC++ 运行时 x86(x86\ 子目录,修 0x800700C1):"
         $x86sub = Join-Path $VBoxDir "x86"
         foreach ($f in $VCRT_X86_FILES) {
