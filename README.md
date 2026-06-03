@@ -51,7 +51,7 @@ Hyper-V 之上。代价是**网络设备启动明显变
 
 | 目录 | 内容 |
 |------|------|
-| [`installer/`](installer/) | **一键整合包**源文件：双击 `安装.bat` 自动检测路径并打补丁(打包好的 zip 见 [Releases](../../releases)) |
+| [`installer/`](installer/) | **一键整合包**源文件：双击 `安装.bat` 自动检测路径、打补丁并注册基础设备 VM(打包好的 zip 见 [Releases](../../releases)) |
 | [`src/`](src/)         | 垫片源码：`vbox52_proxy.cpp`、`vbox52_thunks.asm`、`spoof_thunks.cpp`、`imachine_entries.asm`、`vbox52.def` |
 | [`build/`](build/)     | `build.bat`（32 位 MSVC）和我们预编译好的 `VBox52.dll` |
 | [`patches/`](patches/) | `patch_var_plugin.py` 及 AR 插件补丁的规格说明 |
@@ -68,21 +68,25 @@ Hyper-V 之上。代价是**网络设备启动明显变
 1. 先装好原版 eNSP 和官方 VirtualBox 7.2.x;
 2. 下载并解压整合包 zip;
 3. 双击 **`安装.bat`**,UAC 弹窗点"是";
-4. 它会自动检测 eNSP/VBox 装在哪、拷垫片 DLL、写版本伪装、按真实路径生成
-   CLSID 项、给 AR 插件打补丁,全程无需手动指定路径。
+4. 它分两步:第 1 步打补丁(自动检测 eNSP/VBox 装在哪、拷垫片 DLL、写版本伪装、按真实
+   路径生成 CLSID 项、给 AR 插件打补丁),第 2 步自动注册基础设备 VM。全程双击一次、UAC
+   只弹一次,无需手动指定路径。
 
 还原:双击 **`卸载.bat`**。只想看当前状态不改动:`install.ps1 -Check`。
 整合包里的脚本与说明就是仓库 [`installer/`](installer/) 目录的内容,详见
 [installer/README.md](installer/README.md)。
 
-#### 设备起不来?先注册基础 VM
+#### 基础 VM 的注册(已自动完成,设备起不来再看)
 
-eNSP 在 VirtualBox 7.x 上**无法自动注册**它的基础设备 VM(`AR_Base`、
-`WLAN_*_Base`)——这些是 eNSP 拖设备时的克隆源,没注册上,设备就起不来。
-`安装.bat` 不做这步(它只管垫片/注册表/插件补丁)。需要时**用平时启动 eNSP
-的账户**(别用管理员)双击 **`注册设备.bat`**:它扫 `vboxserver\` 下的基础盘,
-未注册的注册、已注册的先注销再重注册一遍,清掉半坏的注册状态;幂等、可逆
-(注销不加 `--delete`,不动磁盘)。只想看会做什么:`register_vms.ps1 -Check`。
+eNSP 在 VirtualBox 7.x 上**无法自动注册**它的基础设备 VM(`AR_Base`、`WLAN_*_Base`)
+——这些是 eNSP 拖设备时的克隆源,没注册上,设备就起不来。`安装.bat` 的第 2 步已用登录账户
+身份**自动**做了这件事,正常无需额外操作。
+
+仅当自动注册被跳过时才需手动补做:**右键用了"别的管理员账户"**运行安装,会导致注册写进
+错误的用户配置,此时安装窗口黄字提示跳过。这种情况**用平时启动 eNSP 的账户**(别用管理员)
+双击 **`注册设备.bat`**:扫 `vboxserver\` 下的基础盘,未注册的注册、已注册的先注销再重注册
+一遍,清掉半坏的注册状态;幂等、可逆(注销不加 `--delete`,不动磁盘)。只想看会做什么:
+`register_vms.ps1 -Check`。
 
 ### 手动安装
 
