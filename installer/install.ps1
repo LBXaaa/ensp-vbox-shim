@@ -349,6 +349,11 @@ function Do-Check {
 # ---------------------------------------------------------------------------
 Assert-Admin
 
+# 提权后 install 常在独立窗口里跑,成功一闪而过、失败直接关,用户看不到原因。
+# 留一份日志,供编排器(install_all.ps1)在失败时指给用户看。
+$LogPath = Join-Path $env:TEMP "ensp-vbox-shim-install.log"
+Start-Transcript -Path $LogPath -Force -ErrorAction SilentlyContinue | Out-Null
+
 $ensp = Find-EnspDir -Override $EnspDir
 if (-not $ensp) {
     Write-Err "未能自动定位 eNSP 安装目录。请用 -EnspDir 手动指定,例如:"
@@ -364,3 +369,5 @@ Write-Host "VBox : $vbox"
 if ($Check)         { Do-Check     -EnspDir $ensp -VBoxDir $vbox }
 elseif ($Uninstall) { Do-Uninstall -EnspDir $ensp -VBoxDir $vbox }
 else                { Do-Install   -EnspDir $ensp -VBoxDir $vbox }
+
+Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
