@@ -13,7 +13,8 @@ if %errorlevel% neq 0 (
 
 echo ============================================================
 echo   ensp-vbox-shim 卸载还原
-echo   免费开源,发布于 https://github.com/LBXaaa/ensp-vbox-shim
+echo   本工具开源于 https://github.com/LBXaaa/ensp-vbox-shim
+echo   若是付费获得,则为他人倒卖,请到上述地址免费下载
 echo   还原版本伪装 / VAR_Plugin.dll / 移除垫片 DLL
 echo ============================================================
 echo.

@@ -14,7 +14,8 @@ rem ============================================================
 
 echo ============================================================
 echo   eNSP 设备 VM 注册
-echo   免费开源,发布于 https://github.com/LBXaaa/ensp-vbox-shim
+echo   本工具开源于 https://github.com/LBXaaa/ensp-vbox-shim
+echo   若是付费获得,则为他人倒卖,请到上述地址免费下载
 echo   把 AR_Base / WLAN_*_Base 等注册进 VirtualBox 7.x
 echo ============================================================
 echo.

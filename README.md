@@ -3,7 +3,7 @@
 让原版 **华为 eNSP** 直接跑在 **VirtualBox 7.x** 上，底层是真实vbox
 7.2.8 虚拟机引擎，全程不降级组件。
 
-> 永久免费、开源。项目地址：https://github.com/LBXaaa/ensp-vbox-shim
+> 本工具开源于 https://github.com/LBXaaa/ensp-vbox-shim
 > 若是付费获得，则为他人倒卖，请到上述地址免费下载。
 
 ## 为什么做这个
