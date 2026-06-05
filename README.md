@@ -19,7 +19,7 @@
 降级任何组件，也不动本机的 WSL2/Hyper-V——对 eNSP 假装成 5.2，背地里把调用
 翻译给真正的 7.2.8。
 
-![eNSP 的 AR 设备运行在真实的 VirtualBox 7.2.8 上，拓扑连通](docs/images/ensp-running-on-vbox72.png)
+![eNSP 的 SW 设备运行在真实的 VirtualBox 7.2.8 上，拓扑连通](docs/images/ensp-running-on-vbox72.png)
 
 ## 工作原理
 
@@ -47,6 +47,15 @@ Hyper-V 之上。代价是**网络设备启动明显变
 不是卡死。这是开启虚拟化组件后的固有代价，与本垫片无关——纯净（未开虚拟化）的
 机器上会快得多，但那种机器本就能直接装 VBox 5.2，也就用不到这套垫片了。
 
+> 注：若把整套环境跑在**虚拟机里**（宿主机 Hyper-V + 客户机 eNSP，三层嵌套），
+> 设备可能显示"正在运行"却出不来进度条。这是嵌套虚拟化的已知限制，解决办法见
+> [installer/README.md 的"已知限制:嵌套虚拟化"](installer/README.md)。物理机不受影响。
+>
+> 注：**Windows Sandbox / WDAG 不受支持**，设备会报"错误 40"。沙箱用 VSMB 共享挂载系统盘，
+> 与 VirtualBox 进程加固对系统 DLL 加载路径的校验冲突，VM 进程在启动阶段即被加固终止——
+> 这是 Windows Sandbox 与 VirtualBox 的固有冲突，非本垫片可修复（原版 VBox 在沙箱内同样起不来）。
+> 请改用普通虚拟机或物理机。
+
 ## 仓库结构
 
 | 目录 | 内容 |
@@ -63,7 +72,7 @@ Hyper-V 之上。代价是**网络设备启动明显变
 
 ### 一键整合包(推荐)
 
-不想手动敲命令,去 **[Releases](../../releases)** 下载最新的整合包 zip:
+推荐使用整合包一键安装,前往 **[Releases](../../releases)** 下载最新的整合包 zip:
 
 1. 先装好原版 eNSP 和官方 VirtualBox 7.2.x;
 2. 下载并解压整合包 zip;
@@ -82,11 +91,13 @@ eNSP 在 VirtualBox 7.x 上**无法自动注册**它的基础设备 VM(`AR_Base`
 ——这些是 eNSP 拖设备时的克隆源,没注册上,设备就起不来。`安装.bat` 的第 2 步已用登录账户
 身份**自动**做了这件事,正常无需额外操作。
 
-仅当自动注册被跳过时才需手动补做:**右键用了"别的管理员账户"**运行安装,会导致注册写进
-错误的用户配置,此时安装窗口黄字提示跳过。这种情况**用平时启动 eNSP 的账户**(别用管理员)
-双击 **`注册设备.bat`**:扫 `vboxserver\` 下的基础盘,未注册的注册、已注册的先注销再重注册
-一遍,清掉半坏的注册状态;幂等、可逆(注销不加 `--delete`,不动磁盘)。只想看会做什么:
-`register_vms.ps1 -Check`。
+绝大多数情况无需手动注册。只有一种例外:安装时**右键选了"用其他管理员账户运行"**——
+这会把注册信息写进那个管理员的配置里,而不是平时启动 eNSP 的登录账户,于是 eNSP 看不到。
+出现这种情况时,安装窗口会有黄字提示跳过了注册。
+
+补救:**用平时启动 eNSP 的账户**(不要用管理员)双击 **`注册设备.bat`**。它会扫描
+`vboxserver\` 下的基础盘并重新注册一遍,把注册状态恢复正常。这一步幂等、可逆,不会动磁盘文件;
+想先看它会做什么而不实际执行,跑 `register_vms.ps1 -Check`。
 
 ### 手动安装
 
@@ -95,9 +106,12 @@ eNSP 在 VirtualBox 7.x 上**无法自动注册**它的基础设备 VM(`AR_Base`
 的改动需要管理员权限。
 
 ```bat
-:: 1. 垫片 —— 编译（或直接用 build\VBox52.dll）后拷进 eNSP
+:: 1. 垫片 —— 编译（或直接用 build\VBox52.dll）后拷进 eNSP 的全部 4 个加载位置
 build\build.bat
 copy build\VBox52.dll "C:\Program Files\Huawei\eNSP\tools\VBox52.dll"
+copy build\VBox52.dll "C:\Program Files\Huawei\eNSP\vboxserver\VBox52.dll"
+copy build\VBox52.dll "C:\Program Files\Huawei\eNSP\VBox52.dll"
+copy build\VBox52.dll "C:\Program Files\Huawei\eNSP\plugin\ngfw\tools\ngfw\VBox52.dll"
 
 :: 2. 注册表 —— 先版本伪装，再 CLSID 劫持
 reg import registry\01_version_spoof.reg
@@ -105,7 +119,16 @@ reg import registry\02_clsid_inprocserver.reg
 
 :: 3. AR 插件补丁（会先写一份 .bak）
 python patches\patch_var_plugin.py "C:\Program Files\Huawei\eNSP\plugin\ar1000v\VAR_Plugin.dll"
+
+:: 4. x86 VC++ 运行时 —— 拷进 VBox 的 x86\ 子目录（干净机普遍缺，缺则 error 40 / 0x800700C1）
+copy installer\payload\msvcrt-x86\VCRUNTIME140.dll "C:\Program Files\Oracle\VirtualBox\x86\VCRUNTIME140.dll"
+copy installer\payload\msvcrt-x86\MSVCP140.dll     "C:\Program Files\Oracle\VirtualBox\x86\MSVCP140.dll"
+
+:: 5. 授权 —— 给登录用户对 vboxserver\ 的修改权（否则非提权 VBoxHeadless 建不出 Logs\ → error 40）
+icacls "C:\Program Files\Huawei\eNSP\vboxserver" /grant "%USERNAME%:(OI)(CI)M" /T /C /Q
 ```
+
+第 1、3 步对应整合包脚本里覆盖全部加载位置与打补丁的动作;第 4、5 步是干净机上的承重步骤(整合包 `安装.bat` 会自动做)。装完还要**注册基础设备 VM**(`AR_Base`、`WLAN_*_Base`)——见 [installer/README.md](installer/README.md) 的注册说明,或用平时启动 eNSP 的账户跑 `installer\register_vms.ps1`。
 
 然后启动 eNSP，拉起一台设备即可。要还原，见
 [registry/README.md](registry/README.md) 以及

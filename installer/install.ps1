@@ -404,7 +404,8 @@ function Write-EnvReport {
         Write-Info ("CPU   : {0}" -f $cpu.Name.Trim())
         Write-Info ("VT-x  : 固件已启用={0}  VMX扩展={1}" -f $vmFw, $vmMon)
         if ($vmFw -eq $false) {
-            Write-Warn "BIOS/UEFI 未开启虚拟化 —— VBox 起 VM 必然失败(error 40)。"
+            Write-Info "固件 VT-x 报未启用 —— 若本机开了 Hyper-V/WSL,这是 hypervisor 接管所致,属正常(VBox 走 WHP)。"
+            Write-Info "仅当本机【没开】任何 hypervisor 时,这才意味着 BIOS/UEFI 虚拟化没开,需进固件打开。"
         }
     } catch { Write-Warn "CPU   : 读取失败 ($($_.Exception.Message))" }
     Write-EnvReportHyperV
@@ -412,8 +413,9 @@ function Write-EnvReport {
     Write-EnvReportSpoof
 }
 
-# Hyper-V / WHP / 内存完整性 —— 任一启用都会抢走 VT-x,VBox 7.x 虽能走 WHP 后端
-# 但 eNSP 老镜像在 WHP 下常起不来(error 40)。这是最常见的"昨天能跑今天不行"。
+# Hyper-V / WHP / 内存完整性 —— 任一启用都会拉起 hypervisor,VBox 7.x 随之走 WHP 后端。
+# VBox 5 与 Hyper-V 冲突起不来,7.x 靠 WHP 共存,启动会慢。
+# 因此这里只做信息提示(启动会慢),不当故障、不劝用户关 Hyper-V。
 function Write-EnvReportHyperV {
     try {
         $hvPresent = $false
@@ -423,18 +425,18 @@ function Write-EnvReportHyperV {
         Write-Info ("Hyper-V特性 : {0}" -f $(if ($hvPresent) {"已启用"} else {"未启用"}))
         if ($hvLaunch) { Write-Info ("启动类型    : {0}" -f ($hvLaunch -replace '\s+',' ').Trim()) }
         if ($hvPresent -or ($hvLaunch -match "Auto")) {
-            Write-Warn "Hyper-V 在抢占 VT-x。VBox 会退到 WHP 后端,eNSP 老镜像可能 error 40。"
-            Write-Warn "排查时可关闭:bcdedit /set hypervisorlaunchtype off  然后重启。"
+            Write-Info "Hyper-V 在跑,VBox 7.x 走 WHP 后端运行(VBox 5 与 Hyper-V 冲突,7.x 靠 WHP 共存)。"
+            Write-Info "代价仅是设备启动变慢(单台 3-5 分钟),不是故障,耐心等即可。"
         }
-        # 内存完整性(HVCI)也会拉起 hypervisor
+        # 内存完整性(HVCI)也会拉起 hypervisor,同样落到 WHP 后端,行为同上(慢,非故障)。
         $hvci = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -ErrorAction SilentlyContinue
         if ($hvci -and $hvci.Enabled -eq 1) {
-            Write-Warn "内存完整性(HVCI)已开,同样会拉起 hypervisor 抢占 VT-x。"
+            Write-Info "内存完整性(HVCI)已开,同样拉起 hypervisor → 走 WHP 后端(慢,非故障)。"
         }
         # WSL2 / 虚拟机平台
         $vmp = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -ErrorAction SilentlyContinue
         if ($vmp -and $vmp.State -eq "Enabled") {
-            Write-Info "虚拟机平台  : 已启用(WSL2/沙盒会用,间接拉起 hypervisor)"
+            Write-Info "虚拟机平台  : 已启用(WSL2/WSA/沙盒会用,同样经 WHP 后端,正常)"
         }
     } catch { Write-Warn "Hyper-V : 检测失败 ($($_.Exception.Message))" }
 }
