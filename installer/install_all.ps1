@@ -81,7 +81,7 @@ try {
 }
 if ($proc.ExitCode -ne 0) {
     Write-Err "打补丁步骤失败(退出码 $($proc.ExitCode)),已跳过注册。"
-    Write-Info "详情见日志: $env:TEMP\ensp-vbox-shim-install.log"
+    Write-Info "详情见日志: $env:ProgramData\ensp-vbox-shim\install.log"
     exit 1
 }
 Write-OK "补丁部署完成。"

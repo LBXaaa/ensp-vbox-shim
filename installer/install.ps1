@@ -476,7 +476,11 @@ function Write-EnvReportSpoof {
 
 # 提权后 install 常在独立窗口里跑,成功一闪而过、失败直接关,用户看不到原因。
 # 留一份日志,供编排器(install_all.ps1)在失败时指给用户看。
-$LogPath = Join-Path $env:TEMP "ensp-vbox-shim-install.log"
+# 注意:install 经 RunAs 提权运行,$env:TEMP 会落到提权账户(可能是另一管理员或 SYSTEM)
+# 的 Temp,登录用户在自己的 %TEMP% 里根本找不到。固定写到 ProgramData,两个语境都能访问。
+$LogDir = Join-Path $env:ProgramData "ensp-vbox-shim"
+try { if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null } } catch {}
+$LogPath = Join-Path $LogDir "install.log"
 Start-Transcript -Path $LogPath -Force -ErrorAction SilentlyContinue | Out-Null
 
 $ensp = Find-EnspDir -Override $EnspDir
