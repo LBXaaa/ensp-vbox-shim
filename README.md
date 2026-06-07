@@ -88,7 +88,7 @@ Hyper-V 之上。代价是**网络设备启动明显变
 整合包里的脚本与说明就是仓库 [`installer/`](installer/) 目录的内容,详见
 [installer/README.md](installer/README.md)。
 
-#### 基础 VM 的注册(已自动完成,设备起不来再看)
+#### 基础 VM 的注册(已自动完成,设备无法启动再看)
 
 eNSP 在 VirtualBox 7.x 上**无法自动注册**它的基础设备 VM(`AR_Base`、`WLAN_*_Base`)
 ——这些是 eNSP 拖设备时的克隆源,没注册上,设备就起不来。`安装.bat` 的第 2 步已用登录账户

@@ -72,7 +72,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Check
 - **x86 VCRT** —— `VBox\x86\` 下的 `VCRUNTIME140.dll` / `MSVCP140.dll` 是否就位（缺它 → `0x800700C1` → error 40，安装步骤会补上）；
 - **版本伪装** —— 注册表 `Oracle\VirtualBox\Version` 当前值。
 
-这段同时显示在窗口里、也写进安装日志（`%ProgramData%\ensp-vbox-shim\install.log`），设备起不来时先看它。
+这段同时显示在窗口里、也写进安装日志（`%ProgramData%\ensp-vbox-shim\install.log`），设备无法启动时先看它。
 
 ### 自动检测失败时手动指定路径
 
