@@ -108,8 +108,38 @@ eNSP 在 VirtualBox 7.x 上**无法自动注册**它的基础设备 VM(`AR_Base`
 **华为 eNSP**;自行编译还需要一套 32 位 MSVC 工具链。注册表和 `Program Files`
 的改动需要管理员权限。
 
+#### 从源码编译垫片(可选)
+
+仓库已附带预编译好的 `build\VBox52.dll`,**不想自己编译可直接跳到下方的安装步骤**。
+想从源码重新构建(例如核对二进制、改动源码后重编),按下面做:
+
+**前提:32 位 MSVC 工具链。** 垫片会被加载进 32 位的 `eNSP_VBoxServer.exe`,所以
+**必须编译成 x86**。装 Visual Studio(2019/2022/2026 皆可)时勾选「使用 C++ 的桌面开发」
+工作负载即可获得 `ml.exe` / `cl.exe` / `link.exe`。无需安装完整 IDE,
+[Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/) 同样够用。
+
 ```bat
-:: 1. 垫片 —— 编译（或直接用 build\VBox52.dll）后拷进 eNSP 的全部 4 个加载位置
+:: 进入 build 目录,直接运行构建脚本(它会自动调用 vcvars32 配置 32 位环境)
+cd build
+build.bat
+```
+
+构建脚本依次做四件事:用 `ml.exe` 汇编 `vbox52_thunks.asm` 和 `imachine_entries.asm`,
+用 `cl.exe`(`/O2 /GS-`)编译 `vbox52_proxy.cpp` 和 `spoof_thunks.cpp`,再用 `link.exe`
+按 `vbox52.def` 链接成 `build\VBox52.dll`,最后 `dumpbin` 打印导出表确认
+`GetVBoxInstance` / `DelVBoxInstance` 在列。源码全部在 [`src/`](src/)。
+
+> 脚本默认按 VS 2026(v18)Community 找 `vcvars32.bat`。**装的不是这个版本就编辑
+> `build\build.bat` 顶部的 `VCVARS` 路径**,指向自己的
+> `...\VC\Auxiliary\Build\vcvars32.bat`(注意是 `vcvars32`,不是 `vcvars64`——必须 x86)。
+> 找不到该文件时脚本会直接报错并提示修改路径。
+
+编出来的 `build\VBox52.dll` 就是下方安装步骤第 1 步要拷贝的垫片。
+
+#### 安装步骤
+
+```bat
+:: 1. 垫片 —— 编译（见上节，或直接用仓库自带的 build\VBox52.dll）后拷进 eNSP 的全部 4 个加载位置
 build\build.bat
 copy build\VBox52.dll "C:\Program Files\Huawei\eNSP\tools\VBox52.dll"
 copy build\VBox52.dll "C:\Program Files\Huawei\eNSP\vboxserver\VBox52.dll"
