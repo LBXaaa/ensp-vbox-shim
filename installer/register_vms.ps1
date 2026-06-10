@@ -120,6 +120,72 @@ function Select-VBoxFile([string]$dir){
     return $null
 }
 
+# 路径规整:用于比较两个路径是否指向同一个文件。VirtualBox.xml 里的 src 可能含
+# 双反斜杠且大小写与磁盘不一致,故把连续反斜杠折叠为一个、去尾斜杠、转小写后再比较。
+function Norm([string]$p){
+    if(-not $p){ return "" }
+    $s=$p.Trim() -replace '\\+','\'
+    return $s.TrimEnd('\').ToLower()
+}
+
+# VM 当前电源状态(powermachinereadable 的 VMState),取不到返回 ""
+function Get-VMState($vbm,[string]$vm){
+    foreach($line in (& $vbm showvminfo "$vm" --machinereadable 2>$null)){
+        if($line -match '^VMState="([^"]+)"'){ return $Matches[1] }
+    }
+    return ""
+}
+
+# 该 VM 是否已存在指定名字的快照
+function Has-Snapshot($vbm,[string]$vm,[string]$snapName){
+    $out = & $vbm snapshot "$vm" list --machinereadable 2>$null
+    if($LASTEXITCODE -ne 0){ return $false }   # "does not have any snapshots" -> 非0
+    foreach($line in $out){
+        if($line -match '^SnapshotName(-[0-9]+)?="([^"]+)"' -and $Matches[2] -eq $snapName){ return $true }
+    }
+    return $false
+}
+
+# eNSP 链接克隆需要基础盘有名为 <VM>_Link 的快照。eNSP 安装时本应建好并写入 .vbox,
+# 但若安装时撞 UUID 冲突(幽灵残留)注册失败,会留下无快照的裸盘 -> clonevm 报
+# "does not have any snapshots" -> 设备起不来(error 40)。本函数仅在【缺失】时补建,
+# 【绝不】删除或改动已存在的快照(它可能正被已有克隆挂载,删除会破坏克隆链)。
+#
+# 返回: "ok"(已有,未动) / "created"(补建成功) / "skip-running"(非poweroff跳过) /
+#       "fail"(补建失败) / "no-vm"(VM不存在)
+function Ensure-LinkSnapshot($vbm,[string]$vm,[bool]$checkOnly){
+    $snap = "${vm}_Link"
+    if(Has-Snapshot $vbm $vm $snap){ return "ok" }
+
+    # 缺快照。补建前必须确认 VM 处于 poweroff —— 对在线/saved 状态拍快照会把
+    # 内存状态拍进去,污染本应纯净的基础盘。
+    $state = Get-VMState $vbm $vm
+    if($state -eq ""){ return "no-vm" }
+    if($state -ne "poweroff"){ return "skip-running" }
+
+    if($checkOnly){ return "created" }   # -Check: 报告将补建,不实际动手
+
+    # snapshot take 会把进度条(0%..100%)写到 stderr。在 $ErrorActionPreference=Stop
+    # 下,原生 exe 只要往 stderr 写东西就会被 PS 包成 NativeCommandError 抛出并中断
+    # 脚本(即便用 2>$null 也拦不住)。故此处局部降级为 Continue,并用 try 兜底,
+    # 仅凭 stdout 的 "Snapshot taken" 判定成败。(unregister/register 不写进度条,不受影响。)
+    $out = ""
+    try {
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $out = (& $vbm snapshot "$vm" take "$snap" 2>$null | Out-String)
+    } catch {
+        $out = ""
+    } finally {
+        $ErrorActionPreference = $old
+    }
+    # VBoxManage 快照操作退出码不可靠,靠输出判断:成功必含 "Snapshot taken"
+    if($out -match 'Snapshot taken'){ return "created" }
+    # 输出没抓到关键字时,回查一次实际状态(take 可能成功了只是输出被吞)
+    if(Has-Snapshot $vbm $vm $snap){ return "created" }
+    return "fail"
+}
+
 # ---- 主流程 ----
 $ensp=Find-EnspDir $EnspDir
 if(-not $ensp){ Write-Err "未能定位 eNSP 安装目录。请用 -EnspDir 手动指定。"; exit 1 }
@@ -136,7 +202,23 @@ $srcmap=Get-UuidSrcMap
 $running=Get-RunningVMs $vbm
 
 Write-Step $(if($Check){"检测(只看,不改动)"}else{"注册 / 重注册基础设备 VM"})
-$reg=0; $rereg=0; $skiprun=0; $miss=0
+$reg=0; $rereg=0; $skiprun=0; $miss=0; $snapMade=0; $snapWarn=0
+
+# 注册成功后调用:确保基础盘有 <VM>_Link 快照(eNSP 链接克隆所必需),缺则补建。
+# 更新 $script:snapMade / $script:snapWarn 计数。
+function Reconcile-Snapshot([string]$vm){
+    $s = Ensure-LinkSnapshot $vbm $vm $Check.IsPresent
+    switch($s){
+        "ok"           { }   # 已有快照,不动
+        "created"      { if($Check){ Write-Info "$vm :   ↳ 缺 ${vm}_Link 快照 -> 将补建"; $script:snapMade++ }
+                         else      { Write-OK   "$vm :   ↳ 已补建快照 ${vm}_Link"; $script:snapMade++ } }
+        "skip-running" { Write-Warn "$vm :   ↳ 缺快照但 VM 非关机状态,跳过补建(请在 eNSP/VBox 里关掉后重跑)"; $script:snapWarn++ }
+        "fail"         { Write-Err  "$vm :   ↳ 缺 ${vm}_Link 快照且补建失败!设备可能起不来。手动补建:"
+                         Write-Err  "         VBoxManage snapshot `"$vm`" take `"${vm}_Link`""; $script:snapWarn++ }
+        "no-vm"        { Write-Warn "$vm :   ↳ 查不到该 VM,无法检查快照"; $script:snapWarn++ }
+    }
+}
+
 foreach($vm in $BASE_VMS){
     $dir=Join-Path $vbsrv $vm
     if(-not(Test-Path $dir)){ Write-Info "$vm : 无此目录,跳过(未装该设备包)"; $miss++; continue }
@@ -146,28 +228,40 @@ foreach($vm in $BASE_VMS){
 
     # 目标 .vbox:已注册的优先沿用当前注册路径(最忠实),拿不到再回退最短有效 .vbox
     $target=$null
+    $regSrc=$null
     if($isReg){
         $u=$uuids[$vm]
-        if($srcmap.ContainsKey($u) -and (Test-Path $srcmap[$u])){ $target=$srcmap[$u] }
+        if($srcmap.ContainsKey($u)){ $regSrc=$srcmap[$u] }
+        if($regSrc -and (Test-Path $regSrc)){ $target=$regSrc }
     }
     if(-not $target){ $target=Select-VBoxFile $dir }
     if(-not $target){ Write-Warn "$vm : 目录里没有有效的 .vbox,跳过"; $miss++; continue }
 
     if($isReg){
-        if($Check){ Write-Info "$vm : 已注册 -> 将【先注销再重注册】-> $target"; $rereg++; continue }
+        # 已注册。收紧:仅当注册状态确有问题(路径失效/指向别处)才注销重注册;
+        # 路径正确则不动注册项,直接进入快照核对 —— 避免对好端端的 VM 做无谓的
+        # 注销/重注册写操作(中途若出意外反而会把可用的 VM 弄成已注销状态)。
+        $regPathOk = $regSrc -and (Test-Path $regSrc) -and ((Norm $regSrc) -eq (Norm $target))
+        if($regPathOk){
+            Write-Info "$vm : 已注册且路径正确,保留不动"
+            Reconcile-Snapshot $vm
+            continue
+        }
+        # 路径不对(指向已失效的旧路径/幽灵)-> 注销重注册到当前 .vbox
+        if($Check){ Write-Info "$vm : 已注册但路径失效($regSrc)-> 将【注销并重注册】-> $target"; $rereg++; Reconcile-Snapshot $vm; continue }
         $u1=& $vbm unregistervm "$vm" 2>&1
         if($LASTEXITCODE -ne 0){ Write-Err "$vm : 注销失败,未改动:$u1"; continue }
         $r1=& $vbm registervm "$target" 2>&1
-        if($LASTEXITCODE -eq 0){ Write-OK "$vm : 已重注册 -> $(Split-Path $target -Leaf)"; $rereg++ }
+        if($LASTEXITCODE -eq 0){ Write-OK "$vm : 已重注册 -> $(Split-Path $target -Leaf)"; $rereg++; Reconcile-Snapshot $vm }
         else{
             Write-Err "$vm : 重注册失败!该 VM 现处于已注销状态。请手动恢复:"
             Write-Err "       VBoxManage registervm `"$target`""
             Write-Err "       VBox 报错:$r1"
         }
     } else {
-        if($Check){ Write-Info "$vm : 未注册 -> 将注册 -> $target"; $reg++; continue }
+        if($Check){ Write-Info "$vm : 未注册 -> 将注册 -> $target"; $reg++; Reconcile-Snapshot $vm; continue }
         $r2=& $vbm registervm "$target" 2>&1
-        if($LASTEXITCODE -eq 0){ Write-OK "$vm : 已注册 -> $(Split-Path $target -Leaf)"; $reg++ }
+        if($LASTEXITCODE -eq 0){ Write-OK "$vm : 已注册 -> $(Split-Path $target -Leaf)"; $reg++; Reconcile-Snapshot $vm }
         else{ Write-Err "$vm : 注册失败:$r2" }
     }
 }
@@ -176,6 +270,9 @@ Write-Step "当前已注册的 VM"
 & $vbm list vms 2>$null | Where-Object { $_ -match '\S' } | ForEach-Object { Write-Host "  $_" }
 
 Write-Host ""
-if($Check){ Write-Host "检测完成:待注册 $reg,待重注册 $rereg,运行中跳过 $skiprun,缺目录/无配置 $miss。" -ForegroundColor Green }
-else{ Write-Host "完成:新注册 $reg,重注册 $rereg,运行中跳过 $skiprun,缺目录/无配置 $miss。" -ForegroundColor Green }
+if($Check){ Write-Host "检测完成:待注册 $reg,待重注册 $rereg,待补建快照 $snapMade,缺快照告警 $snapWarn,运行中跳过 $skiprun,缺目录/无配置 $miss。" -ForegroundColor Green }
+else{
+    $color = if($snapWarn -gt 0){"Yellow"}else{"Green"}
+    Write-Host "完成:新注册 $reg,重注册 $rereg,补建快照 $snapMade,缺快照告警 $snapWarn,运行中跳过 $skiprun,缺目录/无配置 $miss。" -ForegroundColor $color
+}
 Write-Host "撤销某台:VBoxManage unregistervm `"<VM名>`"(不加 --delete 不会动磁盘)。" -ForegroundColor Gray
