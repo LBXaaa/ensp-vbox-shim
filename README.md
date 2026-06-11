@@ -63,7 +63,7 @@ Hyper-V 之上。代价是**网络设备启动明显变
 
 | 目录 | 内容 |
 |------|------|
-| [`installer/`](installer/) | **一键整合包**源文件：双击 `安装.bat` 自动检测路径、打补丁并注册基础设备 VM(打包好的 zip 见 [Releases](../../releases)) |
+| [`installer/`](installer/) | **一键整合包**源文件：双击 `安装.bat` 自动检测路径、打补丁、按需注册基础设备 VM 并补建链接克隆快照(打包好的 zip 见 [Releases](../../releases)) |
 | [`src/`](src/)         | 垫片源码：`vbox52_proxy.cpp`、`vbox52_thunks.asm`、`spoof_thunks.cpp`、`imachine_entries.asm`、`vbox52.def` |
 | [`build/`](build/)     | `build.bat`（32 位 MSVC）和我们预编译好的 `VBox52.dll` |
 | [`patches/`](patches/) | `patch_var_plugin.py` 及 AR 插件补丁的规格说明 |
@@ -81,26 +81,33 @@ Hyper-V 之上。代价是**网络设备启动明显变
 2. 下载并解压整合包 zip;
 3. 双击 **`安装.bat`**,UAC 弹窗点"是";
 4. 它分两步:第 1 步打补丁(自动检测 eNSP/VBox 装在哪、拷垫片 DLL、写版本伪装、按真实
-   路径生成 CLSID 项、给 AR 插件打补丁),第 2 步自动注册基础设备 VM。全程双击一次、UAC
-   只弹一次,无需手动指定路径。
+   路径生成 CLSID 项、给 AR 插件打补丁),第 2 步按需注册基础设备 VM 并补建缺失的链接克隆
+   快照。全程双击一次、UAC 只弹一次,无需手动指定路径。
 
 还原:双击 **`卸载.bat`**。只想看当前状态不改动:`install.ps1 -Check`。
 整合包里的脚本与说明就是仓库 [`installer/`](installer/) 目录的内容,详见
 [installer/README.md](installer/README.md)。
 
-#### 基础 VM 的注册(已自动完成,设备无法启动再看)
+#### 基础 VM 的注册与快照(已自动完成,设备无法启动再看)
 
 eNSP 在 VirtualBox 7.x 上**无法自动注册**它的基础设备 VM(`AR_Base`、`WLAN_*_Base`)
-——这些是 eNSP 拖设备时的克隆源,没注册上,设备就起不来。`安装.bat` 的第 2 步已用登录账户
-身份**自动**做了这件事,正常无需额外操作。
+——这些是 eNSP 拖设备时的克隆源,没注册上,设备就起不来。此外,eNSP 的链接克隆要求每个
+基础盘带一个 `<VM>_Base_Link` 快照作为克隆源,缺了它即便注册成功、克隆阶段也会因找不到
+快照而失败。`安装.bat` 的第 2 步已用登录账户身份**自动**完成注册并核对快照,正常无需额外操作。
 
-绝大多数情况无需手动注册。只有一种例外:安装时**右键选了"用其他管理员账户运行"**——
-这会把注册信息写进那个管理员的配置里,而不是平时启动 eNSP 的登录账户,于是 eNSP 看不到。
-出现这种情况时,安装窗口会有黄字提示跳过了注册。
+注册采用**按需操作**:已注册且路径正确的 VM 保持不动,只在注册项路径失效或指向卸载残留时
+才注销重注册;`<VM>_Link` 快照仅在**缺失时**补建,已存在的绝不改动(它可能正被现有克隆挂载)。
+
+绝大多数情况无需手动干预。需要单独跑 `注册设备.bat` 的两种典型情况:
+
+- 安装时**右键选了"用其他管理员账户运行"**——注册信息会写进那个管理员的配置而非平时启动
+  eNSP 的登录账户,于是 eNSP 看不到(安装窗口会有黄字提示跳过了注册)。
+- 没卸载干净就重装——注册表/`VirtualBox.xml` 里的残留项与新基础盘 UUID 冲突,留下一块**无
+  快照的裸盘**,表现为设备报"错误 40,设备启动失败"。
 
 补救:**用平时启动 eNSP 的账户**(不要用管理员)双击 **`注册设备.bat`**。它会扫描
-`vboxserver\` 下的基础盘并重新注册一遍,把注册状态恢复正常。这一步幂等、可逆,不会动磁盘文件;
-想先看它会做什么而不实际执行,跑 `register_vms.ps1 -Check`。
+`vboxserver\` 下的基础盘,按需重注册并补建缺失的 `<VM>_Link` 快照,把状态恢复正常。这一步
+幂等、可逆,不删除磁盘也不动已有快照;想先看它会做什么而不实际执行,跑 `register_vms.ps1 -Check`。
 
 ### 手动安装
 
@@ -161,7 +168,7 @@ copy installer\payload\msvcrt-x86\MSVCP140.dll     "C:\Program Files\Oracle\Virt
 icacls "C:\Program Files\Huawei\eNSP\vboxserver" /grant "%USERNAME%:(OI)(CI)M" /T /C /Q
 ```
 
-第 1、3 步对应整合包脚本里覆盖全部加载位置与打补丁的动作;第 4、5 步是干净机上的承重步骤(整合包 `安装.bat` 会自动做)。装完还要**注册基础设备 VM**(`AR_Base`、`WLAN_*_Base`)——见 [installer/README.md](installer/README.md) 的注册说明,或用平时启动 eNSP 的账户跑 `installer\register_vms.ps1`。
+第 1、3 步对应整合包脚本里覆盖全部加载位置与打补丁的动作;第 4、5 步是干净机上的承重步骤(整合包 `安装.bat` 会自动做)。装完还要**注册基础设备 VM**(`AR_Base`、`WLAN_*_Base`)并确保每台带 `<VM>_Link` 链接克隆快照——见 [installer/README.md](installer/README.md) 的注册说明,或用平时启动 eNSP 的账户跑 `installer\register_vms.ps1`(会按需注册并补建缺失的快照)。
 
 然后启动 eNSP，拉起一台设备即可。要还原，见
 [registry/README.md](registry/README.md) 以及
