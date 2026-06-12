@@ -9,6 +9,32 @@
 #include <intrin.h>
 #pragma intrinsic(_ReturnAddress)
 
+// ===== Log location =====
+// All shim logs go to C:\ProgramData\ensp-vbox-shim\ (created on first use).
+// Centralized so logs survive across users/sessions and are easy to find/clean
+// on uninstall, instead of being scattered under each user's %TEMP%.
+// On failure (e.g. ProgramData unwritable) callers fall back gracefully (no log).
+static bool GetLogPath(char* out, size_t cap, const char* fname) {
+    char dir[MAX_PATH];
+    DWORD n = GetEnvironmentVariableA("ProgramData", dir, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        // Fallback to %TEMP% if ProgramData is somehow unavailable.
+        n = GetTempPathA(MAX_PATH, dir);
+        if (n == 0 || n >= MAX_PATH) return false;
+        if (n + strlen(fname) + 1 >= cap) return false;
+        sprintf(out, "%s%s", dir, fname);
+        return true;
+    }
+    char sub[MAX_PATH];
+    if ((size_t)n + 18 >= MAX_PATH) return false;
+    sprintf(sub, "%s\\ensp-vbox-shim", dir);
+    CreateDirectoryA(sub, NULL);   // ok if it already exists
+    if (strlen(sub) + strlen(fname) + 2 >= cap) return false;
+    sprintf(out, "%s\\%s", sub, fname);
+    return true;
+}
+
+
 // ===== VEH crash observer (OBSERVE-ONLY) =====
 // NOTE: the previous version scanned the stack for any 0x400000-0x600000 value,
 // forced Eip to it, set Ecx=0 and CONTINUE_EXECUTION. That HIJACKED eNSP's
@@ -48,10 +74,12 @@ static LONG WINAPI CrashVEH(EXCEPTION_POINTERS* ep) {
             n += sprintf(buf + n, " %08lX", v); else { n += sprintf(buf + n, " ????????"); break; }
     }
     n += sprintf(buf + n, "\n");
-    char lp[MAX_PATH]; GetTempPathA(MAX_PATH, lp); strcat(lp, "vbox52_crash.log");
-    HANDLE h = CreateFileA(lp, FILE_APPEND_DATA, FILE_SHARE_READ|FILE_SHARE_WRITE,
-        NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(h, buf, n, &w, NULL); CloseHandle(h); }
+    char lp[MAX_PATH];
+    if (GetLogPath(lp, sizeof(lp), "vbox52_crash.log")) {
+        HANDLE h = CreateFileA(lp, FILE_APPEND_DATA, FILE_SHARE_READ|FILE_SHARE_WRITE,
+            NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(h, buf, n, &w, NULL); CloseHandle(h); }
+    }
     return EXCEPTION_CONTINUE_SEARCH;   // never alter control flow
 }
 
@@ -71,9 +99,8 @@ static const IID IID_IClassFactory =
 #define DBG(fmt, ...) do { \
     char _dbg_buf[512]; int _n = sprintf(_dbg_buf, "%lu [VBox52:%lu] " fmt "\n", GetTickCount(), GetCurrentProcessId(), ##__VA_ARGS__); \
     OutputDebugStringA(_dbg_buf); \
-    char _log_path[MAX_PATH]; DWORD _plen = GetTempPathA(MAX_PATH, _log_path); \
-    if (_plen + 20 < MAX_PATH) { \
-        strcat(_log_path, "vbox52_proxy.log"); \
+    char _log_path[MAX_PATH]; \
+    if (GetLogPath(_log_path, sizeof(_log_path), "vbox52_proxy.log")) { \
         HANDLE _h = CreateFileA(_log_path, FILE_APPEND_DATA, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); \
         if(_h != INVALID_HANDLE_VALUE) { DWORD _w; WriteFile(_h, _dbg_buf, strlen(_dbg_buf), &_w, NULL); CloseHandle(_h); } \
     } \
@@ -825,8 +852,11 @@ static BOOL __stdcall CreateProcessWHook(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATT
     if (cmd) {
         char buf[512]; int n = sprintf(buf, "%lu [VBox52:CreateProcessW] %S",
             GetTickCount(), cmd);
-        FILE* f = fopen("C:\\vbox\\vboxmanage_wrapper.log", "a");
-        if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+        char wlog[MAX_PATH];
+        if (GetLogPath(wlog, sizeof(wlog), "vboxmanage_wrapper.log")) {
+            FILE* f = fopen(wlog, "a");
+            if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+        }
     }
     return g_real_CreateProcessW(app, cmd, pa, ta, ih, flags, env, dir, si, pi);
 }
