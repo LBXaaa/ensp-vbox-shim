@@ -134,9 +134,10 @@ thunk。
 
 ## 装什么、不装什么
 
-本仓库装的是**我们**的源码、补丁器和 `.reg` 文件。它**不**包含任何华为或
-Oracle 的二进制文件。`build/VBox52.dll` 是我们从 `src/` 自己编译出来的产物。要
-还原成原装安装，见 [`registry/README.md`](../registry/README.md)（版本字符串）
-和 `patches/`（`--restore`）。
+本仓库装的是**我们**的源码、补丁器和 `.reg` 文件;`build/VBox52.dll` 是我们从
+`src/` 自己编译出来的产物。华为 eNSP 与 Oracle 的主程序不在其中,需自行安装
+(整合包 `installer/payload/` 另附少量配套文件以省去手工步骤)。要
+还原成原装安装,见 [`registry/README.md`](../registry/README.md)(版本字符串)
+和 `patches/`(`--restore`)。
 
 逐文件的承重件拆解见 [manifest.md](manifest.md)。
