@@ -42,7 +42,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # ---------------------------------------------------------------------------
 $CLSID_VBOX   = "{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}"  # CLSID_VirtualBox
 $DLL_NAME     = "VBox52.dll"
-$DLL_SHA256       = "4cbb1ace15f768291a6d3da4afcbf11201a4a630e738bd2c2d69fe68e8af3306"
+$DLL_SHA256       = "73c89b3ee1efda481d7b1c57bc12f59a78b8c0ce9ae9067be67360d1dab7cb18"
 $VARP_SHA256      = "f0107975ba1b04325af2d31189ee92833233c1163f4553600207789977f94451"
 
 # VC++ 运行时(x86)—— error 40 / 0x800700C1 的修法。
