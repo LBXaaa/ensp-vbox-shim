@@ -442,24 +442,33 @@ function Write-EnvReportHyperV {
     } catch { Write-Warn "Hyper-V : 检测失败 ($($_.Exception.Message))" }
 }
 
-# 嵌套虚拟化 —— 本机若【跑在 VM 内】(宿主 Hyper-V + 客户机 eNSP),且客户机里 WHP
-# 未启用,VBox 7.x 会走原生 VT-x,二级嵌套下 VRP 古董内核确定性 panic(c013e501),
-# AR 卡满屏 #### 进不到 <Huawei>。见 docs/troubleshooting-error40.md 根因 C。
-# 纯只读:只检测、只提示,绝不启用功能、绝不重启。物理机不在 VM 内,直接跳过。
+# 嵌套虚拟化 —— 本机若【跑在 VM 内】(宿主 Hyper-V + 客户机 eNSP):
+#   - Win10 客户机默认向上暴露 VT-x → VBox 走原生 HM → 二级嵌套下 VRP 古董内核
+#     确定性 panic(c013e501),AR 卡满屏 #### 进不到 <Huawei>(error 40)。
+#   - Win11 客户机报告 VT-x 不可用 → VBox 自动回退 NEM → 无此问题。
+# 故此处只对【Win10 客户机】告警(build < 22000);Win11 客户机判为无此问题。
+# 见 docs/troubleshooting-error40.md 根因 C。纯只读:只检测、只提示,绝不启用功能、
+# 绝不重启。物理机不在 VM 内,直接跳过。
 function Write-EnvReportNested {
     try {
         $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
         $sig = ("{0} {1}" -f $cs.Manufacturer, $cs.Model)
         $inVM = $sig -match "VirtualBox|VMware|Virtual Machine|innotek|QEMU|KVM|Xen|Parallels|Bochs"
         if (-not $inVM) { return }   # 物理机:此根因不适用,不打印
+        Write-Info ("嵌套环境  : 检测到本机运行在 VM 内({0})" -f $sig.Trim())
+        # 客户机 OS 版本决定默认后端:Win11(build>=22000)自动走 NEM,不受此根因影响。
+        $build = 0; [int]::TryParse((Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).BuildNumber, [ref]$build) | Out-Null
+        if ($build -ge 22000) {
+            Write-Info "客户机为 Win11(build $build)→ VBox 自动回退 NEM 后端,无此根因,无需处理。"
+            return
+        }
         $whp = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -ErrorAction SilentlyContinue
         $whpOn = ($whp -and $whp.State -eq "Enabled")
-        Write-Info ("嵌套环境  : 检测到本机运行在 VM 内({0})" -f $sig.Trim())
         if ($whpOn) {
-            Write-Info "WHP(虚拟机监控程序平台)已启用 → VBox 应走 NEM 后端,嵌套下正常。"
+            Write-Info ("客户机为 Win10(build {0}),但 WHP 已启用 → VBox 走 NEM 后端,正常。" -f $build)
         } else {
-            Write-Warn "WHP 未启用 —— 嵌套下 VBox 会走原生 VT-x,AR 可能卡满屏 #### / 内核 panic(error 40)。"
-            Write-Warn "修复(客户机内,需管理员,装完【必须重启】):"
+            Write-Warn ("客户机为 Win10(build {0})且 WHP 未启用 —— 嵌套下 VBox 会走原生 VT-x," -f $build)
+            Write-Warn "  AR 可能卡满屏 #### / 内核 panic(error 40)。修复(客户机内,需管理员,装完【必须重启】):"
             Write-Warn "  Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All"
             Write-Warn "  (若宿主是 Hyper-V,还需先在宿主对本 VM: Set-VMProcessor -ExposeVirtualizationExtensions `$true)"
             Write-Warn "  详见 docs/troubleshooting-error40.md 根因 C。"
