@@ -54,6 +54,13 @@ Hyper-V 之上。代价是**网络设备启动明显变
 > 设备可能显示"正在运行"却出不来进度条。这是嵌套虚拟化的已知限制，解决办法见
 > [installer/README.md 的"已知限制:嵌套虚拟化"](installer/README.md)。物理机不受影响。
 >
+> 注：嵌套环境下若客户机内 **VBox 拿到裸 VT-x、走原生 HM 后端**，AR 设备会一直
+> 卡满屏 `####`、进不到 `<Huawei>`（headless 空转烧满一个核，guest 内核固定崩在
+> `c013e501`）。这不是垫片或 VBox7 兼容问题，也与并发量、差分盘无关——病根是原生
+> VT-x 在二级嵌套下跑 VRP 古董内核的缺陷。解法是让 VBox 改走 NEM 后端（客户机启用
+> WHP 并重启）。诊断链、证据与完整修复步骤见
+> [docs/troubleshooting-error40.md 根因 C](docs/troubleshooting-error40.md)。
+>
 > 注：**Windows Sandbox / WDAG 不受支持**，设备会报"错误 40"。沙箱用 VSMB 共享挂载系统盘，
 > 与 VirtualBox 进程加固对系统 DLL 加载路径的校验冲突，VM 进程在启动阶段即被加固终止——
 > 这是 Windows Sandbox 与 VirtualBox 的固有冲突，非本垫片可修复（原版 VBox 在沙箱内同样起不来）。

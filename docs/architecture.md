@@ -83,7 +83,8 @@ struct VBoxProxyView { const void** vtable; void* self1; void* self2; IUnknown* 
 struct VBoxProxyRoot { LONG refCount; VBoxProxyView view; };  // refCount 在 view-4 处
 ```
 
-`vtable` 指向 `g_vbox52_vtable`，一张 **50 槽的 5.2 `IVirtualBox` 布局**。每个
+`vtable` 指向 `g_vbox52_vtable`，一张 **53 槽（`[0]`–`[52]`）的 5.2 `IVirtualBox`
+布局**。每个
 槽位都是一段裸 thunk（`src/vbox52_thunks.asm`），从 `[ecx+12]` 读出
 `realVBox`，再尾跳进**真实 7.2 vtable 中重映射后的索引**（例如 5.2
 `createDHCPServer` 槽 30 → 7.2 索引 57）。逐槽完整映射见
@@ -98,8 +99,11 @@ MachineProxy:  +0 vtable   +8 realMachine   +12 逐槽 7.2 索引映射表
 ```
 
 `im_e_N` 这些 thunk 从 `[this+8]` 读出真实 machine、从 `map[N]` 读出目的地 7.2
-索引，然后尾跳——同样的重映射把戏，只不过改成了查表驱动，而不是每槽手写一段
-thunk。
+索引，然后尾跳——同样的尾跳把戏，只不过改成了查表驱动，而不是每槽手写一段
+thunk。**注意**：当前 `map[N]` 是一刀切的 `N+4`（`vbox52_proxy.cpp` 的
+`g_imachine_map[i] = i + 4`），并非像 `IVirtualBox` 那样逐槽重映射。`IMachine`
+本身也有 5.2→7.2 重排，所以这套 +4 理论上是错的；但实测 eNSP 只触达 vtable[1]
+的 clone 探测，IMachine 包裹这条路尚未被真正调用，故未暴露。
 
 **IAT 钩子**（首次创建代理时装进宿主进程，`install_iat_hook`）：
 
