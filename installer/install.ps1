@@ -409,6 +409,7 @@ function Write-EnvReport {
         }
     } catch { Write-Warn "CPU   : 读取失败 ($($_.Exception.Message))" }
     Write-EnvReportHyperV
+    Write-EnvReportNested
     Write-EnvReportVcrt -VBoxDir $VBoxDir
     Write-EnvReportSpoof
 }
@@ -439,6 +440,31 @@ function Write-EnvReportHyperV {
             Write-Info "虚拟机平台  : 已启用(WSL2/WSA/沙盒会用,同样经 WHP 后端,正常)"
         }
     } catch { Write-Warn "Hyper-V : 检测失败 ($($_.Exception.Message))" }
+}
+
+# 嵌套虚拟化 —— 本机若【跑在 VM 内】(宿主 Hyper-V + 客户机 eNSP),且客户机里 WHP
+# 未启用,VBox 7.x 会走原生 VT-x,二级嵌套下 VRP 古董内核确定性 panic(c013e501),
+# AR 卡满屏 #### 进不到 <Huawei>。见 docs/troubleshooting-error40.md 根因 C。
+# 纯只读:只检测、只提示,绝不启用功能、绝不重启。物理机不在 VM 内,直接跳过。
+function Write-EnvReportNested {
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        $sig = ("{0} {1}" -f $cs.Manufacturer, $cs.Model)
+        $inVM = $sig -match "VirtualBox|VMware|Virtual Machine|innotek|QEMU|KVM|Xen|Parallels|Bochs"
+        if (-not $inVM) { return }   # 物理机:此根因不适用,不打印
+        $whp = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -ErrorAction SilentlyContinue
+        $whpOn = ($whp -and $whp.State -eq "Enabled")
+        Write-Info ("嵌套环境  : 检测到本机运行在 VM 内({0})" -f $sig.Trim())
+        if ($whpOn) {
+            Write-Info "WHP(虚拟机监控程序平台)已启用 → VBox 应走 NEM 后端,嵌套下正常。"
+        } else {
+            Write-Warn "WHP 未启用 —— 嵌套下 VBox 会走原生 VT-x,AR 可能卡满屏 #### / 内核 panic(error 40)。"
+            Write-Warn "修复(客户机内,需管理员,装完【必须重启】):"
+            Write-Warn "  Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All"
+            Write-Warn "  (若宿主是 Hyper-V,还需先在宿主对本 VM: Set-VMProcessor -ExposeVirtualizationExtensions `$true)"
+            Write-Warn "  详见 docs/troubleshooting-error40.md 根因 C。"
+        }
+    } catch { Write-Warn "嵌套检测 : 失败 ($($_.Exception.Message))" }
 }
 
 # x86 VCRT —— 32 位 eNSP marshal IVirtualBox 时加载 x86 proxystub,依赖 VBox\x86\
