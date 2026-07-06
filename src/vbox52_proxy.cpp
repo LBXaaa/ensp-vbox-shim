@@ -163,6 +163,17 @@ extern "C" void __stdcall diag_method_call(int method_idx, VBoxProxyView* proxy)
     DBG("[DIAG] %s: proxy=%p realVBox=%p", name, proxy, realVBox);
 }
 
+// Lightweight diagnostic for the naked spoof getters (vtable[3]-[6]), which
+// otherwise call nothing loggable. __stdcall(1 arg) so the naked thunk can
+// `push idx; call spoof_diag` transparently (callee cleans the arg). Records the
+// last-dispatched method both to the log and to g_last_method_idx (readable in a
+// post-mortem dump even if the log line didn't flush).
+extern "C" void __stdcall spoof_diag(int idx) {
+    g_last_method_idx = idx;
+    const char* name = (idx >= 0 && idx < 50) ? g_method_names[idx] : "???";
+    DBG("[SPOOF] %s (idx=%d)", name, idx);
+}
+
 // ===== IUnknown helpers =====
 extern "C" HRESULT __stdcall helper_QueryInterface(IUnknown* realVBox, const IID* riid, void** ppv) {
     DBG("[QI] realVBox=%p", realVBox);
@@ -758,6 +769,19 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID) {
         DisableThreadLibraryCalls(h);
         InitializeCriticalSection(&g_proxy_lock);
         AddVectoredExceptionHandler(TRUE, CrashVEH);
+        // Pin ourselves in memory for the process lifetime. ngfw's CVBoxWrapper dtor
+        // (FUN_1000c840) calls FreeLibrary(VBox52) after its clone-precondition probe.
+        // But we install a PROCESS-GLOBAL vectored exception handler (CrashVEH) and hand
+        // out proxy objects whose vtables/thunks live in OUR code. If FreeLibrary actually
+        // unmapped us, the still-registered CrashVEH (and any live proxy vtable) would point
+        // into freed address space -> the next exception invokes the dangling VEH ->
+        // access violation -> re-enters the VEH -> KiUserExceptionDispatcher/RtlUnwind
+        // recursion -> stack overflow (observed: crash at <Unloaded_VBox52.dll>+0x15c0).
+        // Pinning makes ngfw's FreeLibrary a no-op (ref never hits 0); consistent with our
+        // DllCanUnloadNow=S_FALSE "never unload" intent.
+        HMODULE self = NULL;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                           (LPCWSTR)&DllMain, &self);
     }
     return TRUE;
 }
@@ -937,8 +961,15 @@ void* __stdcall GetVBoxInstance() {
 }
 
 extern "C" __declspec(dllexport)
-void __stdcall DelVBoxInstance(void* p) {
-    DBG("[VBox52] DelVBoxInstance(%p)", p);
+void __stdcall DelVBoxInstance(void) {
+    // Genuine Huawei VBox52.DelVBoxInstance is a NO-ARG export: ngfw's CVBoxWrapper
+    // dtor (FUN_1000c840) does GetProcAddress("DelVBoxInstance"); call eax with ZERO
+    // args pushed, then FreeLibrary. Our old `void* p` signature read a stale stack
+    // slot as the instance ptr (garbage, e.g. 0xF05BEDCD) -> deref crash, and its
+    // `ret 4` popped a dword the caller never pushed -> corrupted ngfw's stack.
+    // Operate on the singleton cached by GetVBoxInstance instead of a passed arg.
+    void* p = g_cached_proxy;
+    DBG("[VBox52] DelVBoxInstance() cached=%p", p);
     if (!p) return;
     VBoxProxyView* proxy = (VBoxProxyView*)p;
     VBoxProxyRoot* root = (VBoxProxyRoot*)((char*)proxy - 4);
