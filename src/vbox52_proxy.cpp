@@ -793,9 +793,13 @@ static PFN_CoGetClassObject g_real_CoGetClassObject = NULL;
 static volatile LONG g_factory_guard = 0;
 
 // Simple IClassFactory that returns our proxy for CLSID_VirtualBox
-static ULONG __stdcall Factory_AddRef() { return 2; }
-static ULONG __stdcall Factory_Release() { return 1; }
+// CRITICAL: IUnknown methods on x86 __stdcall MUST take explicit this param,
+// otherwise the compiler emits ret 0 (no stack cleanup) while COM pushes this
+// onto the stack, causing stack imbalance and a downstream crash in combase.dll.
+static ULONG __stdcall Factory_AddRef(void* this_) { (void)this_; DBG("[Factory] AddRef"); return 2; }
+static ULONG __stdcall Factory_Release(void* this_) { (void)this_; DBG("[Factory] Release"); return 1; }
 static HRESULT __stdcall Factory_QI(void* this_, REFIID riid, void** ppv) {
+    DBG("[Factory] QI this=%p", this_);
     if (!ppv) return E_POINTER;
     *ppv = this_;
     return S_OK;
@@ -825,8 +829,8 @@ static HRESULT __stdcall Factory_CreateInstance(void* this_, IUnknown* outer, RE
     if (!root) { realVBox->Release(); return E_OUTOFMEMORY; }
     root->refCount = 1;
     root->view.vtable = g_vbox52_vtable;
-    root->view.self1 = &root->view;
-    root->view.self2 = &root->view;
+    root->view.self1 = NULL;   // original Huawei wrapper inits these to NULL
+    root->view.self2 = NULL;   // spoof setter/clearer (vtable[3..6]) manages them
     root->view.realVBox = realVBox;
     VBoxProxyView* proxy = &root->view;
     g_cached_proxy = proxy;
@@ -865,67 +869,141 @@ static HRESULT __stdcall CoGetClassObjectHook(REFCLSID rclsid, DWORD dwContext, 
     return g_real_CoGetClassObject(rclsid, dwContext, pvReserved, riid, ppv);
 }
 
-// CreateProcessW hook for logging
+// CreateProcessW hook — entry-point detour on kernel32!CreateProcessW.
+// Catches ALL callers in the process (eNSP_VBoxServer.exe + NGFW_Plugin.dll),
+// which IAT hooking cannot do (NGFW has its own IAT entry).
+//
+// UART2 injection: NGFW sends "modifyvm <vm> --uartmode2 server <pipe>" WITHOUT
+// first enabling UART2. In VBox 7.2, UART2 defaults to disabled, so --uartmode2
+// has no effect and VBoxHeadless never creates the named pipe. We fix this by
+// modifying the command line to insert "--uart2 0x2F8 3" before "--uartmode2",
+// making it a single modifyvm call: "modifyvm <vm> --uart2 0x2F8 3 --uartmode2 server <pipe>".
+//
+// NO synchronous wait: NGFW uses WaitForSingleObject(hProcess, 30000) on the
+// returned handle. If we block in the hook, NGFW's timer fires and it kills
+// the process. We return immediately after CreateProcessW so NGFW controls timing.
 typedef BOOL (__stdcall *PFN_CreateProcessW)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES,
     BOOL, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION);
 static PFN_CreateProcessW g_real_CreateProcessW = NULL;
+static BYTE g_original_bytes[5] = {0};
+static bool g_detour_installed = false;
+
+// Log app + cmd using WideCharToMultiByte (sprintf %S is unreliable for complex strings).
+static void log_createprocess(LPCWSTR app, LPCWSTR cmd) {
+    char abuf[260] = {0}, cbuf[1024] = {0};
+    if (app) WideCharToMultiByte(CP_ACP, 0, app, -1, abuf, sizeof(abuf)-1, NULL, NULL);
+    if (cmd) WideCharToMultiByte(CP_ACP, 0, cmd, -1, cbuf, sizeof(cbuf)-1, NULL, NULL);
+    char line[1400]; int n = sprintf(line, "%lu [VBox52:CreateProcessW] app='%s' cmd='%s'",
+        GetTickCount(), abuf, cbuf);
+    char wlog[MAX_PATH];
+    if (GetLogPath(wlog, sizeof(wlog), "vboxmanage_wrapper.log")) {
+        FILE* f = fopen(wlog, "a");
+        if (f) { fprintf(f, "%s\n", line); fclose(f); }
+    }
+    DBG("[Hook] CreateProcessW: app='%s' cmd='%s'", abuf, cbuf);
+}
+
+// If cmd is a modifyvm with --uartmode2 but no --uart2, inject --uart2 0x2F8 3.
+// Returns a new alloc'd wide string (caller frees) or NULL (no modification needed).
+static LPWSTR inject_uart2(LPCWSTR cmd) {
+    if (!cmd) return NULL;
+    // Must contain "modifyvm" and "--uartmode2"
+    if (!wcsstr(cmd, L"modifyvm")) return NULL;
+    const wchar_t* p_mode2 = wcsstr(cmd, L"--uartmode2");
+    if (!p_mode2) return NULL;
+    // Must NOT already contain --uart2
+    if (wcsstr(cmd, L"--uart2")) return NULL;
+    // Insert " --uart2 0x2F8 3" before "--uartmode2"
+    const wchar_t* insert = L" --uart2 0x2F8 3 ";
+    size_t prefix_len = p_mode2 - cmd;
+    size_t insert_len = wcslen(insert);
+    size_t suffix_len = wcslen(p_mode2);
+    size_t total = prefix_len + insert_len + suffix_len + 1;
+    LPWSTR modified = (LPWSTR)HeapAlloc(GetProcessHeap(), 0, total * sizeof(wchar_t));
+    if (!modified) return NULL;
+    memcpy(modified, cmd, prefix_len * sizeof(wchar_t));
+    memcpy(modified + prefix_len, insert, insert_len * sizeof(wchar_t));
+    wcscpy(modified + prefix_len + insert_len, p_mode2);
+    DBG("[Hook] UART2 injected: '%S'", modified);
+    return modified;
+}
 
 static BOOL __stdcall CreateProcessWHook(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa,
     LPSECURITY_ATTRIBUTES ta, BOOL ih, DWORD flags, LPVOID env, LPCWSTR dir,
     LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi) {
-    if (cmd) {
-        char buf[512]; int n = sprintf(buf, "%lu [VBox52:CreateProcessW] %S",
-            GetTickCount(), cmd);
-        char wlog[MAX_PATH];
-        if (GetLogPath(wlog, sizeof(wlog), "vboxmanage_wrapper.log")) {
-            FILE* f = fopen(wlog, "a");
-            if (f) { fprintf(f, "%s\n", buf); fclose(f); }
-        }
-    }
-    return g_real_CreateProcessW(app, cmd, pa, ta, ih, flags, env, dir, si, pi);
+    // Log the call (both app and cmd)
+    log_createprocess(app, cmd);
+
+    // Inject UART2 enable if needed
+    LPWSTR modified_cmd = inject_uart2(cmd);
+    LPWSTR exec_cmd = modified_cmd ? modified_cmd : cmd;
+
+    // Uninstall detour to call the real function (brief window; acceptable
+    // since we no longer block — the race only risks missing a hook log, not
+    // a crash).
+    DWORD oldProtect;
+    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
+    memcpy((LPVOID)g_real_CreateProcessW, g_original_bytes, 5);
+    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, oldProtect, &oldProtect);
+    BOOL result = g_real_CreateProcessW(app, exec_cmd, pa, ta, ih, flags, env, dir, si, pi);
+    // Re-install detour
+    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
+    BYTE jmp[5] = { 0xE9, 0,0,0,0 };
+    *(DWORD*)(jmp+1) = (DWORD)(DWORD_PTR)CreateProcessWHook - (DWORD)(DWORD_PTR)g_real_CreateProcessW - 5;
+    memcpy((LPVOID)g_real_CreateProcessW, jmp, 5);
+    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, oldProtect, &oldProtect);
+
+    // NO synchronous wait — NGFW controls process lifetime via its own WaitForSingleObject.
+    if (modified_cmd) HeapFree(GetProcessHeap(), 0, modified_cmd);
+    return result;
 }
 
 static void install_iat_hook() {
-    static bool hooked = false;
-    if (hooked) return;
-    hooked = true;
-    HMODULE hModule = GetModuleHandleA(NULL);
-    if (!hModule) return;
-    PBYTE base = (PBYTE)hModule;
+    if (g_detour_installed) return;
+    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    if (!hK32) return;
+    g_real_CreateProcessW = (PFN_CreateProcessW)GetProcAddress(hK32, "CreateProcessW");
+    if (!g_real_CreateProcessW) return;
+    // Save original bytes
+    memcpy(g_original_bytes, g_real_CreateProcessW, 5);
+    // Install detour: jmp offset = target - source - 5
+    BYTE jmp[5] = { 0xE9, 0,0,0,0 };
+    *(DWORD*)(jmp+1) = (DWORD)(DWORD_PTR)CreateProcessWHook - (DWORD)(DWORD_PTR)g_real_CreateProcessW - 5;
+    DWORD oldProtect;
+    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
+    memcpy((LPVOID)g_real_CreateProcessW, jmp, 5);
+    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, oldProtect, &oldProtect);
+    g_detour_installed = true;
+    DBG("[Hook] CreateProcessW detour installed: original=%p patch=%p", g_real_CreateProcessW, CreateProcessWHook);
+
+    // Also hook CoGetClassObject via IAT (already works for exe; ngfw may call via COM)
+    HMODULE hExe = GetModuleHandleA(NULL);
+    if (!hExe) return;
+    PBYTE base = (PBYTE)hExe;
     PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)base;
     PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(base + dos->e_lfanew);
+    if (nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size == 0) return;
     PIMAGE_IMPORT_DESCRIPTOR imports = (PIMAGE_IMPORT_DESCRIPTOR)(base + nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
     for (; imports->Name && imports->OriginalFirstThunk; imports++) {
         const char* dllName = (const char*)(base + imports->Name);
-        PIMAGE_THUNK_DATA intThunk = (PIMAGE_THUNK_DATA)(base + imports->OriginalFirstThunk);
         PIMAGE_THUNK_DATA iatThunk = (PIMAGE_THUNK_DATA)(base + imports->FirstThunk);
+        PIMAGE_THUNK_DATA intThunk = (PIMAGE_THUNK_DATA)(base + imports->OriginalFirstThunk);
         for (; intThunk->u1.AddressOfData; intThunk++, iatThunk++) {
             if (IMAGE_SNAP_BY_ORDINAL(intThunk->u1.Ordinal)) continue;
             PIMAGE_IMPORT_BY_NAME importByName = (PIMAGE_IMPORT_BY_NAME)(base + intThunk->u1.AddressOfData);
             const char* fname = (const char*)importByName->Name;
-
-            if (g_real_CoGetClassObject == NULL && _stricmp(dllName, "ole32.dll") == 0 &&
-                strcmp(fname, "CoGetClassObject") == 0) {
+            if (_stricmp(dllName, "ole32.dll") == 0 && strcmp(fname, "CoGetClassObject") == 0) {
                 g_real_CoGetClassObject = (PFN_CoGetClassObject)iatThunk->u1.Function;
-                DWORD oldProtect;
-                VirtualProtect(&iatThunk->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect);
+                DWORD oldProtect2;
+                VirtualProtect(&iatThunk->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect2);
                 iatThunk->u1.Function = (DWORD_PTR)CoGetClassObjectHook;
-                VirtualProtect(&iatThunk->u1.Function, sizeof(void*), oldProtect, &oldProtect);
+                VirtualProtect(&iatThunk->u1.Function, sizeof(void*), oldProtect2, &oldProtect2);
                 DBG("[Hook] CoGetClassObject IAT hooked: original=%p", g_real_CoGetClassObject);
-            }
-            if (g_real_CreateProcessW == NULL && _stricmp(dllName, "kernel32.dll") == 0 &&
-                strcmp(fname, "CreateProcessW") == 0) {
-                g_real_CreateProcessW = (PFN_CreateProcessW)iatThunk->u1.Function;
-                DWORD oldProtect;
-                VirtualProtect(&iatThunk->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect);
-                iatThunk->u1.Function = (DWORD_PTR)CreateProcessWHook;
-                VirtualProtect(&iatThunk->u1.Function, sizeof(void*), oldProtect, &oldProtect);
-                DBG("[Hook] CreateProcessW IAT hooked: original=%p", g_real_CreateProcessW);
+                break;
             }
         }
     }
     if (!g_real_CoGetClassObject) DBG("[Hook] CoGetClassObject IAT hook FAILED");
-    if (!g_real_CreateProcessW) DBG("[Hook] CreateProcessW IAT hook FAILED");
 }
 
 // ===== Exports =====
@@ -948,8 +1026,8 @@ void* __stdcall GetVBoxInstance() {
     if (!root) { realVBox->Release(); return NULL; }
     root->refCount = 1;
     root->view.vtable = g_vbox52_vtable;
-    root->view.self1 = &root->view;
-    root->view.self2 = &root->view;
+    root->view.self1 = NULL;   // original Huawei wrapper inits these to NULL
+    root->view.self2 = NULL;   // spoof setter/clearer (vtable[3..6]) manages them
     root->view.realVBox = realVBox;
     VBoxProxyView* proxy = &root->view;
     g_cached_proxy = proxy;
