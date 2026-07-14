@@ -1,0 +1,546 @@
+[*] 加载 PE: C:\Program Files\Huawei\eNSP\plugin\ngfw\NGFW_Plugin.dll.bak
+    ImageBase = 0x10000000
+    .text: RVA=0x1000  Size=0x3FD68  DataLen=262144
+
+====================================================================================================
+### FUN_1000dbe0 @ RVA 0xDBE0  (VA 0x1000DBE0)  [vtable[4] get_versionNormalized? (+0x10)]
+    总指令数: 435
+====================================================================================================
+
+---- vtable[3] call @ 0x1000dc83 (insn idx 48) ----
+      [ 33] 0x1000dc4c:  8d4c2440              lea      ecx, [esp + 0x40]
+      [ 34] 0x1000dc50:  c744243800000000      mov      dword ptr [esp + 0x38], 0
+      [ 35] 0x1000dc58:  e8b343ffff            call     0x10002010   <- call
+      [ 36] 0x1000dc5d:  c644243401            mov      byte ptr [esp + 0x34], 1
+      [ 37] 0x1000dc62:  e80a900000            call     0x10016c71   <- call
+      [ 38] 0x1000dc67:  33c9                  xor      ecx, ecx
+      [ 39] 0x1000dc69:  85c0                  test     eax, eax
+      [ 40] 0x1000dc6b:  0f95c1                setne    cl
+      [ 41] 0x1000dc6e:  85c9                  test     ecx, ecx
+      [ 42] 0x1000dc70:  750a                  jne      0x1000dc7c
+      [ 43] 0x1000dc72:  6805400080            push     0x80004005
+      [ 44] 0x1000dc77:  e81434ffff            call     0x10001090   <- call
+      [ 45] 0x1000dc7c:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [ 46] 0x1000dc7e:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [ 47] 0x1000dc80:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+  >>> [ 48] 0x1000dc83:  ffd0                  call     eax   <- call
+      [ 49] 0x1000dc85:  83c010                add      eax, 0x10
+      [ 50] 0x1000dc88:  89442418              mov      dword ptr [esp + 0x18], eax
+      [ 51] 0x1000dc8c:  c644243402            mov      byte ptr [esp + 0x34], 2
+      [ 52] 0x1000dc91:  e8db8f0000            call     0x10016c71   <- call
+      [ 53] 0x1000dc96:  33c9                  xor      ecx, ecx
+      [ 54] 0x1000dc98:  85c0                  test     eax, eax
+      [ 55] 0x1000dc9a:  0f95c1                setne    cl
+      [ 56] 0x1000dc9d:  85c9                  test     ecx, ecx
+      [ 57] 0x1000dc9f:  750a                  jne      0x1000dcab
+      [ 58] 0x1000dca1:  6805400080            push     0x80004005
+      [ 59] 0x1000dca6:  e8e533ffff            call     0x10001090   <- call
+      [ 60] 0x1000dcab:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [ 61] 0x1000dcad:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [ 62] 0x1000dcaf:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+      [ 63] 0x1000dcb2:  ffd0                  call     eax   <- call
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, eax
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (1 条):
+      -> [push] 0x1000dc72: push 0x80004005
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+---- vtable[3] call @ 0x1000dcb2 (insn idx 63) ----
+      [ 48] 0x1000dc83:  ffd0                  call     eax   <- call
+      [ 49] 0x1000dc85:  83c010                add      eax, 0x10
+      [ 50] 0x1000dc88:  89442418              mov      dword ptr [esp + 0x18], eax
+      [ 51] 0x1000dc8c:  c644243402            mov      byte ptr [esp + 0x34], 2
+      [ 52] 0x1000dc91:  e8db8f0000            call     0x10016c71   <- call
+      [ 53] 0x1000dc96:  33c9                  xor      ecx, ecx
+      [ 54] 0x1000dc98:  85c0                  test     eax, eax
+      [ 55] 0x1000dc9a:  0f95c1                setne    cl
+      [ 56] 0x1000dc9d:  85c9                  test     ecx, ecx
+      [ 57] 0x1000dc9f:  750a                  jne      0x1000dcab
+      [ 58] 0x1000dca1:  6805400080            push     0x80004005
+      [ 59] 0x1000dca6:  e8e533ffff            call     0x10001090   <- call
+      [ 60] 0x1000dcab:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [ 61] 0x1000dcad:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [ 62] 0x1000dcaf:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+  >>> [ 63] 0x1000dcb2:  ffd0                  call     eax   <- call
+      [ 64] 0x1000dcb4:  83c010                add      eax, 0x10
+      [ 65] 0x1000dcb7:  89442414              mov      dword ptr [esp + 0x14], eax
+      [ 66] 0x1000dcbb:  6a28                  push     0x28
+      [ 67] 0x1000dcbd:  6828840410            push     0x10048428
+      [ 68] 0x1000dcc2:  8d4c2444              lea      ecx, [esp + 0x44]
+      [ 69] 0x1000dcc6:  c644243c03            mov      byte ptr [esp + 0x3c], 3
+      [ 70] 0x1000dccb:  e8404affff            call     0x10002710   <- call
+      [ 71] 0x1000dcd0:  6a07                  push     7
+      [ 72] 0x1000dcd2:  6820650410            push     0x10046520
+      [ 73] 0x1000dcd7:  8d4c2420              lea      ecx, [esp + 0x20]
+      [ 74] 0x1000dcdb:  e8304affff            call     0x10002710   <- call
+      [ 75] 0x1000dce0:  6a0c                  push     0xc
+      [ 76] 0x1000dce2:  6804650410            push     0x10046504
+      [ 77] 0x1000dce7:  8d4c241c              lea      ecx, [esp + 0x1c]
+      [ 78] 0x1000dceb:  e8204affff            call     0x10002710   <- call
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, eax
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (1 条):
+      -> [push] 0x1000dca1: push 0x80004005
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+---- vtable[4] call @ 0x1000dd57 (insn idx 113) ----
+      [ 98] 0x1000dd2a:  e8b1fdffff            call     0x1000dae0   <- call
+      [ 99] 0x1000dd2f:  8b742418              mov      esi, dword ptr [esp + 0x18]
+      [100] 0x1000dd33:  51                    push     ecx
+      [101] 0x1000dd34:  83c6f0                add      esi, -0x10
+      [102] 0x1000dd37:  89642420              mov      dword ptr [esp + 0x20], esp
+      [103] 0x1000dd3b:  8bfc                  mov      edi, esp
+      [104] 0x1000dd3d:  56                    push     esi
+      [105] 0x1000dd3e:  89442428              mov      dword ptr [esp + 0x28], eax
+      [106] 0x1000dd42:  e8c94affff            call     0x10002810   <- call
+      [107] 0x1000dd47:  83c010                add      eax, 0x10
+      [108] 0x1000dd4a:  8907                  mov      dword ptr [edi], eax
+      [109] 0x1000dd4c:  8b4d0c                mov      ecx, dword ptr [ebp + 0xc]   <- ecx=this?
+      [110] 0x1000dd4f:  8b11                  mov      edx, dword ptr [ecx]   <- edx?
+      [111] 0x1000dd51:  8b4210                mov      eax, dword ptr [edx + 0x10]   <- eax?
+      [112] 0x1000dd54:  83c404                add      esp, 4   <- esp adjust
+  >>> [113] 0x1000dd57:  ffd0                  call     eax   <- call
+      [114] 0x1000dd59:  85c0                  test     eax, eax
+      [115] 0x1000dd5b:  0f8d90000000          jge      0x1000ddf1
+      [116] 0x1000dd61:  c644243402            mov      byte ptr [esp + 0x34], 2
+      [117] 0x1000dd66:  8b442414              mov      eax, dword ptr [esp + 0x14]   <- eax?
+      [118] 0x1000dd6a:  83c0f0                add      eax, -0x10
+      [119] 0x1000dd6d:  8d480c                lea      ecx, [eax + 0xc]
+      [120] 0x1000dd70:  83caff                or       edx, 0xffffffff
+      [121] 0x1000dd73:  f00fc111              lock xadd dword ptr [ecx], edx
+      [122] 0x1000dd77:  4a                    dec      edx
+      [123] 0x1000dd78:  85d2                  test     edx, edx
+      [124] 0x1000dd7a:  7f0a                  jg       0x1000dd86
+      [125] 0x1000dd7c:  8b08                  mov      ecx, dword ptr [eax]   <- ecx=this?
+      [126] 0x1000dd7e:  8b11                  mov      edx, dword ptr [ecx]   <- edx?
+      [127] 0x1000dd80:  50                    push     eax
+      [128] 0x1000dd81:  8b4204                mov      eax, dword ptr [edx + 4]   <- eax?
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, dword ptr [ebp + 0xc]
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (2 条):
+      -> [push] 0x1000dd3d: push esi
+      -> [mov [esp+...]] 0x1000dd3e: mov dword ptr [esp + 0x28], eax
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+---- vtable[5] call @ 0x1000de3c (insn idx 193) ----
+      [178] 0x1000de0b:  83c010                add      eax, 0x10
+      [179] 0x1000de0e:  8901                  mov      dword ptr [ecx], eax
+      [180] 0x1000de10:  89642424              mov      dword ptr [esp + 0x24], esp
+      [181] 0x1000de14:  89642424              mov      dword ptr [esp + 0x24], esp
+      [182] 0x1000de18:  56                    push     esi
+      [183] 0x1000de19:  c644244005            mov      byte ptr [esp + 0x40], 5
+      [184] 0x1000de1e:  e8ed49ffff            call     0x10002810   <- call
+      [185] 0x1000de23:  8b542428              mov      edx, dword ptr [esp + 0x28]   <- edx?
+      [186] 0x1000de27:  83c010                add      eax, 0x10
+      [187] 0x1000de2a:  8902                  mov      dword ptr [edx], eax
+      [188] 0x1000de2c:  8b4d0c                mov      ecx, dword ptr [ebp + 0xc]   <- ecx=this?
+      [189] 0x1000de2f:  8b01                  mov      eax, dword ptr [ecx]   <- eax?
+      [190] 0x1000de31:  8b4014                mov      eax, dword ptr [eax + 0x14]   <- eax?
+      [191] 0x1000de34:  83c404                add      esp, 4   <- esp adjust
+      [192] 0x1000de37:  c644243c03            mov      byte ptr [esp + 0x3c], 3
+  >>> [193] 0x1000de3c:  ffd0                  call     eax   <- call
+      [194] 0x1000de3e:  85c0                  test     eax, eax
+      [195] 0x1000de40:  c644243402            mov      byte ptr [esp + 0x34], 2
+      [196] 0x1000de45:  0f8c85000000          jl       0x1000ded0
+      [197] 0x1000de4b:  8d4f0c                lea      ecx, [edi + 0xc]
+      [198] 0x1000de4e:  83caff                or       edx, 0xffffffff
+      [199] 0x1000de51:  f00fc111              lock xadd dword ptr [ecx], edx
+      [200] 0x1000de55:  4a                    dec      edx
+      [201] 0x1000de56:  85d2                  test     edx, edx
+      [202] 0x1000de58:  7f0a                  jg       0x1000de64
+      [203] 0x1000de5a:  8b0f                  mov      ecx, dword ptr [edi]   <- ecx=this?
+      [204] 0x1000de5c:  8b01                  mov      eax, dword ptr [ecx]   <- eax?
+      [205] 0x1000de5e:  8b5004                mov      edx, dword ptr [eax + 4]   <- edx?
+      [206] 0x1000de61:  57                    push     edi
+      [207] 0x1000de62:  ffd2                  call     edx   <- call
+      [208] 0x1000de64:  c644243401            mov      byte ptr [esp + 0x34], 1
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, dword ptr [ebp + 0xc]
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (2 条):
+      -> [mov [esp+...]] 0x1000de19: mov byte ptr [esp + 0x40], 5
+      -> [mov [esp+...]] 0x1000de37: mov byte ptr [esp + 0x3c], 3
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+---- vtable[3] call @ 0x1000df95 (insn idx 330) ----
+      [315] 0x1000df6f:  cc                    int3     
+      [316] 0x1000df70:  51                    push     ecx
+      [317] 0x1000df71:  837e0c00              cmp      dword ptr [esi + 0xc], 0
+      [318] 0x1000df75:  7505                  jne      0x1000df7c
+      [319] 0x1000df77:  83c8ff                or       eax, 0xffffffff
+      [320] 0x1000df7a:  59                    pop      ecx
+      [321] 0x1000df7b:  c3                    ret      
+      [322] 0x1000df7c:  51                    push     ecx
+      [323] 0x1000df7d:  8bcc                  mov      ecx, esp   <- ecx=this?
+      [324] 0x1000df7f:  89642404              mov      dword ptr [esp + 4], esp
+      [325] 0x1000df83:  6820650410            push     0x10046520
+      [326] 0x1000df88:  e88340ffff            call     0x10002010   <- call
+      [327] 0x1000df8d:  8b4e0c                mov      ecx, dword ptr [esi + 0xc]   <- ecx=this?
+      [328] 0x1000df90:  8b01                  mov      eax, dword ptr [ecx]   <- eax?
+      [329] 0x1000df92:  8b500c                mov      edx, dword ptr [eax + 0xc]   <- edx?
+  >>> [330] 0x1000df95:  ffd2                  call     edx   <- call
+      [331] 0x1000df97:  33c9                  xor      ecx, ecx
+      [332] 0x1000df99:  85c0                  test     eax, eax
+      [333] 0x1000df9b:  0f9dc1                setge    cl
+      [334] 0x1000df9e:  83e901                sub      ecx, 1
+      [335] 0x1000dfa1:  8bc1                  mov      eax, ecx   <- eax?
+      [336] 0x1000dfa3:  59                    pop      ecx
+      [337] 0x1000dfa4:  c3                    ret      
+      [338] 0x1000dfa5:  cc                    int3     
+      [339] 0x1000dfa6:  cc                    int3     
+      [340] 0x1000dfa7:  cc                    int3     
+      [341] 0x1000dfa8:  cc                    int3     
+      [342] 0x1000dfa9:  cc                    int3     
+      [343] 0x1000dfaa:  cc                    int3     
+      [344] 0x1000dfab:  cc                    int3     
+      [345] 0x1000dfac:  cc                    int3     
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, dword ptr [esi + 0xc]
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (3 条):
+      -> [push] 0x1000df7c: push ecx
+      -> [mov [esp+...]] 0x1000df7f: mov dword ptr [esp + 4], esp
+      -> [push] 0x1000df83: push 0x10046520
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+====================================================================================================
+### FUN_1000df70 @ RVA 0xDF70  (VA 0x1000DF70)  [vtable[3] get_version (+0xc)]
+    总指令数: 81
+====================================================================================================
+
+---- vtable[3] call @ 0x1000df95 (insn idx 14) ----
+      [  0] 0x1000df70:  51                    push     ecx
+      [  1] 0x1000df71:  837e0c00              cmp      dword ptr [esi + 0xc], 0
+      [  2] 0x1000df75:  7505                  jne      0x1000df7c
+      [  3] 0x1000df77:  83c8ff                or       eax, 0xffffffff
+      [  4] 0x1000df7a:  59                    pop      ecx
+      [  5] 0x1000df7b:  c3                    ret      
+      [  6] 0x1000df7c:  51                    push     ecx
+      [  7] 0x1000df7d:  8bcc                  mov      ecx, esp   <- ecx=this?
+      [  8] 0x1000df7f:  89642404              mov      dword ptr [esp + 4], esp
+      [  9] 0x1000df83:  6820650410            push     0x10046520
+      [ 10] 0x1000df88:  e88340ffff            call     0x10002010   <- call
+      [ 11] 0x1000df8d:  8b4e0c                mov      ecx, dword ptr [esi + 0xc]   <- ecx=this?
+      [ 12] 0x1000df90:  8b01                  mov      eax, dword ptr [ecx]   <- eax?
+      [ 13] 0x1000df92:  8b500c                mov      edx, dword ptr [eax + 0xc]   <- edx?
+  >>> [ 14] 0x1000df95:  ffd2                  call     edx   <- call
+      [ 15] 0x1000df97:  33c9                  xor      ecx, ecx
+      [ 16] 0x1000df99:  85c0                  test     eax, eax
+      [ 17] 0x1000df9b:  0f9dc1                setge    cl
+      [ 18] 0x1000df9e:  83e901                sub      ecx, 1
+      [ 19] 0x1000dfa1:  8bc1                  mov      eax, ecx   <- eax?
+      [ 20] 0x1000dfa3:  59                    pop      ecx
+      [ 21] 0x1000dfa4:  c3                    ret      
+      [ 22] 0x1000dfa5:  cc                    int3     
+      [ 23] 0x1000dfa6:  cc                    int3     
+      [ 24] 0x1000dfa7:  cc                    int3     
+      [ 25] 0x1000dfa8:  cc                    int3     
+      [ 26] 0x1000dfa9:  cc                    int3     
+      [ 27] 0x1000dfaa:  cc                    int3     
+      [ 28] 0x1000dfab:  cc                    int3     
+      [ 29] 0x1000dfac:  cc                    int3     
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, dword ptr [esi + 0xc]
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (3 条):
+      -> [push] 0x1000df7c: push ecx
+      -> [mov [esp+...]] 0x1000df7f: mov dword ptr [esp + 4], esp
+      -> [push] 0x1000df83: push 0x10046520
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+====================================================================================================
+### FUN_1000dfb0 @ RVA 0xDFB0  (VA 0x1000DFB0)  [vtable[6] get_packageType (+0x18)]
+    总指令数: 373
+====================================================================================================
+
+---- vtable[6] call @ 0x1000e35e (insn idx 282) ----
+      [267] 0x1000e332:  e8c9600100            call     0x10024400   <- call
+      [268] 0x1000e337:  83c404                add      esp, 4   <- esp adjust
+      [269] 0x1000e33a:  8b44240c              mov      eax, dword ptr [esp + 0xc]   <- eax?
+      [270] 0x1000e33e:  51                    push     ecx
+      [271] 0x1000e33f:  83c0f0                add      eax, -0x10
+      [272] 0x1000e342:  89642430              mov      dword ptr [esp + 0x30], esp
+      [273] 0x1000e346:  8bf4                  mov      esi, esp
+      [274] 0x1000e348:  50                    push     eax
+      [275] 0x1000e349:  e8c244ffff            call     0x10002810   <- call
+      [276] 0x1000e34e:  83c010                add      eax, 0x10
+      [277] 0x1000e351:  8906                  mov      dword ptr [esi], eax
+      [278] 0x1000e353:  8b4f0c                mov      ecx, dword ptr [edi + 0xc]   <- ecx=this?
+      [279] 0x1000e356:  8b11                  mov      edx, dword ptr [ecx]   <- edx?
+      [280] 0x1000e358:  8b4218                mov      eax, dword ptr [edx + 0x18]   <- eax?
+      [281] 0x1000e35b:  83c404                add      esp, 4   <- esp adjust
+  >>> [282] 0x1000e35e:  ffd0                  call     eax   <- call
+      [283] 0x1000e360:  85c0                  test     eax, eax
+      [284] 0x1000e362:  8d4c2420              lea      ecx, [esp + 0x20]
+      [285] 0x1000e366:  7d40                  jge      0x1000e3a8
+      [286] 0x1000e368:  e8633dffff            call     0x100020d0   <- call
+      [287] 0x1000e36d:  8d4c2424              lea      ecx, [esp + 0x24]
+      [288] 0x1000e371:  e85a3dffff            call     0x100020d0   <- call
+      [289] 0x1000e376:  8d4c2414              lea      ecx, [esp + 0x14]
+      [290] 0x1000e37a:  e8513dffff            call     0x100020d0   <- call
+      [291] 0x1000e37f:  8d4c241c              lea      ecx, [esp + 0x1c]
+      [292] 0x1000e383:  e8483dffff            call     0x100020d0   <- call
+      [293] 0x1000e388:  8d4c240c              lea      ecx, [esp + 0xc]
+      [294] 0x1000e38c:  e83f3dffff            call     0x100020d0   <- call
+      [295] 0x1000e391:  8d4c2418              lea      ecx, [esp + 0x18]
+      [296] 0x1000e395:  e8363dffff            call     0x100020d0   <- call
+      [297] 0x1000e39a:  8d4c2410              lea      ecx, [esp + 0x10]
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, dword ptr [edi + 0xc]
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (2 条):
+      -> [mov [esp+...]] 0x1000e342: mov dword ptr [esp + 0x30], esp
+      -> [push] 0x1000e348: push eax
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+====================================================================================================
+### FUN_1000e870 @ RVA 0xE870  (VA 0x1000E870)  [vtable[5] get_revision (+0x14)]
+    总指令数: 433
+====================================================================================================
+
+---- vtable[3] call @ 0x1000e8e4 (insn idx 36) ----
+      [ 21] 0x1000e8b1:  8d7810                lea      edi, [eax + 0x10]
+      [ 22] 0x1000e8b4:  83c404                add      esp, 4   <- esp adjust
+      [ 23] 0x1000e8b7:  897c2428              mov      dword ptr [esp + 0x28], edi
+      [ 24] 0x1000e8bb:  c744243c00000000      mov      dword ptr [esp + 0x3c], 0
+      [ 25] 0x1000e8c3:  e8a9830000            call     0x10016c71   <- call
+      [ 26] 0x1000e8c8:  33c9                  xor      ecx, ecx
+      [ 27] 0x1000e8ca:  85c0                  test     eax, eax
+      [ 28] 0x1000e8cc:  0f95c1                setne    cl
+      [ 29] 0x1000e8cf:  85c9                  test     ecx, ecx
+      [ 30] 0x1000e8d1:  750a                  jne      0x1000e8dd
+      [ 31] 0x1000e8d3:  6805400080            push     0x80004005
+      [ 32] 0x1000e8d8:  e8b327ffff            call     0x10001090   <- call
+      [ 33] 0x1000e8dd:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [ 34] 0x1000e8df:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [ 35] 0x1000e8e1:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+  >>> [ 36] 0x1000e8e4:  ffd0                  call     eax   <- call
+      [ 37] 0x1000e8e6:  83c010                add      eax, 0x10
+      [ 38] 0x1000e8e9:  89442414              mov      dword ptr [esp + 0x14], eax
+      [ 39] 0x1000e8ed:  c644243c01            mov      byte ptr [esp + 0x3c], 1
+      [ 40] 0x1000e8f2:  e87a830000            call     0x10016c71   <- call
+      [ 41] 0x1000e8f7:  33c9                  xor      ecx, ecx
+      [ 42] 0x1000e8f9:  85c0                  test     eax, eax
+      [ 43] 0x1000e8fb:  0f95c1                setne    cl
+      [ 44] 0x1000e8fe:  85c9                  test     ecx, ecx
+      [ 45] 0x1000e900:  750a                  jne      0x1000e90c
+      [ 46] 0x1000e902:  6805400080            push     0x80004005
+      [ 47] 0x1000e907:  e88427ffff            call     0x10001090   <- call
+      [ 48] 0x1000e90c:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [ 49] 0x1000e90e:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [ 50] 0x1000e910:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+      [ 51] 0x1000e913:  ffd0                  call     eax   <- call
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, eax
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (1 条):
+      -> [push] 0x1000e8d3: push 0x80004005
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+---- vtable[3] call @ 0x1000e913 (insn idx 51) ----
+      [ 36] 0x1000e8e4:  ffd0                  call     eax   <- call
+      [ 37] 0x1000e8e6:  83c010                add      eax, 0x10
+      [ 38] 0x1000e8e9:  89442414              mov      dword ptr [esp + 0x14], eax
+      [ 39] 0x1000e8ed:  c644243c01            mov      byte ptr [esp + 0x3c], 1
+      [ 40] 0x1000e8f2:  e87a830000            call     0x10016c71   <- call
+      [ 41] 0x1000e8f7:  33c9                  xor      ecx, ecx
+      [ 42] 0x1000e8f9:  85c0                  test     eax, eax
+      [ 43] 0x1000e8fb:  0f95c1                setne    cl
+      [ 44] 0x1000e8fe:  85c9                  test     ecx, ecx
+      [ 45] 0x1000e900:  750a                  jne      0x1000e90c
+      [ 46] 0x1000e902:  6805400080            push     0x80004005
+      [ 47] 0x1000e907:  e88427ffff            call     0x10001090   <- call
+      [ 48] 0x1000e90c:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [ 49] 0x1000e90e:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [ 50] 0x1000e910:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+  >>> [ 51] 0x1000e913:  ffd0                  call     eax   <- call
+      [ 52] 0x1000e915:  83c010                add      eax, 0x10
+      [ 53] 0x1000e918:  8944241c              mov      dword ptr [esp + 0x1c], eax
+      [ 54] 0x1000e91c:  c644243c02            mov      byte ptr [esp + 0x3c], 2
+      [ 55] 0x1000e921:  e84b830000            call     0x10016c71   <- call
+      [ 56] 0x1000e926:  33c9                  xor      ecx, ecx
+      [ 57] 0x1000e928:  85c0                  test     eax, eax
+      [ 58] 0x1000e92a:  0f95c1                setne    cl
+      [ 59] 0x1000e92d:  85c9                  test     ecx, ecx
+      [ 60] 0x1000e92f:  750a                  jne      0x1000e93b
+      [ 61] 0x1000e931:  6805400080            push     0x80004005
+      [ 62] 0x1000e936:  e85527ffff            call     0x10001090   <- call
+      [ 63] 0x1000e93b:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [ 64] 0x1000e93d:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [ 65] 0x1000e93f:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+      [ 66] 0x1000e942:  ffd0                  call     eax   <- call
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, eax
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (1 条):
+      -> [push] 0x1000e902: push 0x80004005
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+---- vtable[3] call @ 0x1000e942 (insn idx 66) ----
+      [ 51] 0x1000e913:  ffd0                  call     eax   <- call
+      [ 52] 0x1000e915:  83c010                add      eax, 0x10
+      [ 53] 0x1000e918:  8944241c              mov      dword ptr [esp + 0x1c], eax
+      [ 54] 0x1000e91c:  c644243c02            mov      byte ptr [esp + 0x3c], 2
+      [ 55] 0x1000e921:  e84b830000            call     0x10016c71   <- call
+      [ 56] 0x1000e926:  33c9                  xor      ecx, ecx
+      [ 57] 0x1000e928:  85c0                  test     eax, eax
+      [ 58] 0x1000e92a:  0f95c1                setne    cl
+      [ 59] 0x1000e92d:  85c9                  test     ecx, ecx
+      [ 60] 0x1000e92f:  750a                  jne      0x1000e93b
+      [ 61] 0x1000e931:  6805400080            push     0x80004005
+      [ 62] 0x1000e936:  e85527ffff            call     0x10001090   <- call
+      [ 63] 0x1000e93b:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [ 64] 0x1000e93d:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [ 65] 0x1000e93f:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+  >>> [ 66] 0x1000e942:  ffd0                  call     eax   <- call
+      [ 67] 0x1000e944:  83c010                add      eax, 0x10
+      [ 68] 0x1000e947:  89442418              mov      dword ptr [esp + 0x18], eax
+      [ 69] 0x1000e94b:  6a26                  push     0x26
+      [ 70] 0x1000e94d:  6828850410            push     0x10048528
+      [ 71] 0x1000e952:  8d4c241c              lea      ecx, [esp + 0x1c]
+      [ 72] 0x1000e956:  c644244403            mov      byte ptr [esp + 0x44], 3
+      [ 73] 0x1000e95b:  e8b03dffff            call     0x10002710   <- call
+      [ 74] 0x1000e960:  6a07                  push     7
+      [ 75] 0x1000e962:  6820650410            push     0x10046520
+      [ 76] 0x1000e967:  8d4c2424              lea      ecx, [esp + 0x24]
+      [ 77] 0x1000e96b:  e8a03dffff            call     0x10002710   <- call
+      [ 78] 0x1000e970:  6a0c                  push     0xc
+      [ 79] 0x1000e972:  6804650410            push     0x10046504
+      [ 80] 0x1000e977:  8d4c2420              lea      ecx, [esp + 0x20]
+      [ 81] 0x1000e97b:  e8903dffff            call     0x10002710   <- call
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, eax
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (1 条):
+      -> [push] 0x1000e931: push 0x80004005
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+---- vtable[5] call @ 0x1000ea11 (insn idx 128) ----
+      [113] 0x1000e9e0:  c644244405            mov      byte ptr [esp + 0x44], 5
+      [114] 0x1000e9e5:  8b7c2424              mov      edi, dword ptr [esp + 0x24]
+      [115] 0x1000e9e9:  83c7f0                add      edi, -0x10
+      [116] 0x1000e9ec:  89642438              mov      dword ptr [esp + 0x38], esp
+      [117] 0x1000e9f0:  8bdc                  mov      ebx, esp
+      [118] 0x1000e9f2:  57                    push     edi
+      [119] 0x1000e9f3:  e8183effff            call     0x10002810   <- call
+      [120] 0x1000e9f8:  8b4c2450              mov      ecx, dword ptr [esp + 0x50]   <- ecx=this?
+      [121] 0x1000e9fc:  83c010                add      eax, 0x10
+      [122] 0x1000e9ff:  8903                  mov      dword ptr [ebx], eax
+      [123] 0x1000ea01:  8b490c                mov      ecx, dword ptr [ecx + 0xc]   <- ecx=this?
+      [124] 0x1000ea04:  8b01                  mov      eax, dword ptr [ecx]   <- eax?
+      [125] 0x1000ea06:  8b5014                mov      edx, dword ptr [eax + 0x14]   <- edx?
+      [126] 0x1000ea09:  83c404                add      esp, 4   <- esp adjust
+      [127] 0x1000ea0c:  c644244403            mov      byte ptr [esp + 0x44], 3
+  >>> [128] 0x1000ea11:  ffd2                  call     edx   <- call
+      [129] 0x1000ea13:  85c0                  test     eax, eax
+      [130] 0x1000ea15:  c644243c02            mov      byte ptr [esp + 0x3c], 2
+      [131] 0x1000ea1a:  0f8d80000000          jge      0x1000eaa0
+      [132] 0x1000ea20:  8d460c                lea      eax, [esi + 0xc]
+      [133] 0x1000ea23:  83c9ff                or       ecx, 0xffffffff
+      [134] 0x1000ea26:  f00fc108              lock xadd dword ptr [eax], ecx
+      [135] 0x1000ea2a:  49                    dec      ecx
+      [136] 0x1000ea2b:  85c9                  test     ecx, ecx
+      [137] 0x1000ea2d:  7f0a                  jg       0x1000ea39
+      [138] 0x1000ea2f:  8b0e                  mov      ecx, dword ptr [esi]   <- ecx=this?
+      [139] 0x1000ea31:  8b11                  mov      edx, dword ptr [ecx]   <- edx?
+      [140] 0x1000ea33:  8b4204                mov      eax, dword ptr [edx + 4]   <- eax?
+      [141] 0x1000ea36:  56                    push     esi
+      [142] 0x1000ea37:  ffd0                  call     eax   <- call
+      [143] 0x1000ea39:  c644243c01            mov      byte ptr [esp + 0x3c], 1
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, dword ptr [ecx + 0xc]
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (2 条):
+      -> [push] 0x1000e9f2: push edi
+      -> [mov [esp+...]] 0x1000ea0c: mov byte ptr [esp + 0x44], 3
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)
+
+---- vtable[3] call @ 0x1000ece2 (insn idx 390) ----
+      [375] 0x1000ecb4:  33c4                  xor      eax, esp
+      [376] 0x1000ecb6:  50                    push     eax
+      [377] 0x1000ecb7:  8d442408              lea      eax, [esp + 8]
+      [378] 0x1000ecbb:  64a300000000          mov      dword ptr fs:[0], eax
+      [379] 0x1000ecc1:  e8ab7f0000            call     0x10016c71   <- call
+      [380] 0x1000ecc6:  33c9                  xor      ecx, ecx
+      [381] 0x1000ecc8:  85c0                  test     eax, eax
+      [382] 0x1000ecca:  0f95c1                setne    cl
+      [383] 0x1000eccd:  85c9                  test     ecx, ecx
+      [384] 0x1000eccf:  750a                  jne      0x1000ecdb
+      [385] 0x1000ecd1:  6805400080            push     0x80004005
+      [386] 0x1000ecd6:  e8b523ffff            call     0x10001090   <- call
+      [387] 0x1000ecdb:  8b10                  mov      edx, dword ptr [eax]   <- edx?
+      [388] 0x1000ecdd:  8bc8                  mov      ecx, eax   <- ecx=this?
+      [389] 0x1000ecdf:  8b420c                mov      eax, dword ptr [edx + 0xc]   <- eax?
+  >>> [390] 0x1000ece2:  ffd0                  call     eax   <- call
+      [391] 0x1000ece4:  83c010                add      eax, 0x10
+      [392] 0x1000ece7:  89442404              mov      dword ptr [esp + 4], eax
+      [393] 0x1000eceb:  6a14                  push     0x14
+      [394] 0x1000eced:  8d4c2408              lea      ecx, [esp + 8]
+      [395] 0x1000ecf1:  51                    push     ecx
+      [396] 0x1000ecf2:  c744241800000000      mov      dword ptr [esp + 0x18], 0
+      [397] 0x1000ecfa:  e8a1000000            call     0x1000eda0   <- call
+      [398] 0x1000ecff:  8b542404              mov      edx, dword ptr [esp + 4]   <- edx?
+      [399] 0x1000ed03:  837af400              cmp      dword ptr [edx - 0xc], 0
+      [400] 0x1000ed07:  7452                  je       0x1000ed5b
+      [401] 0x1000ed09:  8b44241c              mov      eax, dword ptr [esp + 0x1c]   <- eax?
+      [402] 0x1000ed0d:  8b542418              mov      edx, dword ptr [esp + 0x18]   <- edx?
+      [403] 0x1000ed11:  50                    push     eax
+      [404] 0x1000ed12:  8d4c2408              lea      ecx, [esp + 8]
+      [405] 0x1000ed16:  e875020000            call     0x1000ef90   <- call
+
+  [推断调用约定]
+    ecx 是否被设置 (thiscall 特征): True
+      -> mov ecx, eax
+    edx 是否被设置 (fastcall/thiscall2 特征): True
+    栈参数传递 (1 条):
+      -> [push] 0x1000ecd1: push 0x80004005
+    call 后 esp 是否被 add 调整 (cdecl 标志): 否（stdcall/thiscall: 被调用方清栈）
+
+    ==> 综合判断: __thiscall (ecx=this, 额外参数通过栈传递, 被调用方清栈)

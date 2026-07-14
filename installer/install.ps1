@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     ensp-vbox-shim 一键安装器 —— 让原版华为 eNSP 跑在 VirtualBox 7.x 上。
 
@@ -42,7 +42,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # ---------------------------------------------------------------------------
 $CLSID_VBOX   = "{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}"  # CLSID_VirtualBox
 $DLL_NAME     = "VBox52.dll"
-$DLL_SHA256       = "73c89b3ee1efda481d7b1c57bc12f59a78b8c0ce9ae9067be67360d1dab7cb18"
+$DLL_SHA256       = "40dad121b2efd321fac2d8de7156f3ac62f3503498686f79aa5505eb571acb20"
 $VARP_SHA256      = "f0107975ba1b04325af2d31189ee92833233c1163f4553600207789977f94451"
 
 # VC++ 运行时(x86)—— error 40 / 0x800700C1 的修法。

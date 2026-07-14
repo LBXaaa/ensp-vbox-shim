@@ -4,6 +4,13 @@ build/*.lib
 build/*.exp
 build/*.pdb
 build/*.ilk
+build/*.b64
+build/chunk_*
+build/MSVCP140.dll
+build/VCRUNTIME140.dll
+
+# Windows reserved name artifact (created accidentally by redirect to NUL)
+nul
 
 # Patcher backups
 *.bak
@@ -27,3 +34,8 @@ desktop.ini
 
 # Release artifacts (uploaded to GitHub Releases, not tracked in-repo)
 Releases/
+
+# Crash dumps and large RE binaries (kept on disk, not tracked)
+*.dmp
+analysis/ngfw/*.dll
+analysis/ngfw/*.exe

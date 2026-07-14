@@ -903,18 +903,19 @@ static void log_createprocess(LPCWSTR app, LPCWSTR cmd) {
     DBG("[Hook] CreateProcessW: app='%s' cmd='%s'", abuf, cbuf);
 }
 
-// If cmd is a modifyvm with --uartmode2 but no --uart2, inject --uart2 0x2F8 3.
+// If cmd is a modifyvm with --uartmode2 but no --uart2, inject native UART2 enable only.
+// 实测确认：clonevm 已正确继承模板的 longmode/apic/ioapic/chipset 配置，
+// 注入 CPU 选项反而触发 VBox 7.2 "Limiting firmware APIC" 逻辑导致启动失败。
+// 只需确保 uart2 (COM2, 0x2F8) 启用，eNSP 才能读到管道上的私有协议数据。
 // Returns a new alloc'd wide string (caller frees) or NULL (no modification needed).
-static LPWSTR inject_uart2(LPCWSTR cmd) {
+static LPWSTR inject_vm_config(LPCWSTR cmd) {
     if (!cmd) return NULL;
-    // Must contain "modifyvm" and "--uartmode2"
     if (!wcsstr(cmd, L"modifyvm")) return NULL;
     const wchar_t* p_mode2 = wcsstr(cmd, L"--uartmode2");
     if (!p_mode2) return NULL;
-    // Must NOT already contain --uart2
     if (wcsstr(cmd, L"--uart2")) return NULL;
-    // Insert " --uart2 0x2F8 3" before "--uartmode2"
-    const wchar_t* insert = L" --uart2 0x2F8 3 ";
+    // Native uart2 enable only (space-separated IO base IRQ, per VBox 7.2 syntax)
+    const wchar_t* insert = L" --uart2 0x2f8 3 ";
     size_t prefix_len = p_mode2 - cmd;
     size_t insert_len = wcslen(insert);
     size_t suffix_len = wcslen(p_mode2);
@@ -924,7 +925,7 @@ static LPWSTR inject_uart2(LPCWSTR cmd) {
     memcpy(modified, cmd, prefix_len * sizeof(wchar_t));
     memcpy(modified + prefix_len, insert, insert_len * sizeof(wchar_t));
     wcscpy(modified + prefix_len + insert_len, p_mode2);
-    DBG("[Hook] UART2 injected: '%S'", modified);
+    DBG("[Hook] VM config injected: '%S'", modified);
     return modified;
 }
 
@@ -934,8 +935,8 @@ static BOOL __stdcall CreateProcessWHook(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATT
     // Log the call (both app and cmd)
     log_createprocess(app, cmd);
 
-    // Inject UART2 enable if needed
-    LPWSTR modified_cmd = inject_uart2(cmd);
+    // Inject full VM config (longmode/apic/chipset/uart swap) if needed
+    LPWSTR modified_cmd = inject_vm_config(cmd);
     LPWSTR exec_cmd = modified_cmd ? modified_cmd : cmd;
 
     // Uninstall detour to call the real function (brief window; acceptable
