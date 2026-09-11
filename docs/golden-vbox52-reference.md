@@ -247,12 +247,76 @@ machine uuid 与 5.2 黄金跑完全一致 `{12ec8fd1-…}`),但**没有把它�
 注册动作在 5.2 上经由 COM 完成,但 7.2 + 垫片上**方法区槽位 `[25]`–`[49]` 一次都没被调用**
 (`[DIAG]` 只出现属性 getter)。因此注册不是经由垫片的方法区 thunk 发出的。
 
-待查方向:
-1. 垫片把 `[4]`/`[5]`/`[6]` 三个槽改成了返回 `ngfw_notfound`/`ngfw_ok` 的桩
-   (为了让 `FUN_1000dbe0` 的版本探测链通过)。**若插件除版本探测外还用这三个槽
-   做别的事,这些调用会被静默吞掉。** 需要确认这三个槽在真品里的完整语义。
-2. `ngfw_Plugin.dll+0xE47D` 宿主函数在 slot[1] 返回"未找到"后走的那条分支
-   (`jne 0x1000e4b5` 之后的代码),需要与 5.2 的实际行为逐条比对。
-
 原始日志存于 `analysis/golden52/`;本次对照实验的 `[clonestk]` 快照见
 `vbox52_proxy.log`。
+
+---
+
+## 九、惰性注册:实测结论与 vtable 索引更正(2026-09-12)
+
+沿 8.3 的线索动手:既然注册是 COM 调用而垫片的方法区 thunk 没被调用,那就**由垫片
+自己发起**这次注册。触发点定在插件的克隆前置探测(proxy slot[1])报告"不存在"时 ——
+插件此时已把 `tools\ngfw\vfw_usg.vbox` 写到磁盘上。
+
+### 9.1 OpenMachine / RegisterMachine 的真实索引是 [51] / [52]
+
+先按项目表试 `[39]`/`[40]`,实测:
+
+```
+[lazyreg] openMachine[39]('...vfw_usg.vbox') hr=0x80004001 machine=74517ED0
+```
+
+`0x80004001` 是 `E_NOTIMPL`,只有保留属性/保留方法才会这么返回。更糟的是
+`[39]` 的真实形状是**单参 `(ULONG *retval)` 属性读取器**:它把传进去的路径 BSTR
+当成输出指针写,随后 `SysFreeString` 触发写入 0 地址的 AV,`eNSP_VBoxServer.exe`
+当场退出、eNSP 界面卡在 0%。崩溃现场 `EIP` 落在路径字符串里,`EAX=80004001`,
+与该解释完全吻合。
+
+改用 SDK typelib 的索引后:
+
+```
+[lazyreg] openMachine[51]('...vfw_usg.vbox') hr=0x00000000 machine=007BEE5C
+[lazyreg] registerMachine[52] hr=0x00000000
+[lazyreg] registered via [51]/[52]
+[clonecheck] re-check after lazy registration: hr=0x00000000
+```
+
+两次调用均返回 `S_OK`,`vfw_usg` 随即出现在 `VBoxManage list vms` 中。
+
+**⇒ 7.2.8 的 `OpenMachine` = `[51]`,`RegisterMachine` = `[52]`。**
+项目自身表里的 `[39]`/`[40]` 偏低 12,与 `analysis/output/vbox728_vtable.md`
+(SDK typelib 解析,方法区从 48 起)一致,而 `CLAUDE.md` 的 7.2 方法表漏掉了
+`[36]`–`[47]` 这段 12 个保留属性。
+
+**遗留矛盾(未解)**:`patches/var_plugin_ar1000v.md` 用的是同一张偏低 12 的表
+(如 `findMachine 37→41`),而 AR 设备实测可用。两种可能:该插件实际未走到那些
+调用点,或其可用性与补丁无关。**在弄清之前不要据本文结论去改 AR 补丁。**
+
+### 9.2 只注册还不够 —— 必须同时补 `_Link` 快照
+
+注册成功后链路确实往前走了,命令一路到:
+
+```
+clonevm vfw_usg --snapshot vfw_usg_Link --options link ... --register
+modifyvm <clone> --uart1 off
+modifyvm <clone> --uart2 0x2f8 3 --uartmode2 server \\.\pipe\...
+startvm  <clone> --type headless
+controlvm <clone> poweroff
+```
+
+但仍以 error 40 收场,插件日志:
+
+```
+[ERROR]CAgentStaticCfgProcess::Startup - Failed to create pipe.errorcode=2
+```
+
+**根因**:`vfw_usg` 没有任何快照(`This machine does not have any snapshots`),
+而整轮里 `snapshot ... delete` / `snapshot ... take` 一次都没出现。
+
+插件日志给出了原因 —— 开头两行 `Device has already existed.`。`FUN_1000eb40`
+的第一分支是"设备已存在则短路返回",**该短路假设 VM 已经准备妥当,包括
+`<base>_Link` 快照**。提前注册使插件走了这条短路,于是跳过它本该执行的两步建快照。
+
+⇒ 惰性注册必须把 VM 留在短路分支所假设的状态:**注册 + 补 `<base>_Link` 快照**。
+补快照经由 `VBoxManage snapshot <base> take <base>_Link` 同步执行;同名快照
+`take` 会失败但无害,因此无需存在性检查,每进程只尝试一次。
