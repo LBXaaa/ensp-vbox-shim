@@ -402,6 +402,272 @@ static BSTR cstring_to_bstr(const wchar_t* cdata) {
     return SysAllocStringLen(cdata, (UINT)nLen);
 }
 
+// Raw-stack snapshot for the disputed slot[1] arity. See the header comment on
+// thunk_clone_check in vbox52_thunks.asm: the genuine slot[1] is `mov eax,2;
+// ret 4` while our thunk reads three stack dwords and ends `ret 0Ch`. Exactly
+// one of those is right, and the loser skews the caller's stack by 8 bytes.
+//
+// `esp` points at the caller's return address. Resolving that address to
+// module+offset lets the call site be disassembled and the pushes counted --
+// which settles the arity outright, instead of inferring it from whether the
+// dwords happen to look like the right strings (the caller has just built
+// exactly those strings, so residue and arguments look identical).
+extern "C" void __stdcall diag_clone_stack(void* esp) {
+    DWORD* s = (DWORD*)esp;
+
+    DWORD ret = s[0];
+    char mod[64] = "?";
+    DWORD rva = 0;
+    HMODULE h = NULL;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)(DWORD_PTR)ret, &h) && h) {
+        WCHAR wpath[MAX_PATH] = {0};
+        GetModuleFileNameW(h, wpath, MAX_PATH);
+        const WCHAR* p = wcsrchr(wpath, L'\\');
+        p = p ? p + 1 : wpath;
+        // narrow, ASCII-safe for the log
+        int i = 0;
+        for (; p[i] && i < 63; i++) mod[i] = (char)p[i];
+        mod[i] = 0;
+        rva = ret - (DWORD)(DWORD_PTR)h;
+    }
+
+    DBG("[clonestk] esp=%p ret=%p (%s+0x%lX)", esp, (void*)ret, mod, rva);
+    DBG("[clonestk]   [0]=%08lX [1]=%08lX [2]=%08lX [3]=%08lX [4]=%08lX [5]=%08lX [6]=%08lX [7]=%08lX",
+        s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+}
+
+// ===== Lazy registration of the NGFW base VM =====
+//
+// Why this exists
+// ---------------
+// Starting USG6000V needs a registered VM `vfw_usg` plus a `vfw_usg_Link`
+// snapshot; eNSP then runs
+//     clonevm vfw_usg --snapshot vfw_usg_Link --options link ... --register
+//
+// On the factory VBox 5.2 an eNSP component performs that registration itself,
+// via COM, in the middle of the device-start chain (measured: the registry
+// gains `vfw_usg` in the same second as the `snapshot ... delete` shell-out,
+// with no `registervm` command line anywhere -- see
+// docs/golden-vbox52-reference.md). Under this shim that step does not happen,
+// so the clone has no source and eNSP reports error 40.
+//
+// What this does
+// --------------
+// The plugin generates tools\ngfw\vfw_usg\vfw_usg.vbox itself before it needs
+// the VM. So when eNSP asks "does <base> exist?" (proxy slot[1], ~3 times per
+// start) and the answer is no while that .vbox is already on disk, this
+// registers it on the spot. eNSP's own chain then does everything else --
+// snapshot, clonevm, startvm -- exactly as it does on 5.2.
+//
+// The index pair is probed rather than assumed: the project's own table maps
+// openMachine/registerMachine to 7.2 [39]/[40], while the SDK type library
+// places them at [51]/[52]. Both are attempted and the HRESULT of each logged,
+// so one run settles which is right.
+
+// Collect existing settings-file candidates for `base`.
+//
+// The settings file the plugin generates lives directly in tools\ngfw\ :
+//     <root>\plugin\ngfw\tools\ngfw\<base>.vbox
+// The plugin's own directory is on the same level, so the root is derived from
+// this DLL's own location. Four load locations exist; all four are tried.
+// A <base>\ subdirectory form is probed too -- that layout shows up on hosts
+// where VirtualBox has already reorganised the machine folder.
+static void ensp_settings_candidates(const wchar_t* base, wchar_t out[][MAX_PATH], int* count) {
+    *count = 0;
+    if (!base || !base[0]) return;
+
+    wchar_t self[MAX_PATH] = {0};
+    HMODULE h = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCWSTR)&ensp_settings_candidates, &h);
+    if (!h || !GetModuleFileNameW(h, self, MAX_PATH)) return;
+
+    wchar_t dir[MAX_PATH];
+    wcsncpy(dir, self, MAX_PATH); dir[MAX_PATH-1] = 0;
+    wchar_t* slash = wcsrchr(dir, L'\\');
+    if (slash) *slash = 0;
+
+    // Walk up 0..5 levels; one of them is the eNSP root for any load location.
+    wchar_t roots[6][MAX_PATH];
+    wcsncpy(roots[0], dir, MAX_PATH); roots[0][MAX_PATH-1] = 0;
+    for (int i = 1; i < 6; i++) {
+        wcsncpy(roots[i], roots[i-1], MAX_PATH); roots[i][MAX_PATH-1] = 0;
+        wchar_t* s = wcsrchr(roots[i], L'\\');
+        if (!s) { roots[i][0] = 0; continue; }
+        *s = 0;
+    }
+
+    int n = 0;
+    for (int i = 0; i < 6 && n < 8; i++) {
+        if (!roots[i][0]) continue;
+        const wchar_t* shapes[2] = {
+            L"%s\\plugin\\ngfw\\tools\\ngfw\\%s.vbox",
+            L"%s\\plugin\\ngfw\\tools\\ngfw\\%s\\%s.vbox",
+        };
+        for (int sh = 0; sh < 2 && n < 8; sh++) {
+            wchar_t cand[MAX_PATH];
+            _snwprintf(cand, MAX_PATH, shapes[sh], roots[i], base, base);
+            cand[MAX_PATH-1] = 0;
+            if (GetFileAttributesW(cand) == INVALID_FILE_ATTRIBUTES) continue;
+            bool dup = false;
+            for (int k = 0; k < n; k++) if (_wcsicmp(out[k], cand) == 0) dup = true;
+            if (!dup) { wcsncpy(out[n], cand, MAX_PATH); out[n][MAX_PATH-1] = 0; n++; }
+        }
+    }
+    *count = n;
+}
+
+// Try one (openMachine, registerMachine) index pair. Returns S_OK on success.
+static HRESULT try_register_pair(IUnknown* realVBox, const wchar_t* vboxPath,
+                                 int openIdx, int regIdx) {
+    void** vt = *(void***)realVBox;
+    if (!vt || !vt[openIdx] || !vt[regIdx]) return E_FAIL;
+
+    typedef HRESULT (__stdcall *OpenFn)(IUnknown*, BSTR, BSTR, IUnknown**);
+    typedef HRESULT (__stdcall *RegFn)(IUnknown*, IUnknown*);
+
+    BSTR p = SysAllocString(vboxPath);
+    IUnknown* machine = NULL;
+    HRESULT hrOpen = ((OpenFn)vt[openIdx])(realVBox, p, NULL, &machine);
+    if (p) SysFreeString(p);
+    DBG("[lazyreg] openMachine[%d]('%S') hr=0x%08lX machine=%p", openIdx, vboxPath, hrOpen, machine);
+    if (FAILED(hrOpen) || !machine) return FAILED(hrOpen) ? hrOpen : E_FAIL;
+
+    HRESULT hrReg = ((RegFn)vt[regIdx])(realVBox, machine);
+    DBG("[lazyreg] registerMachine[%d] hr=0x%08lX", regIdx, hrReg);
+    // registerMachine addrefs internally; drop our reference either way.
+    machine->Release();
+    return hrReg;
+}
+
+// Returns true if `base` ended up registered (or was already).
+static bool ngfw_ensure_registered(IUnknown* realVBox, const wchar_t* base) {
+    if (!realVBox || !base || !base[0]) return false;
+
+    // Only for the NGFW base VM, and only when the plugin has already written
+    // its settings file. Registering before that would either fail or record a
+    // settings file whose disk does not exist yet.
+    wchar_t cand[8][MAX_PATH];
+    int n = 0;
+    ensp_settings_candidates(base, cand, &n);
+    if (n == 0) { DBG("[lazyreg] no settings file for '%S' yet", base); return false; }
+
+    for (int i = 0; i < n; i++) {
+        DBG("[lazyreg] candidate settings file: %S", cand[i]);
+        // Only the type-library indices. The project's own table puts these at
+        // [39]/[40], but probing [39] measurably returns E_NOTIMPL and takes the
+        // BSTR down with it: 7.2's [39] is InternalAndReservedAttribute3, a
+        // one-argument (ULONG *retval) property getter, so it treats the path
+        // BSTR as its out pointer and writes into it. Freeing that BSTR then
+        // faults (observed: AV WRITE 0, EIP inside the path string, VBoxServer
+        // gone and the eNSP UI stuck at 0%). The type library places
+        // OpenMachine at [51] and RegisterMachine at [52], which is what the
+        // E_NOTIMPL result independently confirms.
+        HRESULT hr = try_register_pair(realVBox, cand[i], 51, 52);
+        if (SUCCEEDED(hr)) { DBG("[lazyreg] registered via [51]/[52]"); return true; }
+        DBG("[lazyreg] registration failed for %S hr=0x%08lX", cand[i], hr);
+    }
+    return false;
+}
+
+// Take `<base>_Link` on a freshly registered base VM.
+//
+// Registering alone is NOT enough, and the failure mode is subtle. The plugin's
+// RegisterDevice starts with `if (device already exists) { log "Device has
+// already existed."; return 0; }` -- a shortcut that assumes the VM is already
+// fully prepared, INCLUDING its `_Link` snapshot. Registering the VM early
+// therefore makes the plugin take that shortcut and skip the two snapshot steps
+// it would otherwise run:
+//     VBoxManage snapshot <base> delete <base>_Link
+//     VBoxManage snapshot <base> take   <base>_Link
+// Without the snapshot the chain still reaches `clonevm --snapshot <base>_Link`,
+// starts the clone, then the device agent cannot create its pipe and the start
+// fails (CAgentStaticCfgProcess::Startup - Failed to create pipe.errorcode=2 ->
+// error 40). Observed exactly that before this was added.
+//
+// Shelling out to VBoxManage mirrors what eNSP itself does and avoids needing an
+// ISession for IMachine::takeSnapshot. GetProcAddress is used rather than the
+// saved original because our detour patches kernel32 in place, so the address is
+// the real entry either way; a nested call simply gets logged. The call is
+// synchronous so the snapshot exists before eNSP's chain resumes.
+// Taking a snapshot whose name already exists fails harmlessly, so this needs no
+// existence check of its own.
+static void ngfw_take_link_snapshot(const wchar_t* base) {
+    if (!base || !base[0]) return;
+
+    typedef BOOL (WINAPI *PFN_CPW)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES,
+                                   BOOL, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW,
+                                   LPPROCESS_INFORMATION);
+    static PFN_CPW cpw = NULL;
+    if (!cpw) {
+        HMODULE k = GetModuleHandleW(L"kernel32.dll");
+        if (k) cpw = (PFN_CPW)GetProcAddress(k, "CreateProcessW");
+    }
+    if (!cpw) { DBG("[lazyreg] snapshot: no CreateProcessW"); return; }
+
+    // VBoxManage location: registry first, then the default install path.
+    wchar_t vbm[MAX_PATH] = L"C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe";
+    HKEY hk = NULL;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Oracle\\VirtualBox", 0, KEY_READ, &hk) == ERROR_SUCCESS) {
+        wchar_t dir[MAX_PATH] = {0}; DWORD cb = sizeof(dir); DWORD type = 0;
+        if (RegQueryValueExW(hk, L"InstallDir", NULL, &type, (BYTE*)dir, &cb) == ERROR_SUCCESS && dir[0]) {
+            _snwprintf(vbm, MAX_PATH, L"%sVBoxManage.exe", dir);
+            vbm[MAX_PATH-1] = 0;
+        }
+        RegCloseKey(hk);
+    }
+    if (GetFileAttributesW(vbm) == INVALID_FILE_ATTRIBUTES) {
+        DBG("[lazyreg] snapshot: VBoxManage not found at %S", vbm);
+        return;
+    }
+
+    wchar_t cmd[MAX_PATH * 2];
+    _snwprintf(cmd, MAX_PATH*2, L"\"%s\" snapshot \"%s\" take \"%s_Link\"", vbm, base, base);
+    cmd[MAX_PATH*2-1] = 0;
+
+    STARTUPINFOW si; PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+    memset(&pi, 0, sizeof(pi));
+    si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+
+    if (cpw(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 60000);
+        DWORD code = 0xFFFFFFFF; GetExitCodeProcess(pi.hProcess, &code);
+        DBG("[lazyreg] snapshot take '%S_Link' exit=%lu", base, code);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    } else {
+        DBG("[lazyreg] snapshot: CreateProcessW failed err=%lu", GetLastError());
+    }
+}
+
+// Second trigger, for the case where the plugin writes its settings file only
+// AFTER the last clonecheck of a start attempt.
+//
+// Measured ordering on a start that fails: clonecheck x3 -> VBoxManage
+// unregistervm --delete. The plugin writes vfw_usg.vbox in between, so by the
+// time the unregistervm shell-out happens the settings file is on disk. That
+// shell-out goes through the CreateProcessW detour, which makes it a reliable
+// late trigger -- and registering there means the very next start attempt finds
+// the VM already present, which is the state eNSP needs to proceed.
+static bool g_lazyreg_done = false;
+static bool g_lazyreg_busy = false;
+static void ngfw_lazy_from_hook(void) {
+    if (g_lazyreg_done || g_lazyreg_busy) return;
+    VBoxProxyView* p = g_cached_proxy;
+    if (!p || !p->realVBox) { DBG("[lazyreg] late trigger: no cached proxy yet"); return; }
+    // The guard also stops recursion: registerMachine can make VBoxSVC spawn a
+    // process, which re-enters this very hook.
+    g_lazyreg_busy = true;
+    if (ngfw_ensure_registered(p->realVBox, L"vfw_usg")) {
+        g_lazyreg_done = true;
+        DBG("[lazyreg] late trigger succeeded");
+    }
+    g_lazyreg_busy = false;
+}
+
 extern "C" HRESULT __stdcall helper_clone_check(IUnknown* realVBox, const wchar_t* base, const wchar_t* snap, HRESULT* pOut) {
     static volatile LONG s_call_no = 0;
     LONG callno = InterlockedIncrement(&s_call_no);
@@ -420,6 +686,30 @@ extern "C" HRESULT __stdcall helper_clone_check(IUnknown* realVBox, const wchar_
 
     BSTR bBase = cstring_to_bstr(base);
     HRESULT hr = clone_check_by_name(realVBox, bBase, snap);
+
+    if (FAILED(hr)) {
+        // "Not registered" is exactly the state that makes eNSP give up with
+        // error 40. If the plugin has already written vfw_usg.vbox, register it
+        // here and re-check; eNSP's own chain then does clonevm + startvm, same
+        // as it does on the factory VBox 5.2.
+        DBG("[clonecheck] '%S' absent -> attempting lazy registration", base ? base : L"(null)");
+        if (ngfw_ensure_registered(realVBox, base)) {
+            hr = clone_check_by_name(realVBox, bBase, snap);
+            DBG("[clonecheck] re-check after lazy registration: hr=0x%08lX", hr);
+        }
+    }
+
+    // The base VM must carry `<base>_Link` before eNSP's chain runs, because
+    // registering it early makes the plugin take its "already exists" shortcut
+    // and skip the snapshot step it would otherwise perform. Done here rather
+    // than inside ngfw_ensure_registered so it also covers a VM that some
+    // earlier run registered without one. A same-name `take` fails harmlessly,
+    // so no existence check is needed -- but it is only attempted once.
+    if (SUCCEEDED(hr) && base) {
+        static bool s_snap_done = false;
+        if (!s_snap_done) { s_snap_done = true; ngfw_take_link_snapshot(base); }
+    }
+
     if (bBase) SysFreeString(bBase);
     if (pOut) *pOut = hr;
     return hr;   // 0 => eNSP proceeds with clonevm; nonzero => eNSP skips (no crash)
@@ -1053,6 +1343,12 @@ static BOOL __stdcall CreateProcessWHook(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATT
     LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi) {
     // Log the call (both app and cmd)
     log_createprocess(app, cmd);
+
+    // Late lazy-registration trigger. See ngfw_lazy_from_hook: by the time the
+    // plugin shells out its cleanup command, vfw_usg.vbox is on disk even on a
+    // start attempt that is about to fail, so this is the point where the
+    // registration can still be made to stick for the next attempt.
+    if (cmd && wcsstr(cmd, L"unregistervm")) ngfw_lazy_from_hook();
 
     // Inject full VM config (longmode/apic/chipset/uart swap) if needed
     LPWSTR modified_cmd = inject_vm_config(cmd);

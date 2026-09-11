@@ -173,12 +173,32 @@ thunk_RL PROC
 thunk_RL ENDP
 
 ; ===== vtable[1]: clone precondition probe (NOT AddRef) =====
-; Genuine contract: __thiscall, this in ECX, 3 stack args, ret 0xc.
-;   HRESULT method1(this, BSTR baseVmName, BSTR snapshotName, HRESULT* pOut)
-; Entry: ecx=proxy, [esp]=ret_eNSP, [esp+4]=base, [esp+8]=snap, [esp+12]=pOut.
-; Forward to __stdcall helper_clone_check(realVBox, base, snap, pOut); eax=HRESULT.
-; helper (@16) self-cleans its 4 args; we ret 0xc to clean eNSP's 3 args.
+; ---------------------------------------------------------------------------
+; ARITY IS DISPUTED AND MUST BE SETTLED BY MEASUREMENT, NOT BY ASSUMPTION.
+;
+;   The genuine DLL's slot[1] disassembles to `mov eax, 2; ret 4` -- one stack
+;   dword (or zero, depending on how `this` is passed). This thunk reads THREE
+;   stack dwords and ends with `ret 0Ch`. Those cannot both be right: whichever
+;   is wrong leaves the caller's stack permanently skewed by 8 bytes, and the
+;   caller is mid-way through building a VBoxManage command line.
+;
+;   The three dwords this thunk reads do look like the right strings
+;   ('vfw_usg' / 'vfw_usg_Link'), but the caller has just finished assembling
+;   exactly those strings into a command line -- stack residue and real
+;   arguments are indistinguishable by their contents. So: log the raw stack,
+;   including the return address, and disassemble the caller to count the
+;   pushes for real.
+;
+; The snapshot runs on pushad/popad so it cannot perturb the registers or the
+; argument area the original body depends on.
+EXTERN diag_clone_stack@4:PROC
 thunk_clone_check PROC
+    pushad
+    mov     eax, dword ptr [esp+12]   ; ESP as it was on entry (-> caller's ret addr)
+    push    eax
+    call    diag_clone_stack@4
+    popad
+
     mov     eax, dword ptr [ecx+12]   ; eax = realVBox (proxy[+12])
     mov     edx, dword ptr [esp+12]   ; pOut
     push    edx

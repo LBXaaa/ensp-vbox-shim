@@ -1,0 +1,41 @@
+2026.09.11 23:32:44 [DEBUG]Init Instance.
+2026.09.11 23:35:37 [DEBUG]Init Instance.
+2026.09.11 23:35:38 [DEBUG]CreateDevice: FW4
+2026.09.11 23:35:38 [DEBUG]Start 8AD60209-FA1B-4f31-AFC3-16CC04F9CB32...
+2026.09.11 23:35:41 [DEBUG]ST_Config: start.
+2026.09.11 23:35:41 [DEBUG]ST_Config:succeed in WaitForMultipleObjects
+2026.09.11 23:35:41 [DEBUG]bytes can be read from pipe: 0.
+
+2026.09.11 23:35:43 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 0
+2026.09.11 23:35:46 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:35:46 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 218776920
+2026.09.11 23:35:49 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:35:49 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 1126768689
+2026.09.11 23:35:52 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:35:52 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 218778735
+2026.09.11 23:35:55 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:35:55 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 774778414
+2026.09.11 23:35:58 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:35:58 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 774778414
+2026.09.11 23:36:01 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:36:01 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 774778414
+2026.09.11 23:36:04 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:36:04 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 1768843040
+2026.09.11 23:36:07 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:36:07 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 774778414
+2026.09.11 23:36:10 [DEBUG]bytes can be read from pipe: 33.
+
+2026.09.11 23:36:10 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 774778414
+2026.09.11 23:36:13 [DEBUG]bytes can be read from pipe: 13.
+
+2026.09.11 23:36:13 [DEBUG]CAgentStaticCfgProcess::CfgService - read pipe.ReqType = 774778414
+2026.09.11 23:36:16 [DEBUG]bytes can be read from pipe: 0.
+

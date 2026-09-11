@@ -36,7 +36,7 @@ if %errorlevel% neq 0 (echo CL FAILED & popd & endlocal & exit /b %errorlevel%)
 echo === Linking ===
 link.exe /nologo /dll /out:VBox52.dll /def:"%SRC%\vbox52.def" ^
   vbox52_proxy.obj vbox52_thunks.obj spoof_thunks.obj imachine_entries.obj ^
-  ole32.lib oleaut32.lib psapi.lib
+  ole32.lib oleaut32.lib psapi.lib advapi32.lib
 if %errorlevel% neq 0 (echo LINK FAILED & popd & endlocal & exit /b %errorlevel%)
 
 echo === Done: %~dp0VBox52.dll ===
