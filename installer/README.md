@@ -98,6 +98,13 @@ powershell -ExecutionPolicy Bypass -File import_device.ps1 -Package "D:\设备�
 
 撤销:`VBoxManage unregistervm <VM名>`(不加 `--delete`,镜像原样保留)。
 
+> **这五台是完整虚拟机,先确认内存够。** eNSP 是**直接启动这台 VM 本身**(不克隆),
+> 所以开一台就等于开一台完整虚拟机:模板里 CE / CX / NE40E / NE5000E / NE9000
+> 各要 **4 GB** 内存。内存不够时会一路换页抖动到整机失去响应 —— 实测在一台只给了
+> 2 GB 的客户机上,一台 CE12800 就能把它拖死。开之前先看内存,一次别拉太多台。
+> (另外这些模板只给 1 个 vCPU,嵌套环境里启动会明显偏慢,NE 这类大框式设备等上十几
+> 分钟属正常。)
+
 与 `安装.bat` 一样分两段权限:写 `Program Files` 那段提权,注册那段退回登录账户身份
 (注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,必须与启动 eNSP 的账户一致)。
 
