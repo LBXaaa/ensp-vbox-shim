@@ -1,0 +1,484 @@
+
+F:\各种项目\逆向ensp\ensp-vbox-shim\analysis\ngfw\NGFW_Plugin.dll:	file format coff-i386
+
+Disassembly of section .text:
+
+10001d20 <Init>:
+1000da80: 44                           	inc	esp
+1000da81: 24 0c                        	and	al, 0xc
+1000da83: 83 c0 f0                     	add	eax, -0x10
+1000da86: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000da89: 83 ca ff                     	or	edx, -0x1
+1000da8c: f0                           	lock
+1000da8d: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000da90: 4a                           	dec	edx
+1000da91: 85 d2                        	test	edx, edx
+1000da93: 7f 0a                        	jg	0x1000da9f <Init+0xbd7f>
+1000da95: 8b 08                        	mov	ecx, dword ptr [eax]
+1000da97: 8b 11                        	mov	edx, dword ptr [ecx]
+1000da99: 50                           	push	eax
+1000da9a: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000da9d: ff d0                        	call	eax
+1000da9f: c6 44 24 28 00               	mov	byte ptr [esp + 0x28], 0x0
+1000daa4: 8b 44 24 10                  	mov	eax, dword ptr [esp + 0x10]
+1000daa8: 83 c0 f0                     	add	eax, -0x10
+1000daab: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000daae: 83 ca ff                     	or	edx, -0x1
+1000dab1: f0                           	lock
+1000dab2: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000dab5: 4a                           	dec	edx
+1000dab6: 85 d2                        	test	edx, edx
+1000dab8: 7f 0a                        	jg	0x1000dac4 <Init+0xbda4>
+1000daba: 8b 08                        	mov	ecx, dword ptr [eax]
+1000dabc: 8b 11                        	mov	edx, dword ptr [ecx]
+1000dabe: 50                           	push	eax
+1000dabf: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000dac2: ff d0                        	call	eax
+1000dac4: 8b c7                        	mov	eax, edi
+1000dac6: 8b 4c 24 20                  	mov	ecx, dword ptr [esp + 0x20]
+1000daca: 64 89 0d 00 00 00 00         	mov	dword ptr fs:[0x0], ecx
+1000dad1: 59                           	pop	ecx
+1000dad2: 5f                           	pop	edi
+1000dad3: 5e                           	pop	esi
+1000dad4: 83 c4 20                     	add	esp, 0x20
+1000dad7: c2 04 00                     	ret	0x4
+1000dada: cc                           	int3
+1000dadb: cc                           	int3
+1000dadc: cc                           	int3
+1000dadd: cc                           	int3
+1000dade: cc                           	int3
+1000dadf: cc                           	int3
+1000dae0: 83 ec 3c                     	sub	esp, 0x3c
+1000dae3: 56                           	push	esi
+1000dae4: 57                           	push	edi
+1000dae5: 6a 38                        	push	0x38
+1000dae7: 8d 44 24 10                  	lea	eax, [esp + 0x10]
+1000daeb: 6a 00                        	push	0x0
+1000daed: 50                           	push	eax
+1000daee: e8 0d b5 01 00               	call	0x10029000 <Init+0x272e0>
+1000daf3: 8b 74 24 54                  	mov	esi, dword ptr [esp + 0x54]
+1000daf7: 8b 7c 24 58                  	mov	edi, dword ptr [esp + 0x58]
+1000dafb: 83 c4 0c                     	add	esp, 0xc
+1000dafe: 8d 4c 24 08                  	lea	ecx, [esp + 0x8]
+1000db02: 51                           	push	ecx
+1000db03: c7 44 24 0c 3c 00 00 00      	mov	dword ptr [esp + 0xc], 0x3c
+1000db0b: c7 44 24 10 40 00 00 00      	mov	dword ptr [esp + 0x10], 0x40
+1000db13: c7 44 24 18 f4 83 04 10      	mov	dword ptr [esp + 0x18], 0x100483f4
+1000db1b: 89 74 24 1c                  	mov	dword ptr [esp + 0x1c], esi
+1000db1f: 89 7c 24 20                  	mov	dword ptr [esp + 0x20], edi
+1000db23: c7 44 24 28 00 00 00 00      	mov	dword ptr [esp + 0x28], 0x0
+1000db2b: ff 15 1c 13 04 10            	call	dword ptr [0x1004131c]
+1000db31: 85 c0                        	test	eax, eax
+1000db33: 75 43                        	jne	0x1000db78 <Init+0xbe58>
+1000db35: 8d 46 f0                     	lea	eax, [esi - 0x10]
+1000db38: 8d 50 0c                     	lea	edx, [eax + 0xc]
+1000db3b: 83 c9 ff                     	or	ecx, -0x1
+1000db3e: f0                           	lock
+1000db3f: 0f c1 0a                     	xadd	dword ptr [edx], ecx
+1000db42: 49                           	dec	ecx
+1000db43: 85 c9                        	test	ecx, ecx
+1000db45: 7f 0a                        	jg	0x1000db51 <Init+0xbe31>
+1000db47: 8b 08                        	mov	ecx, dword ptr [eax]
+1000db49: 8b 11                        	mov	edx, dword ptr [ecx]
+1000db4b: 50                           	push	eax
+1000db4c: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000db4f: ff d0                        	call	eax
+1000db51: 8d 47 f0                     	lea	eax, [edi - 0x10]
+1000db54: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000db57: 83 ca ff                     	or	edx, -0x1
+1000db5a: f0                           	lock
+1000db5b: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000db5e: 4a                           	dec	edx
+1000db5f: 85 d2                        	test	edx, edx
+1000db61: 7f 0a                        	jg	0x1000db6d <Init+0xbe4d>
+1000db63: 8b 08                        	mov	ecx, dword ptr [eax]
+1000db65: 8b 11                        	mov	edx, dword ptr [ecx]
+1000db67: 50                           	push	eax
+1000db68: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000db6b: ff d0                        	call	eax
+1000db6d: 5f                           	pop	edi
+1000db6e: 83 c8 ff                     	or	eax, -0x1
+1000db71: 5e                           	pop	esi
+1000db72: 83 c4 3c                     	add	esp, 0x3c
+1000db75: c2 08 00                     	ret	0x8
+1000db78: 83 7c 24 28 20               	cmp	dword ptr [esp + 0x28], 0x20
+1000db7d: 7e 11                        	jle	0x1000db90 <Init+0xbe70>
+1000db7f: 8b 44 24 40                  	mov	eax, dword ptr [esp + 0x40]
+1000db83: 85 c0                        	test	eax, eax
+1000db85: 74 09                        	je	0x1000db90 <Init+0xbe70>
+1000db87: 6a ff                        	push	-0x1
+1000db89: 50                           	push	eax
+1000db8a: ff 15 d0 12 04 10            	call	dword ptr [0x100412d0]
+1000db90: 8d 46 f0                     	lea	eax, [esi - 0x10]
+1000db93: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000db96: 83 ca ff                     	or	edx, -0x1
+1000db99: f0                           	lock
+1000db9a: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000db9d: 4a                           	dec	edx
+1000db9e: 85 d2                        	test	edx, edx
+1000dba0: 7f 0a                        	jg	0x1000dbac <Init+0xbe8c>
+1000dba2: 8b 08                        	mov	ecx, dword ptr [eax]
+1000dba4: 8b 11                        	mov	edx, dword ptr [ecx]
+1000dba6: 50                           	push	eax
+1000dba7: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000dbaa: ff d0                        	call	eax
+1000dbac: 8d 47 f0                     	lea	eax, [edi - 0x10]
+1000dbaf: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000dbb2: 83 ca ff                     	or	edx, -0x1
+1000dbb5: f0                           	lock
+1000dbb6: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000dbb9: 4a                           	dec	edx
+1000dbba: 85 d2                        	test	edx, edx
+1000dbbc: 7f 0a                        	jg	0x1000dbc8 <Init+0xbea8>
+1000dbbe: 8b 08                        	mov	ecx, dword ptr [eax]
+1000dbc0: 8b 11                        	mov	edx, dword ptr [ecx]
+1000dbc2: 50                           	push	eax
+1000dbc3: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000dbc6: ff d0                        	call	eax
+1000dbc8: 5f                           	pop	edi
+1000dbc9: 33 c0                        	xor	eax, eax
+1000dbcb: 5e                           	pop	esi
+1000dbcc: 83 c4 3c                     	add	esp, 0x3c
+1000dbcf: c2 08 00                     	ret	0x8
+1000dbd2: cc                           	int3
+1000dbd3: cc                           	int3
+1000dbd4: cc                           	int3
+1000dbd5: cc                           	int3
+1000dbd6: cc                           	int3
+1000dbd7: cc                           	int3
+1000dbd8: cc                           	int3
+1000dbd9: cc                           	int3
+1000dbda: cc                           	int3
+1000dbdb: cc                           	int3
+1000dbdc: cc                           	int3
+1000dbdd: cc                           	int3
+1000dbde: cc                           	int3
+1000dbdf: cc                           	int3
+1000dbe0: 6a ff                        	push	-0x1
+1000dbe2: 68 70 00 04 10               	push	0x10040070
+1000dbe7: 64 a1 00 00 00 00            	mov	eax, dword ptr fs:[0x0]
+1000dbed: 50                           	push	eax
+1000dbee: 83 ec 18                     	sub	esp, 0x18
+1000dbf1: 53                           	push	ebx
+1000dbf2: 55                           	push	ebp
+1000dbf3: 56                           	push	esi
+1000dbf4: 57                           	push	edi
+1000dbf5: a1 e0 1c 05 10               	mov	eax, dword ptr [0x10051ce0]
+1000dbfa: 33 c4                        	xor	eax, esp
+1000dbfc: 50                           	push	eax
+1000dbfd: 8d 44 24 2c                  	lea	eax, [esp + 0x2c]
+1000dc01: 64 a3 00 00 00 00            	mov	dword ptr fs:[0x0], eax
+1000dc07: 8b 6c 24 3c                  	mov	ebp, dword ptr [esp + 0x3c]
+1000dc0b: 83 7d 0c 00                  	cmp	dword ptr [ebp + 0xc], 0x0
+1000dc0f: 75 20                        	jne	0x1000dc31 <Init+0xbf11>
+1000dc11: a1 ac 70 05 10               	mov	eax, dword ptr [0x100570ac]
+1000dc16: 68 00 84 04 10               	push	0x10048400
+1000dc1b: 50                           	push	eax
+1000dc1c: b9 01 00 00 00               	mov	ecx, 0x1
+1000dc21: e8 8a 2f 00 00               	call	0x10010bb0 <Init+0xee90>
+1000dc26: 83 c4 08                     	add	esp, 0x8
+1000dc29: 83 c8 ff                     	or	eax, -0x1
+1000dc2c: e9 20 03 00 00               	jmp	0x1000df51 <Init+0xc231>
+1000dc31: 8b 45 10                     	mov	eax, dword ptr [ebp + 0x10]
+1000dc34: 83 e8 10                     	sub	eax, 0x10
+1000dc37: 50                           	push	eax
+1000dc38: e8 d3 4b ff ff               	call	0x10002810 <Init+0xaf0>
+1000dc3d: 8d 78 10                     	lea	edi, [eax + 0x10]
+1000dc40: 83 c4 04                     	add	esp, 0x4
+1000dc43: 89 7c 24 24                  	mov	dword ptr [esp + 0x24], edi
+1000dc47: 68 4c 4e 04 10               	push	0x10044e4c
+1000dc4c: 8d 4c 24 40                  	lea	ecx, [esp + 0x40]
+1000dc50: c7 44 24 38 00 00 00 00      	mov	dword ptr [esp + 0x38], 0x0
+1000dc58: e8 b3 43 ff ff               	call	0x10002010 <Init+0x2f0>
+1000dc5d: c6 44 24 34 01               	mov	byte ptr [esp + 0x34], 0x1
+1000dc62: e8 0a 90 00 00               	call	0x10016c71 <Init+0x14f51>
+1000dc67: 33 c9                        	xor	ecx, ecx
+1000dc69: 85 c0                        	test	eax, eax
+1000dc6b: 0f 95 c1                     	setne	cl
+1000dc6e: 85 c9                        	test	ecx, ecx
+1000dc70: 75 0a                        	jne	0x1000dc7c <Init+0xbf5c>
+1000dc72: 68 05 40 00 80               	push	0x80004005
+1000dc77: e8 14 34 ff ff               	call	0x10001090 <.text+0x90>
+1000dc7c: 8b 10                        	mov	edx, dword ptr [eax]
+1000dc7e: 8b c8                        	mov	ecx, eax
+1000dc80: 8b 42 0c                     	mov	eax, dword ptr [edx + 0xc]
+1000dc83: ff d0                        	call	eax
+1000dc85: 83 c0 10                     	add	eax, 0x10
+1000dc88: 89 44 24 18                  	mov	dword ptr [esp + 0x18], eax
+1000dc8c: c6 44 24 34 02               	mov	byte ptr [esp + 0x34], 0x2
+1000dc91: e8 db 8f 00 00               	call	0x10016c71 <Init+0x14f51>
+1000dc96: 33 c9                        	xor	ecx, ecx
+1000dc98: 85 c0                        	test	eax, eax
+1000dc9a: 0f 95 c1                     	setne	cl
+1000dc9d: 85 c9                        	test	ecx, ecx
+1000dc9f: 75 0a                        	jne	0x1000dcab <Init+0xbf8b>
+1000dca1: 68 05 40 00 80               	push	0x80004005
+1000dca6: e8 e5 33 ff ff               	call	0x10001090 <.text+0x90>
+1000dcab: 8b 10                        	mov	edx, dword ptr [eax]
+1000dcad: 8b c8                        	mov	ecx, eax
+1000dcaf: 8b 42 0c                     	mov	eax, dword ptr [edx + 0xc]
+1000dcb2: ff d0                        	call	eax
+1000dcb4: 83 c0 10                     	add	eax, 0x10
+1000dcb7: 89 44 24 14                  	mov	dword ptr [esp + 0x14], eax
+1000dcbb: 6a 28                        	push	0x28
+1000dcbd: 68 28 84 04 10               	push	0x10048428
+1000dcc2: 8d 4c 24 44                  	lea	ecx, [esp + 0x44]
+1000dcc6: c6 44 24 3c 03               	mov	byte ptr [esp + 0x3c], 0x3
+1000dccb: e8 40 4a ff ff               	call	0x10002710 <Init+0x9f0>
+1000dcd0: 6a 07                        	push	0x7
+1000dcd2: 68 20 65 04 10               	push	0x10046520
+1000dcd7: 8d 4c 24 20                  	lea	ecx, [esp + 0x20]
+1000dcdb: e8 30 4a ff ff               	call	0x10002710 <Init+0x9f0>
+1000dce0: 6a 0c                        	push	0xc
+1000dce2: 68 04 65 04 10               	push	0x10046504
+1000dce7: 8d 4c 24 1c                  	lea	ecx, [esp + 0x1c]
+1000dceb: e8 20 4a ff ff               	call	0x10002710 <Init+0x9f0>
+1000dcf0: 8b 44 24 3c                  	mov	eax, dword ptr [esp + 0x3c]
+1000dcf4: 51                           	push	ecx
+1000dcf5: 83 c0 f0                     	add	eax, -0x10
+1000dcf8: 89 64 24 24                  	mov	dword ptr [esp + 0x24], esp
+1000dcfc: 8b f4                        	mov	esi, esp
+1000dcfe: 50                           	push	eax
+1000dcff: e8 0c 4b ff ff               	call	0x10002810 <Init+0xaf0>
+1000dd04: 83 c0 10                     	add	eax, 0x10
+1000dd07: 89 06                        	mov	dword ptr [esi], eax
+1000dd09: 8d 5f f0                     	lea	ebx, [edi - 0x10]
+1000dd0c: 89 64 24 24                  	mov	dword ptr [esp + 0x24], esp
+1000dd10: 8b f4                        	mov	esi, esp
+1000dd12: 53                           	push	ebx
+1000dd13: c6 44 24 40 04               	mov	byte ptr [esp + 0x40], 0x4
+1000dd18: e8 f3 4a ff ff               	call	0x10002810 <Init+0xaf0>
+1000dd1d: 83 c0 10                     	add	eax, 0x10
+1000dd20: 89 06                        	mov	dword ptr [esi], eax
+1000dd22: 83 c4 04                     	add	esp, 0x4
+1000dd25: c6 44 24 3c 03               	mov	byte ptr [esp + 0x3c], 0x3
+1000dd2a: e8 b1 fd ff ff               	call	0x1000dae0 <Init+0xbdc0>
+1000dd2f: 8b 74 24 18                  	mov	esi, dword ptr [esp + 0x18]
+1000dd33: 51                           	push	ecx
+1000dd34: 83 c6 f0                     	add	esi, -0x10
+1000dd37: 89 64 24 20                  	mov	dword ptr [esp + 0x20], esp
+1000dd3b: 8b fc                        	mov	edi, esp
+1000dd3d: 56                           	push	esi
+1000dd3e: 89 44 24 28                  	mov	dword ptr [esp + 0x28], eax
+1000dd42: e8 c9 4a ff ff               	call	0x10002810 <Init+0xaf0>
+1000dd47: 83 c0 10                     	add	eax, 0x10
+1000dd4a: 89 07                        	mov	dword ptr [edi], eax
+1000dd4c: 8b 4d 0c                     	mov	ecx, dword ptr [ebp + 0xc]
+1000dd4f: 8b 11                        	mov	edx, dword ptr [ecx]
+1000dd51: 8b 42 10                     	mov	eax, dword ptr [edx + 0x10]
+1000dd54: 83 c4 04                     	add	esp, 0x4
+1000dd57: ff d0                        	call	eax
+1000dd59: 85 c0                        	test	eax, eax
+1000dd5b: 0f 8d 90 00 00 00            	jge	0x1000ddf1 <Init+0xc0d1>
+1000dd61: c6 44 24 34 02               	mov	byte ptr [esp + 0x34], 0x2
+1000dd66: 8b 44 24 14                  	mov	eax, dword ptr [esp + 0x14]
+1000dd6a: 83 c0 f0                     	add	eax, -0x10
+1000dd6d: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000dd70: 83 ca ff                     	or	edx, -0x1
+1000dd73: f0                           	lock
+1000dd74: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000dd77: 4a                           	dec	edx
+1000dd78: 85 d2                        	test	edx, edx
+1000dd7a: 7f 0a                        	jg	0x1000dd86 <Init+0xc066>
+1000dd7c: 8b 08                        	mov	ecx, dword ptr [eax]
+1000dd7e: 8b 11                        	mov	edx, dword ptr [ecx]
+1000dd80: 50                           	push	eax
+1000dd81: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000dd84: ff d0                        	call	eax
+1000dd86: c6 44 24 34 01               	mov	byte ptr [esp + 0x34], 0x1
+1000dd8b: 8d 4e 0c                     	lea	ecx, [esi + 0xc]
+1000dd8e: 83 ca ff                     	or	edx, -0x1
+1000dd91: f0                           	lock
+1000dd92: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000dd95: 4a                           	dec	edx
+1000dd96: 85 d2                        	test	edx, edx
+1000dd98: 7f 0a                        	jg	0x1000dda4 <Init+0xc084>
+1000dd9a: 8b 0e                        	mov	ecx, dword ptr [esi]
+1000dd9c: 8b 01                        	mov	eax, dword ptr [ecx]
+1000dd9e: 8b 50 04                     	mov	edx, dword ptr [eax + 0x4]
+1000dda1: 56                           	push	esi
+1000dda2: ff d2                        	call	edx
+1000dda4: c6 44 24 34 00               	mov	byte ptr [esp + 0x34], 0x0
+1000dda9: 8b 44 24 3c                  	mov	eax, dword ptr [esp + 0x3c]
+1000ddad: 83 c0 f0                     	add	eax, -0x10
+1000ddb0: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000ddb3: 83 ca ff                     	or	edx, -0x1
+1000ddb6: f0                           	lock
+1000ddb7: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000ddba: 4a                           	dec	edx
+1000ddbb: 85 d2                        	test	edx, edx
+1000ddbd: 7f 0a                        	jg	0x1000ddc9 <Init+0xc0a9>
+1000ddbf: 8b 08                        	mov	ecx, dword ptr [eax]
+1000ddc1: 8b 11                        	mov	edx, dword ptr [ecx]
+1000ddc3: 50                           	push	eax
+1000ddc4: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000ddc7: ff d0                        	call	eax
+1000ddc9: c7 44 24 34 ff ff ff ff      	mov	dword ptr [esp + 0x34], 0xffffffff
+1000ddd1: 8d 4b 0c                     	lea	ecx, [ebx + 0xc]
+1000ddd4: 83 ca ff                     	or	edx, -0x1
+1000ddd7: f0                           	lock
+1000ddd8: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000dddb: 4a                           	dec	edx
+1000dddc: 85 d2                        	test	edx, edx
+1000ddde: 7f 0a                        	jg	0x1000ddea <Init+0xc0ca>
+1000dde0: 8b 0b                        	mov	ecx, dword ptr [ebx]
+1000dde2: 8b 01                        	mov	eax, dword ptr [ecx]
+1000dde4: 8b 50 04                     	mov	edx, dword ptr [eax + 0x4]
+1000dde7: 53                           	push	ebx
+1000dde8: ff d2                        	call	edx
+1000ddea: 33 c0                        	xor	eax, eax
+1000ddec: e9 60 01 00 00               	jmp	0x1000df51 <Init+0xc231>
+1000ddf1: 8b 7c 24 14                  	mov	edi, dword ptr [esp + 0x14]
+1000ddf5: 51                           	push	ecx
+1000ddf6: 83 c7 f0                     	add	edi, -0x10
+1000ddf9: 89 64 24 2c                  	mov	dword ptr [esp + 0x2c], esp
+1000ddfd: 89 64 24 20                  	mov	dword ptr [esp + 0x20], esp
+1000de01: 57                           	push	edi
+1000de02: e8 09 4a ff ff               	call	0x10002810 <Init+0xaf0>
+1000de07: 8b 4c 24 24                  	mov	ecx, dword ptr [esp + 0x24]
+1000de0b: 83 c0 10                     	add	eax, 0x10
+1000de0e: 89 01                        	mov	dword ptr [ecx], eax
+1000de10: 89 64 24 24                  	mov	dword ptr [esp + 0x24], esp
+1000de14: 89 64 24 24                  	mov	dword ptr [esp + 0x24], esp
+1000de18: 56                           	push	esi
+1000de19: c6 44 24 40 05               	mov	byte ptr [esp + 0x40], 0x5
+1000de1e: e8 ed 49 ff ff               	call	0x10002810 <Init+0xaf0>
+1000de23: 8b 54 24 28                  	mov	edx, dword ptr [esp + 0x28]
+1000de27: 83 c0 10                     	add	eax, 0x10
+1000de2a: 89 02                        	mov	dword ptr [edx], eax
+1000de2c: 8b 4d 0c                     	mov	ecx, dword ptr [ebp + 0xc]
+1000de2f: 8b 01                        	mov	eax, dword ptr [ecx]
+1000de31: 8b 40 14                     	mov	eax, dword ptr [eax + 0x14]
+1000de34: 83 c4 04                     	add	esp, 0x4
+1000de37: c6 44 24 3c 03               	mov	byte ptr [esp + 0x3c], 0x3
+1000de3c: ff d0                        	call	eax
+1000de3e: 85 c0                        	test	eax, eax
+1000de40: c6 44 24 34 02               	mov	byte ptr [esp + 0x34], 0x2
+1000de45: 0f 8c 85 00 00 00            	jl	0x1000ded0 <Init+0xc1b0>
+1000de4b: 8d 4f 0c                     	lea	ecx, [edi + 0xc]
+1000de4e: 83 ca ff                     	or	edx, -0x1
+1000de51: f0                           	lock
+1000de52: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000de55: 4a                           	dec	edx
+1000de56: 85 d2                        	test	edx, edx
+1000de58: 7f 0a                        	jg	0x1000de64 <Init+0xc144>
+1000de5a: 8b 0f                        	mov	ecx, dword ptr [edi]
+1000de5c: 8b 01                        	mov	eax, dword ptr [ecx]
+1000de5e: 8b 50 04                     	mov	edx, dword ptr [eax + 0x4]
+1000de61: 57                           	push	edi
+1000de62: ff d2                        	call	edx
+1000de64: c6 44 24 34 01               	mov	byte ptr [esp + 0x34], 0x1
+1000de69: 8d 46 0c                     	lea	eax, [esi + 0xc]
+1000de6c: 83 c9 ff                     	or	ecx, -0x1
+1000de6f: f0                           	lock
+1000de70: 0f c1 08                     	xadd	dword ptr [eax], ecx
+1000de73: 49                           	dec	ecx
+1000de74: 85 c9                        	test	ecx, ecx
+1000de76: 7f 0a                        	jg	0x1000de82 <Init+0xc162>
+1000de78: 8b 0e                        	mov	ecx, dword ptr [esi]
+1000de7a: 8b 11                        	mov	edx, dword ptr [ecx]
+1000de7c: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000de7f: 56                           	push	esi
+1000de80: ff d0                        	call	eax
+1000de82: c6 44 24 34 00               	mov	byte ptr [esp + 0x34], 0x0
+1000de87: 8b 44 24 3c                  	mov	eax, dword ptr [esp + 0x3c]
+1000de8b: 83 c0 f0                     	add	eax, -0x10
+1000de8e: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000de91: 83 ca ff                     	or	edx, -0x1
+1000de94: f0                           	lock
+1000de95: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000de98: 4a                           	dec	edx
+1000de99: 85 d2                        	test	edx, edx
+1000de9b: 7f 0a                        	jg	0x1000dea7 <Init+0xc187>
+1000de9d: 8b 08                        	mov	ecx, dword ptr [eax]
+1000de9f: 8b 11                        	mov	edx, dword ptr [ecx]
+1000dea1: 50                           	push	eax
+1000dea2: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000dea5: ff d0                        	call	eax
+1000dea7: c7 44 24 34 ff ff ff ff      	mov	dword ptr [esp + 0x34], 0xffffffff
+1000deaf: 8d 4b 0c                     	lea	ecx, [ebx + 0xc]
+1000deb2: 83 ca ff                     	or	edx, -0x1
+1000deb5: f0                           	lock
+1000deb6: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000deb9: 4a                           	dec	edx
+1000deba: 85 d2                        	test	edx, edx
+1000debc: 7f 0a                        	jg	0x1000dec8 <Init+0xc1a8>
+1000debe: 8b 0b                        	mov	ecx, dword ptr [ebx]
+1000dec0: 8b 01                        	mov	eax, dword ptr [ecx]
+1000dec2: 8b 50 04                     	mov	edx, dword ptr [eax + 0x4]
+1000dec5: 53                           	push	ebx
+1000dec6: ff d2                        	call	edx
+1000dec8: 83 c8 ff                     	or	eax, -0x1
+1000decb: e9 81 00 00 00               	jmp	0x1000df51 <Init+0xc231>
+1000ded0: 8d 47 0c                     	lea	eax, [edi + 0xc]
+1000ded3: 83 c9 ff                     	or	ecx, -0x1
+1000ded6: f0                           	lock
+1000ded7: 0f c1 08                     	xadd	dword ptr [eax], ecx
+1000deda: 49                           	dec	ecx
+1000dedb: 85 c9                        	test	ecx, ecx
+1000dedd: 7f 0a                        	jg	0x1000dee9 <Init+0xc1c9>
+1000dedf: 8b 0f                        	mov	ecx, dword ptr [edi]
+1000dee1: 8b 11                        	mov	edx, dword ptr [ecx]
+1000dee3: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000dee6: 57                           	push	edi
+1000dee7: ff d0                        	call	eax
+1000dee9: c6 44 24 34 01               	mov	byte ptr [esp + 0x34], 0x1
+1000deee: 8d 4e 0c                     	lea	ecx, [esi + 0xc]
+1000def1: 83 ca ff                     	or	edx, -0x1
+1000def4: f0                           	lock
+1000def5: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000def8: 4a                           	dec	edx
+1000def9: 85 d2                        	test	edx, edx
+1000defb: 7f 0a                        	jg	0x1000df07 <Init+0xc1e7>
+1000defd: 8b 0e                        	mov	ecx, dword ptr [esi]
+1000deff: 8b 01                        	mov	eax, dword ptr [ecx]
+1000df01: 8b 50 04                     	mov	edx, dword ptr [eax + 0x4]
+1000df04: 56                           	push	esi
+1000df05: ff d2                        	call	edx
+1000df07: c6 44 24 34 00               	mov	byte ptr [esp + 0x34], 0x0
+1000df0c: 8b 44 24 3c                  	mov	eax, dword ptr [esp + 0x3c]
+1000df10: 83 c0 f0                     	add	eax, -0x10
+1000df13: 8d 48 0c                     	lea	ecx, [eax + 0xc]
+1000df16: 83 ca ff                     	or	edx, -0x1
+1000df19: f0                           	lock
+1000df1a: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000df1d: 4a                           	dec	edx
+1000df1e: 85 d2                        	test	edx, edx
+1000df20: 7f 0a                        	jg	0x1000df2c <Init+0xc20c>
+1000df22: 8b 08                        	mov	ecx, dword ptr [eax]
+1000df24: 8b 11                        	mov	edx, dword ptr [ecx]
+1000df26: 50                           	push	eax
+1000df27: 8b 42 04                     	mov	eax, dword ptr [edx + 0x4]
+1000df2a: ff d0                        	call	eax
+1000df2c: c7 44 24 34 ff ff ff ff      	mov	dword ptr [esp + 0x34], 0xffffffff
+1000df34: 8d 4b 0c                     	lea	ecx, [ebx + 0xc]
+1000df37: 83 ca ff                     	or	edx, -0x1
+1000df3a: f0                           	lock
+1000df3b: 0f c1 11                     	xadd	dword ptr [ecx], edx
+1000df3e: 4a                           	dec	edx
+1000df3f: 85 d2                        	test	edx, edx
+1000df41: 7f 0a                        	jg	0x1000df4d <Init+0xc22d>
+1000df43: 8b 0b                        	mov	ecx, dword ptr [ebx]
+1000df45: 8b 01                        	mov	eax, dword ptr [ecx]
+1000df47: 8b 50 04                     	mov	edx, dword ptr [eax + 0x4]
+1000df4a: 53                           	push	ebx
+1000df4b: ff d2                        	call	edx
+1000df4d: 8b 44 24 20                  	mov	eax, dword ptr [esp + 0x20]
+1000df51: 8b 4c 24 2c                  	mov	ecx, dword ptr [esp + 0x2c]
+1000df55: 64 89 0d 00 00 00 00         	mov	dword ptr fs:[0x0], ecx
+1000df5c: 59                           	pop	ecx
+1000df5d: 5f                           	pop	edi
+1000df5e: 5e                           	pop	esi
+1000df5f: 5d                           	pop	ebp
+1000df60: 5b                           	pop	ebx
+1000df61: 83 c4 24                     	add	esp, 0x24
+1000df64: c2 04 00                     	ret	0x4
+1000df67: cc                           	int3
+1000df68: cc                           	int3
+1000df69: cc                           	int3
+1000df6a: cc                           	int3
+1000df6b: cc                           	int3
+1000df6c: cc                           	int3
+1000df6d: cc                           	int3
+1000df6e: cc                           	int3
+1000df6f: cc                           	int3

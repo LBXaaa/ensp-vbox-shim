@@ -39,3 +39,22 @@ Releases/
 *.dmp
 analysis/ngfw/*.dll
 analysis/ngfw/*.exe
+
+# Experimental shim builds (the shipped build/VBox52.dll stays tracked on purpose).
+# These come from toolchain experiments (LLVM-MinGW, binary-patch A/B variants);
+# they are throwaway artifacts, never shipped.
+build/VBox52_llvm*.dll
+build/VBox52_candidate.dll
+build/VBox52_noinject.dll
+build/VBox52_efail.dll
+build/VBox52_v013beta.dll
+build/candidate_*.def
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Agent/tooling scratch
+.claude-flow/
+build/VBox52_nodel.bak.dll
+build/VBox52_vboxerr.dll
