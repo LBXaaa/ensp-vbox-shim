@@ -543,6 +543,43 @@ static HRESULT try_register_pair(IUnknown* realVBox, const wchar_t* vboxPath,
     return hrReg;
 }
 
+// Is the base VM's disk actually on this machine?
+//
+// The plugin builds <base>.vbox from its template unconditionally -- it does not
+// first check that the device package has been imported. Registering such a
+// settings file yields a machine pointing at a disk that does not exist, and
+// eNSP's later clonevm then has nothing usable to clone from. On the factory
+// VBox 5.2 nothing registers the file until the package is in place, so this
+// condition never arises there; here it arises on the very first start of a
+// fresh install, where the package is exactly what the import dialog is asking
+// for.
+//
+// The template resolves its disk as ../../DataBase/<base>.vdi relative to
+// tools\ngfw\, i.e. <root>\plugin\ngfw\Database\<base>.vdi. The settings file
+// sits in that same directory, so walking up two levels from it lands on
+// plugin\ngfw\ for both the <base>.vbox and <base>\<base>.vbox layouts.
+static bool settings_disk_present(const wchar_t* vboxPath, const wchar_t* base) {
+    wchar_t dir[MAX_PATH];
+    wcsncpy(dir, vboxPath, MAX_PATH); dir[MAX_PATH-1] = 0;
+    for (int i = 0; i < 3; i++) {           // strip filename, then up two levels
+        wchar_t* s = wcsrchr(dir, L'\\');
+        if (!s) return false;
+        *s = 0;
+    }
+    wchar_t disk[MAX_PATH];
+    _snwprintf(disk, MAX_PATH, L"%s\\Database\\%s.vdi", dir, base);
+    disk[MAX_PATH-1] = 0;
+    if (GetFileAttributesW(disk) != INVALID_FILE_ATTRIBUTES) return true;
+    // the template spells the directory "DataBase"; harmless on the case-
+    // insensitive filesystems this runs on, but a case-sensitive volume would
+    // otherwise register a machine with a missing disk
+    _snwprintf(disk, MAX_PATH, L"%s\\DataBase\\%s.vdi", dir, base);
+    disk[MAX_PATH-1] = 0;
+    if (GetFileAttributesW(disk) != INVALID_FILE_ATTRIBUTES) return true;
+    DBG("[lazyreg] disk not present for '%S' under %S", base, dir);
+    return false;
+}
+
 // Returns true if `base` ended up registered (or was already).
 static bool ngfw_ensure_registered(IUnknown* realVBox, const wchar_t* base) {
     if (!realVBox || !base || !base[0]) return false;
@@ -557,6 +594,10 @@ static bool ngfw_ensure_registered(IUnknown* realVBox, const wchar_t* base) {
 
     for (int i = 0; i < n; i++) {
         DBG("[lazyreg] candidate settings file: %S", cand[i]);
+        // Do not register a machine whose disk is not there yet -- that is the
+        // normal state on a fresh install, where the import dialog is still
+        // asking for the package.
+        if (!settings_disk_present(cand[i], base)) continue;
         // Only the type-library indices. The project's own table puts these at
         // [39]/[40], but probing [39] measurably returns E_NOTIMPL and takes the
         // BSTR down with it: 7.2's [39] is InternalAndReservedAttribute3, a
