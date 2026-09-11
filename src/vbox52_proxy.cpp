@@ -580,6 +580,8 @@ static bool settings_disk_present(const wchar_t* vboxPath, const wchar_t* base) 
     return false;
 }
 
+static void ngfw_take_link_snapshot(const wchar_t* base);   // defined below
+
 // Returns true if `base` ended up registered (or was already).
 static bool ngfw_ensure_registered(IUnknown* realVBox, const wchar_t* base) {
     if (!realVBox || !base || !base[0]) return false;
@@ -608,7 +610,18 @@ static bool ngfw_ensure_registered(IUnknown* realVBox, const wchar_t* base) {
         // OpenMachine at [51] and RegisterMachine at [52], which is what the
         // E_NOTIMPL result independently confirms.
         HRESULT hr = try_register_pair(realVBox, cand[i], 51, 52);
-        if (SUCCEEDED(hr)) { DBG("[lazyreg] registered via [51]/[52]"); return true; }
+        if (SUCCEEDED(hr)) {
+            DBG("[lazyreg] registered via [51]/[52]");
+            // Snapshot ONLY here, on the machine we just created. Putting this
+            // in the caller instead made it fire for every base name eNSP
+            // probes -- including AR_Base, whose snapshot eNSP manages itself.
+            // That is not merely redundant: VirtualBox ACCEPTS a same-named
+            // CHILD snapshot, so the base ended up with two nested snapshots
+            // both called AR_Base_Link and `clonevm --snapshot AR_Base_Link`
+            // became ambiguous. Caught by the AR regression run.
+            ngfw_take_link_snapshot(base);
+            return true;
+        }
         DBG("[lazyreg] registration failed for %S hr=0x%08lX", cand[i], hr);
     }
     return false;
@@ -740,16 +753,9 @@ extern "C" HRESULT __stdcall helper_clone_check(IUnknown* realVBox, const wchar_
         }
     }
 
-    // The base VM must carry `<base>_Link` before eNSP's chain runs, because
-    // registering it early makes the plugin take its "already exists" shortcut
-    // and skip the snapshot step it would otherwise perform. Done here rather
-    // than inside ngfw_ensure_registered so it also covers a VM that some
-    // earlier run registered without one. A same-name `take` fails harmlessly,
-    // so no existence check is needed -- but it is only attempted once.
-    if (SUCCEEDED(hr) && base) {
-        static bool s_snap_done = false;
-        if (!s_snap_done) { s_snap_done = true; ngfw_take_link_snapshot(base); }
-    }
+    // NOTE: the `<base>_Link` snapshot is taken by ngfw_ensure_registered, on
+    // the machine it just created, and nowhere else. It must NOT run merely
+    // because a machine was found -- see the comment there.
 
     if (bBase) SysFreeString(bBase);
     if (pOut) *pOut = hr;
@@ -1385,11 +1391,14 @@ static BOOL __stdcall CreateProcessWHook(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATT
     // Log the call (both app and cmd)
     log_createprocess(app, cmd);
 
-    // Late lazy-registration trigger. See ngfw_lazy_from_hook: by the time the
-    // plugin shells out its cleanup command, vfw_usg.vbox is on disk even on a
-    // start attempt that is about to fail, so this is the point where the
-    // registration can still be made to stick for the next attempt.
-    if (cmd && wcsstr(cmd, L"unregistervm")) ngfw_lazy_from_hook();
+    // NOTE: there used to be a second, late lazy-registration trigger here,
+    // firing on the plugin's `unregistervm` shell-out. It was removed: the
+    // CreateProcessW detour runs on threads that have not called CoInitialize,
+    // so openMachine there failed with CO_E_NOTINITIALIZED (0x800401F0) on
+    // every attempt, and it retried on each shell-out. The slot[1] trigger
+    // covers the real cases -- if the settings file is not on disk yet, the
+    // next start attempt picks it up, which is exactly what the import-dialog
+    // flow provides for free.
 
     // Inject full VM config (longmode/apic/chipset/uart swap) if needed
     LPWSTR modified_cmd = inject_vm_config(cmd);
