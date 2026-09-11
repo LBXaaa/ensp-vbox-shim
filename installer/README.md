@@ -11,9 +11,9 @@
 | `注册设备.bat` | **后备**:仅当自动注册被跳过(右键用了别的管理员账户)时,用平时启动 eNSP 的账户双击它补做 |
 | `install_all.ps1` | 编排器(被 `安装.bat` 调用):提权打补丁,再以登录用户身份注册设备 |
 | `install.ps1` | 实际打补丁的脚本(被 `install_all.ps1` 提权调用,也被 `卸载.bat` 调用) |
-| `导入设备包.bat` | **按需**:导入设备包(镜像)。把镜像或它的 zip 拖到它上面即可 |
-| `import_device.ps1` | 设备包导入脚本(被 `导入设备包.bat` 调用) |
 | `register_vms.ps1` | 注册脚本(被 `install_all.ps1` 和 `注册设备.bat` 调用) |
+| `清理残留.bat` | **兜底**:关闭 eNSP 后收掉没退干净的 VirtualBox 进程。见下方"关闭设备后的残留进程" |
+| `cleanup_orphans.ps1` | 清理脚本(被 `清理残留.bat` 调用)。只结束孤儿进程,不碰正在运行的 VM |
 | `payload/VBox52.dll` | 预编译好的 COM/vtable 垫片,安装时拷进 eNSP\tools\ |
 
 ## 怎么用
@@ -78,25 +78,23 @@ eNSP 界面上的「导入设备包」对话框是**通用**的(提示文案是 
 **同一场景在旧版垫片下是另一副样子**:VBox 服务进程直接退出,界面上没有任何提示,
 只看到进度条不走 —— 这处差别是垫片修掉的,不是 eNSP 的问题。
 
-**导入方式:把镜像(或它的 zip)拖到 `导入设备包.bat` 上。** 脚本按镜像文件名自动识别
-是哪个设备,做两件事:
+**导入方式:直接用 eNSP 自带的「导入设备包」对话框。** 启动缺镜像的设备时会弹出它,
+在"包路径"里填上镜像文件的完整路径,点「导入」,等拷贝完成后再点一次启动即可。
 
-1. 把镜像放进该插件自己的 `Database\`(zip 只取里面那一个镜像,不整包解压);
-2. `VBoxManage registervm` 注册模板里声明的那台 VM。
+**六种设备包(含 `vfw_usg.vdi`)都支持这条路径,无需任何额外脚本。** 对话框只做一件事:
+把文件复制到该插件自己的 `Database\`。后续的注册由 eNSP 与垫片自动完成:
 
-防火墙(USG6000V)还要多两步,因为它的插件走的是**链接克隆**:配置要生成到
-`tools\ngfw\vfw_usg\` 子目录并把磁盘路径改成绝对路径,再补一个 `vfw_usg_Link` 快照。
-其余五台的模板相对路径本来就能解析对,原地注册即可 —— eNSP 对它们只发
-`startvm <VM名> --type headless`,既不克隆也不要快照。
+- **CE / CX / NE40E / NE5000E / NE9000**:插件自己发
+  `VBoxManage registervm "<插件>\Tools\svrp\<型号>.xml"`,然后 `startvm <VM名> --type headless`
+  原地启动这台 VM(不克隆、不要快照)。
+- **USG6000V**:插件走**链接克隆**,需要一台已注册的 `vfw_usg` 加一个 `vfw_usg_Link`
+  快照。垫片在插件探测该设备时**自动补上这两步**(注册 + 建快照),之后 eNSP 照常
+  `clonevm vfw_usg --snapshot vfw_usg_Link ...`。用户不需要做任何额外操作。
 
-只想看会做什么、不改动:
+> 若拿到的是 **zip 包**,需先自行解压出里面的镜像文件再选择 —— 对话框只接受镜像本身,
+> 不认 zip。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File import_device.ps1 -Package "D:\设备包\USG6000V.zip" -Check
-powershell -ExecutionPolicy Bypass -File import_device.ps1 -Package "D:\设备包\CE.img" -Check
-```
-
-撤销:`VBoxManage unregistervm <VM名>`(不加 `--delete`,镜像原样保留)。
+`vfw_usg.vdi` 约 940 MB,拷贝要一两分钟,进度条走完对话框会自行关闭。
 
 > **这五台是完整虚拟机,先确认内存够。** eNSP 是**直接启动这台 VM 本身**(不克隆),
 > 所以开一台就等于开一台完整虚拟机:模板里 CE / CX / NE40E / NE5000E / NE9000
@@ -108,6 +106,37 @@ powershell -ExecutionPolicy Bypass -File import_device.ps1 -Package "D:\设备�
 与 `安装.bat` 一样分两段权限:写 `Program Files` 那段提权,注册那段退回登录账户身份
 (注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,必须与启动 eNSP 的账户一致)。
 
+
+### 关闭设备后的残留进程(CE / CX / NE 系列)
+
+**现象**:关闭这几台(以及关掉整个 eNSP)之后,VirtualBox 的后台进程
+`VBoxHeadless.exe` 不会立刻消失,每台仍占 **1.2–1.5 GB** 内存。设备图标可能显示
+**「异常退出」**,甚至弹出 `VBoxHeadless.exe - 应用程序错误`(`0x...24 该内存不能为 read`)。
+
+**2026-09-12 实测结论**:
+
+- 关闭 eNSP 时,它会为每台设备补发 `VBoxManage controlvm <VM名> poweroff`(硬断电)。
+- 这几台的客户机是 **Linux 系统**,硬断电后的收尾**很慢** —— 实测要 **5 分钟以上**
+  才陆续退完;期间内存一直不释放,看起来就像"关不掉"。
+- 其中个别进程会在收尾时**崩溃**(访问空指针),弹出「应用程序错误」框;
+  **不点掉那个框,它就一直挂着不放内存。**
+- **全部退完后内存会正常归还**(实测从 18.0 GB 回到 24.8 GB),不是永久泄漏。
+
+**处理办法**:
+
+1. 弹出「应用程序错误」框时**点【确定】**把它关掉,进程才会结束;
+2. 不想等的话,双击 **`清理残留.bat`**,它会立刻找出并结束这些残留进程。
+   该脚本**只结束"VirtualBox 账本上已不在运行"的孤儿进程**,正在正常运行的虚拟机
+   会被跳过,可以放心用。
+
+> 这是 VirtualBox 7.x 自身在硬断电收尾时的问题,与垫片无关 —— 垫片是 32 位、
+> 只加载进 32 位的 eNSP 进程,而 `VBoxHeadless.exe` 是 64 位,两者不在同一个进程里。
+> 已记录,留待后续版本处理。
+
+**顺带一提**:这几台是**完整虚拟机**(模板各配 4 GB 内存),同时拉多台时 eNSP 的启动
+进度条可能长时间不动甚至看起来卡死 —— **这不代表设备没起来**。可以双击设备试进控制台,
+或看 `plugin\<插件>\LogFile\infolog*.txt` 里有没有 `Received run ok msg`。
+**别因为进度条不动就强杀 eNSP**,那会把正在引导的设备一并杀掉。
 
 ### 卸载还原
 

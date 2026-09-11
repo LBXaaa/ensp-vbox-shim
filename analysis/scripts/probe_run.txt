@@ -1,0 +1,2 @@
+VBoxC.dll = C:\Program Files\Oracle\VirtualBox\VBoxC.dll
+拿真对象失败: 尝试读取或写入受保护的内存。这通常指示其他内存已损坏。

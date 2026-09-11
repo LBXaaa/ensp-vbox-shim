@@ -1,0 +1,13 @@
+########## /c/Program Files/Huawei/eNSP/vboxserver/eNSP_VBoxServer.exe
+--- ASCII 关键串 ---
+CreateToolhelp32Snapshot
+--- UTF16 关键串 ---
+########## /c/Program Files/Huawei/eNSP/eNSP_Client.exe
+--- ASCII 关键串 ---
+.?AVCImportPacketDlg@@
+CImportPacketDlg
+CreateToolhelp32Snapshot
+ImportConfigThreadFunc
+ImportShutdownConfigThreadFunc
+--- UTF16 关键串 ---
+DONE
