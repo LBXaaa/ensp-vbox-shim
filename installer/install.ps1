@@ -353,6 +353,88 @@ function Do-Uninstall {
 
     Write-Host "`n卸载流程完成(CLSID 项请按上面提示跑 VBox 修复)。`n" -ForegroundColor Green
 }
+# ---------------------------------------------------------------------------
+# host-only 网络自检(只读,不改动)
+#
+# eNSP 的设备全靠 host-only 网络回连 192.168.56.1:资源文件(plugin\*\resource*.cfg)
+# 写死 dest:192.168.56.1,VBox 还在这条链路上跑 DHCP(192.168.56.100,发 .101-.254)。
+# 这台一旦坏了,现象和"补丁打错"完全一样 —— 设备起得来、VM 里一切正常、进度条永远
+# 走不完、没有任何崩溃报告。极难分辨,所以必须显式检查。
+#
+# 已知坏法:Windows/VBox 允许存在多块**同名** host-only 适配器,而 VM 是按名字绑的
+# (hostonlyadapterN="VirtualBox Host-Only Ethernet Adapter"),于是客机可能被挂到
+# 没有 IP 的那一块(169.254.x.x)上,永远够不到 192.168.56.1。
+# 本函数只报告,不擅自改网络配置。
+# ---------------------------------------------------------------------------
+function Test-HostOnlyNetwork {
+    param([string]$VBoxDir)
+    if (-not $VBoxDir) { return }
+    $vbm = Join-Path $VBoxDir "VBoxManage.exe"
+    if (-not (Test-Path $vbm)) { Write-Info "host-only 网络 : 找不到 VBoxManage.exe,跳过自检"; return }
+
+    # --- 解析 list hostonlyifs ---
+    $list = @()
+    $cur = $null
+    foreach ($line in (& $vbm list hostonlyifs 2>$null)) {
+        if ($line -match '^Name:\s+(.+)$')            { $cur = @{ Name = $Matches[1].Trim(); IP = "" } }
+        elseif ($line -match '^IPAddress:\s+(.+)$' -and $cur) { $cur.IP = $Matches[1].Trim(); $list += $cur; $cur = $null }
+    }
+
+    Write-Info "host-only 网络(设备回连 192.168.56.1 的必经之路):"
+    foreach ($i in $list) { Write-Info ("  {0}  ->  {1}" -f $i.Name, $(if ($i.IP) { $i.IP } else { "(无 IP)" })) }
+
+    $problems = @()
+
+    if ($list.Count -eq 0) {
+        $problems += "一块 host-only 适配器都没有 —— eNSP 设备无法回连宿主"
+    }
+    elseif ($list.Count -gt 1) {
+        $problems += ("存在 {0} 块 host-only 适配器。VM 按名字绑(hostonlyadapterN),名字重复时" -f $list.Count) +
+                     "VBox 选哪块不确定 —— 客机可能挂到没有 IP 的那块上"
+    }
+
+    # 名字必须能和 VM 的 hostonlyadapterN 对上
+    $named = @($list | Where-Object { $_.Name -like "VirtualBox Host-Only Ethernet Adapter*" })
+    if ($list.Count -gt 1 -and $named.Count -gt 1) {
+        $problems += "有多块适配器用了同一个名字 'VirtualBox Host-Only Ethernet Adapter'"
+    }
+
+    # 192.168.56.1 必须真的配在某一块上
+    $withIp = @($list | Where-Object { $_.IP -eq "192.168.56.1" })
+    if ($list.Count -gt 0 -and $withIp.Count -eq 0) {
+        $problems += "没有任何一块 host-only 适配器配了 192.168.56.1 —— 设备回连必然超时(10060)"
+    } elseif ($withIp.Count -gt 1) {
+        $problems += "有多块适配器同时配着 192.168.56.1,会产生重复 IP 冲突"
+    }
+
+    # VBox DHCP 必须绑在该网络名上
+    $dhcpOk = $false
+    foreach ($line in (& $vbm list dhcpservers 2>$null)) {
+        if ($line -match '^NetworkName:\s+(.+)$') {
+            $net = $Matches[1].Trim()
+            if ($net -eq "HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter" -and $withIp.Count -ge 1) { $dhcpOk = $true }
+        }
+    }
+    if ($list.Count -gt 0 -and -not $dhcpOk) {
+        $problems += "VBox 的 DHCP 服务器没有绑在 'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter' 上 —— 设备拿不到 IP"
+    }
+
+    if ($problems.Count -eq 0) {
+        Write-OK "host-only 网络 : 正常(唯一一块,192.168.56.1,DHCP 已绑定)"
+    } else {
+        Write-Warn "host-only 网络异常 —— 这会让设备卡在进度条,且症状与补丁问题无法区分:"
+        foreach ($p in $problems) { Write-Warn "       - $p" }
+        Write-Warn "  修复思路(本脚本不擅自改网络,请手工处理):"
+        Write-Warn "    1. VBoxManage list hostonlyifs 看有几块、名字分别是什么"
+        Write-Warn "    2. 多余的同名适配器用 VBoxManage hostonlyif remove `"<名字>`" 删除"
+        Write-Warn "       (该命令只认名字不认 GUID;同名时多删几次并逐次核对)"
+        Write-Warn "    3. 保证剩下那块名字为 'VirtualBox Host-Only Ethernet Adapter'、IP 为 192.168.56.1/24"
+        Write-Warn "    4. VBoxManage list dhcpservers 确认 NetworkName ="
+        Write-Warn "       'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter'"
+        Write-Warn "  另:设备起不来时先确认没有杀不掉的僵尸 eNSP_VBoxServer 进程,有就重启。"
+    }
+}
+
 
 # ---------------------------------------------------------------------------
 # 检测(只读,不改动)
@@ -451,6 +533,7 @@ function Write-EnvReport {
     Write-EnvReportHyperV
     Write-EnvReportNested
     Write-EnvReportVcrt -VBoxDir $VBoxDir
+    Test-HostOnlyNetwork -VBoxDir $VBoxDir
     Write-EnvReportSpoof
 }
 
