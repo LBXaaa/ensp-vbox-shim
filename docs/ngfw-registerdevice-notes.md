@@ -209,3 +209,78 @@ call edx              ; 跳进字符串
   可靠做法:先断在 `vbox52.dll+0x3800`(此时插件已加载),再挂插件断点。
 - x64dbg 会反复自动暂停在 `<模块>+0x91E0`(系统调用处),不是断点,需手动 F9 放行。
 - `clear_breakpoint` 不带地址会清除**全部**软件断点。
+
+---
+
+## 十一、补充:调用方对槽 [4]/[5] 的极性要求(2026-09-11 晚)
+
+第五节之后又推进了三层,逐条记录。
+
+### 11.1 `FUN_1000dbe0` 把「负数」当作成功
+
+反编译 `FUN_1000dbe0` 的 else 分支(即 `vtable[4]` 返回 `>= 0` 时走的那条):
+
+```c
+iVar9 = vtable[5](...);
+if (iVar9 < 0) {
+    ...清理...                 // puStack_18 保持 = FUN_1000dae0 的返回值
+}
+else {
+    ...清理...
+    puStack_18 = 0xffffffff;   // 返回 -1 = 失败
+}
+```
+
+而 `FUN_1000eb40` 判定 `if (puVar1 == NULL)` 才是成功。**即:槽[4] 或 槽[5] 必须
+有一个返回负 HRESULT,整条链才算成功。**
+
+语义上自洽:`FUN_1000dbe0` 是"删除 baselink 快照",它先 shell out 执行
+`snapshot "vfw_usg" delete "vfw_usg_Link"`,再问"那东西还在吗"——**已经不在了
+(E_FAIL)正是成功**。正品通过转发到内层 IVirtualBox、在取不到时返回 E_FAIL 来达到同一状态。
+
+**实测验证**:在 `0x1000DE3E`(槽[5] 刚返回处)手工把 `EAX` 改成 `0x80004005`,
+`FUN_1000dbe0` 随即返回成功,`RegisterDevice` 首次推进到第 2 步 `FUN_1000df70`。
+
+### 11.2 两次「改了却没生效」的自身缺陷
+
+这两次都是本次改动引入的,靠实测量出来:
+
+1. **`EXTRA_POP_THUNK` 里多了一句 `xor eax, eax`** —— 它把 C helper 返回的 HRESULT
+   强行改写成 S_OK,于是 `ngfw_chain5` 的 E_FAIL 根本传不出去。**这也解释了
+   "手工改 EAX 的实验能过、实际跑却不过"**:实验直接改寄存器,绕过了那句 `xor`。
+   该行已删除,helper 的返回值原样透传。
+
+2. **`pop ebx` 的位置写错** —— 早期版本在 `push ebx`(作为 `self` 传给 helper)之前
+   就 `pop ebx`,结果传给 helper 的是调用方遗留的 `ebx` 而非代理对象。症状是
+   helper 读到垃圾 `realVBox`、经垃圾 vtable 分发(崩溃日志里 `EAX=2`、`AV: READ addr=0x2`,
+   `EDX=0x0D` 即链上第一个索引)。修正后 `ebx` 直到最后一次 `pop` 之前都保持为代理对象。
+
+3. **回退链里 `get_APIRevision` 的 8 字节写入** —— 它是 LONG64 getter,写 8 字节,
+   而按 `void*` 局部变量接收会被溢出 4 字节踩坏栈。正品的 `FUN_10004010` 同样是 4 字节
+   局部变量,只因链首的 `5.2[9]` 通常先成功才没暴露。现改为 16 字节零初始化缓冲,
+   并把该索引从链里去掉(链上只用返回 BSTR 的槽)。
+
+### 11.3 每一步的入口地址(便于下断)
+
+| 步骤 | 函数 | 地址 | 成功判据 |
+|---|---|---|---|
+| 1 删 baselink | `FUN_1000dbe0` | `0x1000DBE0` | 返回 NULL |
+| 2 查 base | `FUN_1000df70` | `0x1000DF70` | 返回 0(slot[3] >= 0) |
+| 3 建 base | `FUN_1000dfb0` | `0x1000DFB0` | 返回 0(slot[6] >= 0) |
+| 4 补快照 | `FUN_1000e870` | `0x1000E870` | 返回 0 |
+
+`RegisterDevice` 本体在 `0x1000EB40`。第 2/3/4 步**未被命中**即说明上一步返回了非零。
+
+### 11.4 第 3 步的前置条件(已核对通过)
+
+`FUN_1000dfb0` 依赖 `FUN_1000d940` 算出的模板路径,后者读注册表:
+
+```c
+RegOpenKeyExW(HKLM, L"SOFTWARE\Oracle\VirtualBox", ...);
+RegQueryValueExW(hKey, L"VersionExt", ...);       // ← 注意是 VersionExt
+iVar4 = __wcsicmp(version, L"5");
+```
+
+本机 `VersionExt = "5.2.44r139111"`(32 位视图下同样存在),比较结果 >= 0,因此选
+`vfw_usg_for_vbox5.0.vbox`,该文件存在于 `plugin\ngfw\tools\ngfw\`。
+**此步与 `Version` 伪装无关,是独立的一项;若日后改伪装值需同时维护 `VersionExt`。**
