@@ -1,0 +1,40 @@
+﻿23:18:56 [SEEN] C:\Program Files\Huawei\eNSP\vboxserver\log\install.log (1838 bytes)
+23:21:17 [SEEN] C:\Program Files\Huawei\eNSP\vboxserver\log\VBoxManage.log (0 bytes)
+23:25:24 [SEEN] C:\Program Files\Huawei\eNSP\vboxserver\log\install.log (1838 bytes)
+  --- existing tail ---
+2026/09/11 ���� 23:04:12.45
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" registervm "C:\Program Files\Huawei\eNSP\\VBoxServer\AR_Base\AR_Base.vbox"
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" snapshot "AR_Base" take "AR_Base_Link"
+0%...10%...20%...30%...40%...50%...60%...70%...80%...90%...100%
+Snapshot taken. UUID: bb744cb7-caf8-4501-9237-247af575e0bd
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" registervm "C:\Program Files\Huawei\eNSP\\VBoxServer\WLAN_AC_Base\WLAN_AC_Base.vbox"
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" snapshot "WLAN_AC_Base" take "WLAN_AC_Base_Link"
+0%...10%...20%...30%...40%...50%...60%...70%...80%...90%...100%
+Snapshot taken. UUID: 72cbf6b0-126d-45d8-82e1-3f9aea2763fd
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" registervm "C:\Program Files\Huawei\eNSP\\VBoxServer\WLAN_AD_Base\WLAN_AD_Base.vbox"
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" snapshot "WLAN_AD_Base" take "WLAN_AD_Base_Link"
+0%...10%...20%...30%...40%...50%...60%...70%...80%...90%...100%
+Snapshot taken. UUID: 7389278b-bc5e-4739-a4a5-580c3f5a599b
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" registervm "C:\Program Files\Huawei\eNSP\\VBoxServer\WLAN_SAP_Base\WLAN_SAP_Base.vbox"
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" snapshot "WLAN_SAP_Base" take "WLAN_SAP_Base_Link"
+0%...10%...20%...30%...40%...50%...60%...70%...80%...90%...100%
+Snapshot taken. UUID: b78aaf0c-a7df-4d2b-a0a3-224788dfe9c6
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" registervm "C:\Program Files\Huawei\eNSP\\VBoxServer\WLAN_AP_Base\WLAN_AP_Base.vbox"
+"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" snapshot "WLAN_AP_Base" take "WLAN_AP_Base_Link"
+0%...10%...20%...30%...40%...50%...60%...70%...80%...90%...100%
+Snapshot taken. UUID: ea5ff8f5-b96c-4ad7-bf91-0aeb5dca73db
+23:25:24 [SEEN] C:\Program Files\Huawei\eNSP\vboxserver\log\VBoxManage.log (0 bytes)
+23:32:45 [NEW +229 bytes] C:\Program Files\Huawei\eNSP\vboxserver\log\VBoxManage.log
+Oracle VM VirtualBox Command Line Management Interface Version 5.2.22
+(C) 2005-2018 Oracle Corporation
+All rights reserved.
+
+Usage:
+
+VBoxManage unregistervm     <uuid|vmname> [--delete]
+
+
+Syntax error: VM name required
+23:35:39 [SEEN] C:\Program Files\Huawei\eNSP\plugin\ngfw\LogFile\VBoxManage.log (65 bytes)
+  --- existing tail ---
+(read failed)

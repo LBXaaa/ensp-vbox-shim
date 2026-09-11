@@ -1,0 +1,20 @@
+﻿23:20:00.081  --version
+23:20:08.008  --version
+23:20:08.118  list vms
+23:20:08.571  list hostinfo
+23:20:33.573  --version
+23:20:33.666  list vms
+23:20:34.073  list hostinfo
+########## EXPERIMENT START 23:21:16 ##########
+23:21:17.641  hostonlyif ipconfig "VirtualBox Host-Only Ethernet Adapter" --ip 192.168.56.1 --netmask 255.255.255.0
+23:32:44.695  unregistervm  --delete
+23:35:10.667  list vms
+23:35:37.988  snapshot "vfw_usg" delete "vfw_usg_Link"
+23:35:38.175  snapshot "vfw_usg" take "vfw_usg_Link"
+23:35:38.347  clonevm vfw_usg --snapshot vfw_usg_Link --options link --name "vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32" --basefolder "C:\Users\gui-agent\AppData\Local\eNSP\VBoxServer\devices\8AD60209-FA1B-4f31-AFC3-16CC04F9CB32" --register
+23:35:38.472  modifyvm vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --uart1 off
+23:35:38.597  modifyvm vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --uartmode2 server \\.\pipe\8AD60209-FA1B-4f31-AFC3-16CC04F9CB32
+23:35:38.706  startvm vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --type headless
+23:38:47.493  list vms
+23:40:07.250  showvminfo vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --machinereadable
+23:40:07.404  snapshot vfw_usg list

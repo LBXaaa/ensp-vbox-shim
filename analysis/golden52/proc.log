@@ -1,0 +1,55 @@
+﻿23:18:56 watcher armed
+23:19:06.751 pid=3552 ppid=6564 VBoxManage.exe
+            CMD: 
+23:19:51.814 pid=3396 ppid=6564 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" list vms
+23:20:11.836 pid=2876 ppid=4048 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" --version
+23:20:16.836 pid=7528 ppid=2876 VBoxManage_real.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage_real.exe" --version
+23:20:16.836 pid=4416 ppid=868 VBoxSVC.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxSVC.exe" -Embedding
+23:20:16.836 pid=6724 ppid=8172 VBoxManage_real.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage_real.exe" list vms
+23:20:21.840 pid=8172 ppid=4048 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" list vms
+23:20:36.869 pid=7840 ppid=1020 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" --version
+23:20:41.871 pid=3348 ppid=900 VBoxManage_real.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage_real.exe" list vms
+23:20:41.871 pid=900 ppid=1020 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" list vms
+23:20:41.871 pid=3396 ppid=868 VBoxSVC.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxSVC.exe" -Embedding
+
+########## EXPERIMENT START 23:21:16 ##########
+23:21:16.922 pid=5216 ppid=716 eNSP_Client.exe
+            CMD: "C:\Program Files\Huawei\eNSP\eNSP_Client.exe" 
+23:21:21.936 pid=2160 ppid=7296 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage" hostonlyif ipconfig "VirtualBox Host-Only Ethernet Adapter" --ip 192.168.56.1 --netmask 255.255.255.0
+23:21:21.936 pid=7296 ppid=5216 eNSP_VBoxServer.exe
+            CMD: "C:\Program Files\Huawei\eNSP\VBoxServer\eNSP_VBoxServer.exe"
+23:21:21.936 pid=7104 ppid=2160 VBoxManage_real.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage_real.exe" hostonlyif ipconfig "VirtualBox Host-Only Ethernet Adapter" --ip 192.168.56.1 --netmask 255.255.255.0
+23:21:26.947 pid=7704 ppid=868 VBoxSVC.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxSVC.exe" -Embedding
+23:32:48.328 pid=4420 ppid=6548 VBoxManage_real.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage_real.exe" unregistervm  --delete
+23:32:48.328 pid=6548 ppid=7296 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage" unregistervm  --delete
+23:35:38.566 pid=6232 ppid=7296 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" snapshot "vfw_usg" delete "vfw_usg_Link"
+23:35:43.584 pid=4984 ppid=836 VBoxManage_real.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage_real.exe" modifyvm vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --uartmode2 server \\.\pipe\8AD60209-FA1B-4f31-AFC3-16CC04F9CB32
+23:35:43.587 pid=836 ppid=7296 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage" modifyvm vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --uartmode2 server \\.\pipe\8AD60209-FA1B-4f31-AFC3-16CC04F9CB32
+23:35:43.588 pid=2312 ppid=7704 VBoxHeadless.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxHeadless.exe" --comment vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --startvm a22204ba-d5bd-42b6-817a-3bba473b9f32 --vrde config --sup-hardening-log=C:\Users\gui-agent\AppData\Local\eNSP\VBoxServer\devices\8AD60209-FA1B-4f31-AFC3-16CC04F9CB32\vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32\Logs\VBoxHardening.log
+23:35:48.591 pid=2464 ppid=7296 VBoxManage.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage" startvm vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --type headless
+23:35:48.597 pid=6720 ppid=2464 VBoxManage_real.exe
+            CMD: "C:\Program Files\Oracle\VirtualBox\VBoxManage_real.exe" startvm vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --type headless
+23:35:53.600 pid=7508 ppid=2312 VBoxHeadless.exe
+            CMD: 60eaff78-4bdd-042d-2e72-669728efd737-suplib-2ndchild --comment vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --startvm a22204ba-d5bd-42b6-817a-3bba473b9f32 --vrde config --sup-hardening-log=C:\Users\gui-agent\AppData\Local\eNSP\VBoxServer\devices\8AD60209-FA1B-4f31-AFC3-16CC04F9CB32\vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32\Logs\VBoxHardening.log
+23:35:53.608 pid=5488 ppid=7508 VBoxHeadless.exe
+            CMD: 60eaff78-4bdd-042d-2e72-669728efd737-suplib-3rdchild --comment vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32 --startvm a22204ba-d5bd-42b6-817a-3bba473b9f32 --vrde config --sup-hardening-log=C:\Users\gui-agent\AppData\Local\eNSP\VBoxServer\devices\8AD60209-FA1B-4f31-AFC3-16CC04F9CB32\vfw_usg_Clone_8AD60209-FA1B-4f31-AFC3-16CC04F9CB32\Logs\VBoxHardening.log
