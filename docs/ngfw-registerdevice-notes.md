@@ -284,3 +284,84 @@ iVar4 = __wcsicmp(version, L"5");
 本机 `VersionExt = "5.2.44r139111"`(32 位视图下同样存在),比较结果 >= 0,因此选
 `vfw_usg_for_vbox5.0.vbox`,该文件存在于 `plugin\ngfw\tools\ngfw\`。
 **此步与 `Version` 伪装无关,是独立的一项;若日后改伪装值需同时维护 `VersionExt`。**
+
+---
+
+## 十二、子代理穷举的结论(2026-09-11 深夜)
+
+三路并行排查(正品槽副作用 / 插件调用清单 / 导入框后续),关键结论如下。
+
+### 12.1 全 eNSP 组件都不注册 `vfw_usg`
+
+把垫片日志 683 行全量统计,`CreateProcessW` 钩子捕获到的 VBoxManage 命令**只有**:
+
+```
+unregistervm --delete                                  ×35  (空名字,见 12.2)
+clonevm <Base> --snapshot <Base>_Link ... --register        (AR_Base / vfw_usg / WLAN_*)
+startvm / modifyvm --uart1|--uart2|--uartmode2 / controlvm poweroff / unregistervm <clone>
+```
+
+**没有 `registervm`,没有 `snapshot ... take ...`。**
+
+各组件对代理对象的调用面(子代理逐一核对):
+
+| 组件 | 调用的槽 | 注册动作 |
+|---|---|---|
+| `eNSP_VBoxServer.exe` | 只调槽[1](零栈参) | `clonevm AR_Base/WLAN_*_Base ... --register` |
+| `NGFW_Plugin.dll` | 只调槽[1]/[3]/[4]/[5]/[6] | `clonevm vfw_usg ... --register`(**设备启动时**) |
+| `eNSP_Client.exe` | 只调槽[3]/[4]/[5]/[6] | **无**(导入框只拷文件,已逐条验证) |
+| `SVRP_Plugin.dll` | — | ` registervm "%s"`(CE/CX/NE 自注册) |
+
+**⇒ 注册全部由 `VBoxManage ... --register` 命令行完成,而 clonevm 要求**目标 VM 已存在**。**
+**⇒ 因此 `vfw_usg` 必须在设备启动前就注册好 —— 但没有任何组件做这件事。**
+
+「导入设备包」框的实际动作(子代理反汇编确认):校验存在性 + 扩展名 → `EndDialog`
+→ 后台线程 `Sleep(1000)` 循环里 `CopyFileW(用户选的文件 → <安装目录>\plugin\<包路径>)`
+→ `SendMessageW(0x4e6)` 刷进度条。**既无注册、无快照、无 VBoxManage、无 IPC 通知插件。**
+(注:该框的文案在 `.rsrc` 的 STRINGTABLE 里,所以伪 C 中 grep 不到字符串;
+另 `eNSP img(*.%s)|*.%s||` 过滤器属于"自定义设备图标导入",与设备包无关。)
+
+### 12.2 `unregistervm %s --delete` 的空名字是插件自身 bug
+
+`FUN_1000c260` 用 `FUN_10016c71()->vtable[3]()` 的结果当 `%s`,而 `FUN_10016c71()` 返回的是
+`&DAT_10054630`(全局 `CAfxStringMgr`),其 `vtable[3]` = `GetNilString()` → **恒为空串**。
+故该命令永远是 `unregistervm  --delete`,是条废命令,与垫片无关。
+
+### 12.3 槽[1] 的真品实现 —— 垫片的约定写错了
+
+Ghidra 未把 `FUN_10001250` 识别成函数,子代理直接反汇编原 DLL:
+
+```asm
+0x10001250  mov eax, 2
+0x10001255  ret 4          ; __thiscall,只有 this,零栈参,返回常量 2
+0x10001260  mov eax, 1     ; 槽[2] = Release,同形
+0x10001265  ret 4
+```
+
+调用点现场(`eNSP_VBoxServer.exe:0x414e30`)也是**不压任何参数**。
+**而垫片的 `thunk_clone_check` 是「3 参数、`ret 0xc`」——会多吃 8 字节栈。这是待修的硬伤。**
+
+槽[7]/[8]/[9] 是纯只读转发(→ inner[11]/[12]/[13]),槽[3]~[6] 是 getter(BSTR 回退链),**均无副作用**。
+
+### 12.4 垫片的 7.2 方法区映射整体偏低 12
+
+`src/vbox52_proxy.cpp:876` 及 `docs/vtable-mapping.md:83` 写 `[46] registerMachine -> VBox[40]`,
+**真值是 52(0xD0)**。7.2 的 36..47 是 **12 个 `InternalAndReservedAttributeNIVirtualBox`**,
+垫片表漏了这 12 项,导致整个方法区偏移 -12。项目自己的
+`analysis/output/vbox728_vtable.md:129` 里 `52 = RegisterMachine` 是正确的,只是未同步。
+正品的 `registerMachine` 在**槽[31]**(转发 inner[52])—— 但如 12.1 所述无人调用它。
+
+### 12.5 仍缺的一环:`CVBoxWrapper+0x10`(VBoxManage 路径)
+
+第 4 步 `FUN_1000e870` 应执行 `snapshot "vfw_usg" take "vfw_usg_Link"`,但日志中**该命令从未出现**。
+它由 `FUN_1000dae0`(`ShellExecuteExW`,`lpVerb=L"open"`,`nShow=0`)执行,
+而 `lpFile` 取自 `CVBoxWrapper + 0x10` —— 正是首轮崩溃时值为 NULL 的那个成员。
+
+构造函数的 `+0x10` 由 `GetNilString()` 初始化为**空串**,后续应由某处填入 VBoxManage 完整路径。
+**推测它未被填入,导致 `ShellExecuteExW` 拿到空路径而静默失败** —— 这同时解释了
+`registervm` 与 `snapshot take` 两条命令都缺席。**此项待验证。**
+
+顺带澄清(非缺陷):`FUN_1000cbe0` 是版本门控,依次在 `wrapper+0x04` 里找
+`"4.2"/"4.3"/"5.0"/"5.1"/"5.2"`,都不含则 `AfxMessageBox("VirtualBox version is not supported.")`
+并返回 -1;`wrapper+0x04` 由 `FUN_1000c920` 从 `HKLM\SOFTWARE\Oracle\VirtualBox` 读入,
+本机值为 `5.2.44`,**能过**。
