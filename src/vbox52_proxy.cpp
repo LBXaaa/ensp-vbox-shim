@@ -119,6 +119,104 @@ struct VBoxProxyRoot {
     VBoxProxyView view;       // [+0] returned ptr = &view.vtable
 };
 
+// ===== NGFW wrapper getters (genuine VBox52.dll semantics) =====
+// The genuine GetVBoxInstance object forwards its vtable slots [3]-[6] into specific
+// slots of the inner IVirtualBox.  Slot numbers differ between the 5.2 layout the
+// caller was built against and the 7.2 object this shim wraps:
+//     5.2[7]  get_APIVersion        -> 7.2[11]
+//     5.2[8]  get_APIRevision       -> 7.2[12]
+//     5.2[9]  get_homeFolder        -> 7.2[13]
+//     5.2[10] get_settingsFilePath  -> 7.2[14]
+// The genuine also CHAINS: slot[5] tries 9 then 8 then 10, slot[6] tries 10 then 7
+// then 9 -- and both return S_OK as long as the inner object exists; they never
+// propagate the inner getter's HRESULT.  The NGFW call sites branch on that value
+// (`test eax,eax` / `jl` at 0x1000DE3E..0x1000DE45), so propagating a real failure
+// sends it down a path that dereferences locals the successful path never sets up.
+static const int kApiVersion   = 11;   // 5.2[7]
+static const int kApiRevision  = 12;   // 5.2[8]
+static const int kHomeFolder   = 13;   // 5.2[9]
+static const int kSettingsFile = 14;   // 5.2[10]
+
+static HRESULT ngfw_call_getter(VBoxProxyView* self, void** out, int idx) {
+    if (!out) return E_POINTER;
+    *out = NULL;
+    if (!self || !self->realVBox) return E_POINTER;
+    void** vt = *(void***)self->realVBox;
+    if (!vt || !vt[idx]) return E_FAIL;
+    DBG("[ngfw] getter idx=%d self=%p real=%p vt=%p fn=%p", idx, self, self->realVBox, vt, vt[idx]);
+    // 16 zeroed bytes: get_APIRevision returns LONG64 and writes 8 bytes through the
+    // out pointer, so a bare `void*` local would be overflowed by 4 and smash the
+    // stack.  A BSTR getter only writes 4, so the buffer covers both.
+    typedef HRESULT (__stdcall *Fn)(IUnknown*, void*);
+    unsigned char buf[16] = { 0 };
+    HRESULT hr = ((Fn)vt[idx])(self->realVBox, (void*)buf);
+    void* v = *(void**)buf;
+    if (SUCCEEDED(hr)) { *out = v; return S_OK; }
+    // No SysFreeString here: a failed call may have left a LONG64 in the buffer, and
+    // treating that as a BSTR would fault.  The leak is bounded (one call per Init).
+    return hr;
+}
+
+// BSTR-returning slots only.  The genuine chains also try 5.2[8] get_APIRevision,
+// which is a LONG64 getter -- calling it through a small out buffer is a latent
+// overflow in the genuine too (FUN_10004010 uses a 4-byte local); it never fires
+// there only because 5.2[9] normally succeeds first.  Dropping it removes that
+// hazard without changing what the caller can observe (the value is only used as an
+// opaque handle, and a LONG64 is not a valid one).
+// wrapper[5] -- the "is the link snapshot still there?" probe that FUN_1000dbe0 runs
+// after shelling out `snapshot "vfw_usg" delete "vfw_usg_Link"`.
+//
+// FUN_1000dbe0 branches on this value at 0x1000DE3E (`test eax,eax` / `jl 0x1000DED0`)
+// and its else-branch tail ends with `puStack_18 = -1`, i.e. it reports FAILURE to
+// RegisterDevice when both slot[4] and slot[5] came back non-negative.  That inversion
+// is correct for this call site: the deletion has already been issued, so "the probe
+// did not find it" (negative) is the success case.
+//
+// Verified live: forcing EAX = 0x80004005 at 0x1000DE3E (slot[5]'s return) let
+// FUN_1000dbe0 return success and RegisterDevice advance to step 2 (FUN_1000df70),
+// which it had never reached before.
+//
+// The genuine object reaches the same state by forwarding into the inner IVirtualBox
+// and returning E_FAIL whenever that getter yields nothing.
+extern "C" HRESULT __stdcall ngfw_notfound(VBoxProxyView* self, void** out) {
+    (void)self;
+    if (out) *out = NULL;
+    return 0x80004005;   // E_FAIL -- "not there", which is what FUN_1000dbe0 wants
+}
+
+// wrapper[5] is reached from TWO places that want opposite answers:
+//   FUN_1000dbe0 (step 1, "delete baselink") -- satisfied by a NEGATIVE result,
+//       but it accepts that from slot[4] just as well (its guard is `iVar8 < 0`),
+//   FUN_1000e870 (step 4, "add base link")   -- needs a NON-negative result.
+// So the negative has to come from slot[4] and slot[5] must stay S_OK; putting the
+// E_FAIL on slot[5] makes step 4 abort.
+extern "C" HRESULT __stdcall ngfw_ok(VBoxProxyView* self, void** out) {
+    (void)self;
+    if (out) *out = NULL;
+    return S_OK;
+}
+
+// wrapper[6] -- called from FUN_1000dfb0 (step 3, "create base") right before it
+// issues the registervm.  That caller only inspects the HRESULT:
+//
+//     iVar10 = vtable[6](...);
+//     if (iVar10 < 0) { ...; return 0xffffffff; }
+//
+// The returned value is never used, so this does not need to reach into the inner
+// object at all.
+//
+// That matters: forwarding to the realVBox getter (idx 14) crashes.  The shim log
+// shows the dispatch itself is sound -- self/real/vt all valid, fn resolved to a
+// real proxy-stub entry -- but the stub then faults inside with a wild EIP
+// (0xAAFA8562 / 0xF21FF6AD, both unmapped), which is the LOCAL_SERVER marshal path
+// coming apart, not a bad vtable index on our side.  Since the caller discards the
+// value, returning S_OK directly is both sufficient and avoids that path.
+extern "C" HRESULT __stdcall ngfw_chain6(VBoxProxyView* self, void** out) {
+    (void)self;
+    if (out) *out = NULL;
+    return S_OK;
+}
+
 // ===== Proxy tracking =====
 struct ProxyEntry { VBoxProxyView* proxy; ProxyEntry* next; };
 static ProxyEntry* g_proxy_list = NULL;
@@ -684,8 +782,9 @@ extern "C" {
     void im_e_174(void);
     void thunk_QI(void);   void thunk_AR(void);   void thunk_RL(void);
     void thunk_clone_check(void);   // vtable[1]: 3-arg clone precondition probe (ret 0xc)
-    void thunk_pop2_6(void);        // wrapper[5]: call realVBox[13], consume 2 dwords
-    void thunk_pop2_7(void);        // wrapper[6]: call realVBox[14], consume 2 dwords
+    void thunk_pop2_4(void);        // wrapper[4]: E_FAIL probe, consumes 1 dword
+    void thunk_pop2_6(void);        // wrapper[5]: S_OK probe,    consumes 2 dwords
+    void thunk_pop2_7(void);        // wrapper[6]: S_OK probe,    consumes 1 dword
     void thunk_0(void);    void thunk_1(void);    void thunk_2(void);
     void thunk_3(void);    void thunk_4(void);    void thunk_5(void);
     void thunk_6(void);    void thunk_7(void);    void thunk_8(void);
@@ -732,9 +831,9 @@ const void* g_vbox52_vtable[] = {
     // arguments untouched, so the real method's own ret N cleans the stack exactly
     // as it does for the genuine wrapper.
     (void*)&thunk_4,      // [3]  -> realVBox[11] get_APIVersion        (genuine: realVBox[7])
-    (void*)&thunk_4,      // [4]  -> realVBox[11] get_APIVersion        (genuine: realVBox[7])
-    (void*)&thunk_pop2_6, // [5]  -> realVBox[13] get_homeFolder        (genuine: realVBox[9])
-    (void*)&thunk_pop2_7, // [6]  -> realVBox[14] get_settingsFilePath  (genuine: realVBox[10])
+    (void*)&thunk_pop2_4, // [4]  E_FAIL probe -> the negative FUN_1000dbe0 needs
+    (void*)&thunk_pop2_6, // [5]  S_OK probe   -> FUN_1000e870 needs non-negative
+    (void*)&thunk_pop2_7, // [6]  S_OK probe   -> FUN_1000dfb0 only checks "< 0"
     (void*)&thunk_4,      // [7]  get_APIVersion         -> VBox[11]
     (void*)&thunk_5,      // [8]  get_APIRevision        -> VBox[12]
     (void*)&thunk_6,      // [9]  get_homeFolder         -> VBox[13]

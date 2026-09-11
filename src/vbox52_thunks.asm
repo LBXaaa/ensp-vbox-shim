@@ -12,6 +12,8 @@ EXTERN helper_clone_check@16:PROC
 EXTERN wrap_findMachine_result@12:PROC
 EXTERN wrap_openMachine_result@16:PROC
 EXTERN wrap_registerMachine_result@8:PROC
+EXTERN ngfw_notfound@8:PROC
+EXTERN ngfw_ok@8:PROC
 
 ; ===== IVirtualBox universal __stdcall thunks =====
 UNI_THUNK_DIAG MACRO name, vtable_idx, diag_idx
@@ -204,31 +206,49 @@ thunk_clone_check ENDP
 ; the caller, so there is no chance to drop the surplus dword. So: `call` it, then
 ; correct esp before jumping back to the caller's return address.
 ;
-; Entry layout:  [esp]=ret_to_caller, [esp+4]=arg1, [esp+8]=arg2
-; Exit  layout:  jump to ret_to_caller with esp advanced by 8 (both args consumed)
-EXTRA_POP_THUNK MACRO name, vtable_idx, diag_idx
+; Entry layout:  [esp]=ret_to_caller (S), [esp+4]=arg1, [esp+8]=arg2
+; The caller wants esp = S+12 on return, so this thunk must end in `ret 8`.
+; (An earlier version ended with `add esp,12; jmp ret` -- but `jmp` does NOT pop the
+;  return address, so that left esp at S+8, still 4 bytes short.)
+EXTRA_POP_THUNK MACRO name, helper, diag_idx, popargs
 name PROC
     push    ebx
-    mov     ebx, ecx
+    mov     ebx, ecx                    ; ebx = proxy
     push    ebx
     push    diag_idx
-    call    diag_method_call@8
-    mov     ecx, ebx
-    pop     ebx
-    mov     eax, dword ptr [ecx+12]     ; eax = realVBox
-    mov     edx, dword ptr [esp+4]      ; edx = arg1 (caller's out-param)
-    push    edx                         ; arg1
-    push    eax                         ; this (COM = __stdcall, this is arg0)
-    mov     edx, dword ptr [eax]
-    mov     edx, dword ptr [edx+vtable_idx*4]
-    call    edx                         ; real getter pops this+arg1 (ret 8)
-    mov     edx, dword ptr [esp+4]      ; edx = ret_to_caller
-    add     esp, 12                     ; drop our arg1 copy + caller's two dwords
-    jmp     edx
+    call    diag_method_call@8          ; pops its 8; ebx still holds the proxy
+    ; NOTE: ebx must NOT be restored before `push ebx` below -- an earlier revision
+    ; popped ebx here (back to the caller's value) and then pushed that as `self`,
+    ; so the C helper received a garbage proxy, read a garbage realVBox, and
+    ; dispatched through a garbage vtable (observed as EAX=2 -> AV reading 0x2).
+    mov     edx, dword ptr [esp+8]      ; S-4+8 = S+4 -> arg1 (out param)
+    push    edx                         ; S-8
+    push    ebx                         ; S-12: self = proxy
+    call    helper                      ; C helper fills *out and returns the HRESULT
+    pop     ebx                         ; S: restore the caller's ebx (does not touch eax)
+    ret     popargs                     ; pass the helper's HRESULT straight through.
+                                        ; NOTE: do NOT `xor eax,eax` here. An earlier
+                                        ; revision forced S_OK, which silently discarded
+                                        ; ngfw_chain5's E_FAIL -- the caller then took its
+                                        ; "still present" branch and reported success=0 back
+                                        ; to RegisterDevice as a failure. (Forcing EAX at
+                                        ; 0x1000DE3E by hand worked, which is what hid it.)
+                                        ; pop ret + 8 -> esp = S+12
 name ENDP
 ENDM
 
-EXTRA_POP_THUNK thunk_pop2_6, 13, 6     ; wrapper[5] -> realVBox[13] get_homeFolder
-EXTRA_POP_THUNK thunk_pop2_7, 14, 7     ; wrapper[6] -> realVBox[14] get_settingsFilePath
+; popargs differs per slot: the two call sites were built differently.
+;   slot[5] @0x1000DE3C -- caller had TWO dwords on the stack  -> ret 8
+;   slot[6] @FUN_1000dfb0 -- caller pre-builds a by-value CString return (a CloneData
+;                            runs immediately before the call), i.e. ONE hidden return
+;                            pointer -> ret 4.  Using ret 8 there over-pops by 4 and
+;                            corrupts the caller's frame; the fault then surfaces later
+;                            as a wild EIP with lastMethod still showing 7.
+; wrapper[4] carries the negative that FUN_1000dbe0 needs ("nothing to delete");
+; wrapper[5] and [6] must stay S_OK or FUN_1000e870 aborts later.
+EXTRA_POP_THUNK thunk_pop2_4, ngfw_notfound@8, 4, 4 ; wrapper[4]  popargs 4: caller pushes 1 dword
+EXTRA_POP_THUNK thunk_pop2_6, ngfw_ok@8,       6, 8 ; wrapper[5]  popargs 8: caller pushes 2 dwords
+EXTRA_POP_THUNK thunk_pop2_7, ngfw_ok@8,       7, 4 ; wrapper[6]  popargs 4: caller pre-builds a
+                                                    ;   by-value CString return (one hidden pointer)
 
 END
