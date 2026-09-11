@@ -236,8 +236,6 @@ VBox 自己的安装器会把这个 CLSID 改回 Oracle 原生的 proxy/stub。�
 
 **设备启动很慢(单台 3-5 分钟)** —— 正常现象,不是卡死。本机开了 WSL2/Hyper-V 时,VirtualBox 7.x 用不了 VT-x 硬件加速,只能跑在 Hyper-V 之上,虚拟机启动会明显变慢。点完"开始"耐心等,设备最终会起来。
 
-**第三方设备启动需要的时间可能更长** —— 尤其是那些要另行导入镜像、跑在完整虚拟机里的设备(CE / CX / NE40E / NE5000E / NE9000),它们各自配了 4 GB 内存,同时拉多台时互相抢 CPU,单台十几分钟都属正常。这类设备的启动进度条还可能长时间不动、甚至看起来卡死 —— **不代表没起来**,可以双击设备试进控制台,或看 `plugin\<插件>\LogFile\infolog*.txt` 里有没有 `Received run ok msg`。**别因为进度条不动就去关 eNSP**,那会把正在引导的设备一并杀掉。
-
 **设备启动报 error 40 / 起不来** —— 先看安装日志(`%ProgramData%\ensp-vbox-shim\install.log`)开头的**环境检测**段,或重跑一次 `-Check`。installer 覆盖的几层成因都在那里:`VBox\x86\` 缺 x86 VCRT(`0x800700C1`)、`vboxserver\` 写权限不足(`VERR_FILE_NOT_FOUND`)、版本伪装未写入。注意:**开着 Hyper-V/WSL/WSA 不是 error-40 的成因**——VBox 7.x 会走 WHP 后端正常运行,只是启动慢(见上一条),不要为此去关 Hyper-V。
 
 **在 Windows Sandbox / WDAG 里报 error 40** —— **不受支持,无法修复**。Windows Sandbox 通过 VSMB 共享挂载系统盘(`\Device\vmsmb\...`),而 VirtualBox 的进程加固要求 `kernel32.dll`/`ntdll.dll` 从普通磁盘卷(`\Device\HarddiskVolume`)加载,二者冲突,VM 进程在启动阶段就被加固终止(加固日志 `VBoxHardening.log` 里是 `rc=-5632` / `rc=-610`)。这是 Windows Sandbox 与 VirtualBox 的固有冲突,**非本垫片可修复**——原版 VBox 在沙箱内同样起不来。请改用普通虚拟机或物理机。
