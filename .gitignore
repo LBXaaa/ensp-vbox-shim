@@ -58,3 +58,11 @@ __pycache__/
 .claude-flow/
 build/VBox52_nodel.bak.dll
 build/VBox52_vboxerr.dll
+
+# 本次排查产生的草稿(2026-09-12)
+analysis/scripts/probe_out.txt
+analysis/scripts/probe_out.txt.err
+analysis/scripts/probe_err.txt
+analysis/scripts/probe_run.txt
+analysis/scripts/probe_vtable_slots.exe
+build/build_out.txt

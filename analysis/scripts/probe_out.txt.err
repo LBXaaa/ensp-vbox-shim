@@ -1,7 +1,0 @@
-所在位置 F:\各种项目\逆向ensp\ensp-vbox-shim\analysis\scripts\probe_vtable_slots.ps1:118 字符: 30
-+ foreach ($i in @(7, 11, 13)) {
-+                              ~
-语句块或类型定义中缺少右“}”。
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingEndCurlyBrace
- 
