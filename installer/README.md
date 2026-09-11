@@ -11,6 +11,8 @@
 | `注册设备.bat` | **后备**:仅当自动注册被跳过(右键用了别的管理员账户)时,用平时启动 eNSP 的账户双击它补做 |
 | `install_all.ps1` | 编排器(被 `安装.bat` 调用):提权打补丁,再以登录用户身份注册设备 |
 | `install.ps1` | 实际打补丁的脚本(被 `install_all.ps1` 提权调用,也被 `卸载.bat` 调用) |
+| `导入防火墙包.bat` | **按需**:导入 USG6000V 的防火墙设备包。把 `vfw_usg.vdi` 拖到它上面即可 |
+| `import_fw.ps1` | 防火墙设备包导入脚本(被 `导入防火墙包.bat` 调用) |
 | `register_vms.ps1` | 注册脚本(被 `install_all.ps1` 和 `注册设备.bat` 调用) |
 | `payload/VBox52.dll` | 预编译好的 COM/vtable 垫片,安装时拷进 eNSP\tools\ |
 
@@ -48,6 +50,61 @@ powershell -ExecutionPolicy Bypass -File register_vms.ps1 -Check
 为什么注册这步不提权:VM 注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,必须与启动 eNSP
 的账户一致;用管理员跑可能写进别的账户、eNSP 反而看不到。`install_all.ps1` 正是为此设计——
 打补丁那段提权,注册那段退回登录账户身份来跑。
+### 需要另行导入设备包的设备
+
+eNSP 有一批设备要外挂磁盘镜像,镜像不随安装程序提供。判断依据是各插件的目录:
+凡带 `Database\` 子目录、且其中的模板指向该目录下某个镜像的,就是这一类。全新安装时
+这些 `Database\` 全是空的。
+
+| 插件目录 | 设备面板上的型号 | 需要的镜像 | 对应的 VM 模板 |
+|---|---|---|---|
+| `plugin\ngfw` | USG6000V | `Database\vfw_usg.vdi`(约 940 MB) | `tools\ngfw\vfw_usg_for_vbox5.0.vbox` |
+| `plugin\svrp` | **CE6800、CE12800** | `Database\CE.img` | `Tools\svrp\CE.xml` |
+| `plugin\cx` | CX200 | `Database\CX.img` | `Tools\svrp\CX.xml` |
+| `plugin\ne` | NE40E | `Database\NE40E.img` | `Tools\svrp\NE40E.xml` |
+| `plugin\ne5ke` | NE5000E | `Database\NE5000E.img` | `Tools\svrp\NE5KE.xml` |
+| `plugin\ne9k` | NE9000 | `Database\NE9000.img` | `Tools\svrp\NE9K.xml` |
+
+七台设备、六个包 —— CE6800 与 CE12800 共用 `CE.img`(`plugin\svrp` 下只有这一份模板)。
+镜像一律落在各自插件的 `Database\` 下,文件名与模板里 `location="../../Database/..."`
+写死的一致,改名会认不出。
+
+eNSP 界面上的「导入设备包」对话框是**通用**的(提示文案是 `请导入%s的设备包`),但它给
+的说明只举了 USG6000V 为例。整合包**不附带**上述任何镜像。
+
+启动一台缺镜像的设备时,eNSP 会弹出这个对话框:标题「导入设备包」,正文
+`说明:请导入<型号>的设备包。`,带「包路径」输入框和「浏览…/导入/取消」。2026-09-11
+在全新 Win10 上实测(以缺 `CE.img` 的 CE12800 为例),对话框正常弹出、eNSP 不卡死。
+**同一场景在旧版垫片下是另一副样子**:VBox 服务进程直接退出,界面上没有任何提示,
+只看到进度条不走 —— 这处差别是垫片修掉的,不是 eNSP 的问题。
+
+**本脚本目前只覆盖 USG6000V** —— 它是这批里唯一随 eNSP 一起被公开分发、且经实测跑通的。
+其余五台需要各自取得镜像;拿到之后照防火墙那套(放镜像 → 注册模板声明的 VM →
+补 `_Link` 快照)应当同理可行,但**未经实测**(手上没有这些镜像),故未在脚本中实现。
+
+拿到 `vfw_usg.vdi` 后,**把它拖到 `导入防火墙包.bat` 上**即可。脚本会做四件事,也就是
+eNSP 启动防火墙时所需要的全部状态:
+
+1. 复制镜像到 `<eNSP>\plugin\ngfw\Database\vfw_usg.vdi`;
+2. 以 eNSP 自带的 `vfw_usg_for_vbox5.0.vbox` 为蓝本,生成
+   `<eNSP>\plugin\ngfw\tools\ngfw\vfw_usg\vfw_usg.vbox`(磁盘路径改写为绝对路径);
+3. `VBoxManage registervm` 注册 `vfw_usg`;
+4. 补建链接克隆所需的 `vfw_usg_Link` 快照。
+
+此后 eNSP 启动 USG6000V 走的是 `clonevm vfw_usg --snapshot vfw_usg_Link --options link`,
+与 AR/WLAN 基础盘同一套机制,运行期不再需要本脚本。
+
+只想看会做什么、不改动:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File import_fw.ps1 -Package "D:\USG6000V\vfw_usg.vdi" -Check
+```
+
+撤销:`VBoxManage unregistervm vfw_usg`(不加 `--delete`,`Database\vfw_usg.vdi` 原样保留)。
+
+与 `安装.bat` 一样分两段权限:写 `Program Files` 那段提权,注册那段退回登录账户身份
+(注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,必须与启动 eNSP 的账户一致)。
+
 
 ### 卸载还原
 
