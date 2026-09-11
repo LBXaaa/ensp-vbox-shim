@@ -171,11 +171,30 @@ function Deploy-PayloadFile($PayloadName, $DestPath, $ExpectedHash) {
     Write-OK "已部署 -> $DestPath"
 }
 
+# 从安装时留下的 .orig.bak 还原。
+# 【只在确有备份时才动那个文件】—— 没有备份的绝不能先删:它可能是安装器根本
+# 没碰过的华为原程序(例如 NGFW_Plugin.dll),删掉之后没有任何地方能找回来。
 function Restore-FromBak($DestPath) {
-    if (Test-Path $DestPath) { Remove-Item $DestPath -Force }
     $bak = "$DestPath.orig.bak"
-    if (Test-Path $bak) { Copy-Item $bak $DestPath; Write-OK "已还原: $(Split-Path $DestPath -Leaf)" }
-    else { Write-Info "无备份,跳过: $(Split-Path $DestPath -Leaf)" }
+    if (-not (Test-Path $bak)) { Write-Info "无备份,跳过: $(Split-Path $DestPath -Leaf)"; return }
+    if (Test-Path $DestPath) { Remove-Item $DestPath -Force }
+    Copy-Item $bak $DestPath
+    Write-OK "已还原: $(Split-Path $DestPath -Leaf)"
+}
+
+# 卸载时清掉"安装器新建、机器上本来没有"的文件(即没有 .orig.bak 的那种)。
+# 按哈希认脸:只删确实由安装器部署的那一份,同名但不是它的文件一律不动。
+function Remove-DeployedFile($DestPath, $ExpectedSha256) {
+    if (-not (Test-Path $DestPath)) { return }
+    if (-not $ExpectedSha256) { return }
+    if (Test-Path "$DestPath.orig.bak") { return }   # 有备份的交给 Restore-FromBak
+    $h = (Get-FileHash $DestPath -Algorithm SHA256).Hash.ToLower()
+    if ($h -eq $ExpectedSha256.ToLower()) {
+        Remove-Item $DestPath -Force
+        Write-OK "已移除安装器新建的文件: $(Split-Path $DestPath -Leaf)"
+    } else {
+        Write-Info "非安装器部署的文件,保留: $(Split-Path $DestPath -Leaf)"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -321,8 +340,9 @@ function Do-Uninstall {
     Restore-FromBak $varp
 
     Write-Step "3/6 还原 NGFW 防火墙插件"
-    # 安装器不打这个补丁,所以这里通常无事可做;仅当用户曾手工跑过
-    # patches\patch_ngfw_plugin.py(会留下 .bak)时才需要还原。
+    # 安装器从不碰这个文件,所以这里通常无事可做,只会打印"无备份,跳过"。
+    # 留这一步只为兜住"曾手工打过补丁并留下 .orig.bak"的情形;手工跑过
+    # patches\patch_ngfw_plugin.py 的,用它的 --restore 还原即可。
     Restore-FromBak (Join-Path $EnspDir "plugin\ngfw\NGFW_Plugin.dll")
 
     Write-Step "4/6 还原所有位置的 VBox52.dll"
@@ -333,7 +353,9 @@ function Do-Uninstall {
         (Join-Path $EnspDir "plugin\ngfw\tools\ngfw")
     )
     foreach ($dir in $vboxDirs) {
-        Restore-FromBak (Join-Path $dir $DLL_NAME)
+        $p = Join-Path $dir $DLL_NAME
+        Restore-FromBak $p
+        Remove-DeployedFile $p $DLL_SHA256
     }
 
     Write-Step "5/6 CLSID InprocServer32(需手动)"
@@ -345,7 +367,12 @@ function Do-Uninstall {
     if ($VBoxDir) {
         $x86sub = Join-Path $VBoxDir "x86"
         foreach ($f in $VCRT_X86_FILES) {
-            Restore-FromBak (Join-Path $x86sub $f.Name)
+            $dest = Join-Path $x86sub $f.Name
+            Restore-FromBak $dest
+            # 期望值取自安装包里那一份:只有确实是我们部署的才删
+            $srcF = Join-Path $ScriptDir "payload\msvcrt-x86\$($f.Name)"
+            $want = if (Test-Path $srcF) { (Get-FileHash $srcF -Algorithm SHA256).Hash } else { $null }
+            Remove-DeployedFile $dest $want
         }
     } else {
         Write-Info "未定位 VirtualBox 目录,跳过 VC++ 运行时清理。"
