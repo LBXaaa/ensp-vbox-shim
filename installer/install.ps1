@@ -47,7 +47,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # ---------------------------------------------------------------------------
 $CLSID_VBOX   = "{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}"  # CLSID_VirtualBox
 $DLL_NAME     = "VBox52.dll"
-$DLL_SHA256       = "40dad121b2efd321fac2d8de7156f3ac62f3503498686f79aa5505eb571acb20"
+$DLL_SHA256       = "045fdf95747d9f562cc42be2b6b6adb04aeaa29823ceb4756b9de3a81295169b"
 # NGFW_Plugin.dll 的三态哈希 —— 仅用于 Do-Check 报告状态,安装器不改这个文件。
 # 必要性未经证实:2026-09-10 在 inst-51 上做的受控 A/B 显示,出厂原版与 22 站点
 # 补丁版都以完全相同的签名失败(VM 存活 5546 vs 5547 ms),而 host 上出厂原版

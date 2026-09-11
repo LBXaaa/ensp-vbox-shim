@@ -45,12 +45,29 @@
 `get_versionNormalized`、`get_revision`、`get_packageType`）返回写死的
 `5.2.22` 而不转发。这是**承重的**：它是版本伪装的后半段，在 eNSP 已握住对象
 *之后*读取（注册表那半段是在 COM *之前*读的）。见 `src/spoof_thunks.cpp`。
+### 进程内 CreateProcessW 注入（#1 的一部分）
+
+`VBox52.dll` 在宿主进程里对 `kernel32!CreateProcessW` 装一处入口点 detour
+（**不是** IAT 钩子——插件 DLL 有自己的 IAT，IAT 钩子拦不到它）。命中
+`modifyvm <vm> --uartmode2 server <管道>` 且命令行里没有 `--uart2` 时，就地补上
+`--uart2 0x2f8 3` 再放行。
+
+这是**承重的**：VBox 7.2 里 UART2 默认关闭，单发 `--uartmode2` 不生效，
+VBoxHeadless 便不会创建那个 COM2 命名管道；eNSP 随后
+`CAgentStaticCfgProcess::Startup` 找不到管道（`errorcode=2`），设备报 error 40。
+其余参数与目标进程原样透传。
+
+> 这条曾被写成"只观察"，是错的。2026-09-11 的对照实验：仓库里那份只做 IAT 钩子
+> 的旧构建（147456 字节）拦不到 NGFW 插件的调用，注入不发生 → `errorcode=2` →
+> error 40；换成带入口点 detour 的构建（150528 字节）后注入生效，同一台机器上
+> 设备正常启动。
+
 
 ## 诊断件（非承重）
 
 | 改动 | 位置 | 它做什么 |
 |------|------|----------|
-| `CreateProcessW` IAT 钩子 | `VBox52.dll` 内部 | 只观察。把每个子进程命令行记到 `C:\vbox\vboxmanage_wrapper.log`，然后**原封不动**调用真实的 `CreateProcessW`。不改写参数、不重定向目标。 |
+| 子进程命令行日志 | `VBox52.dll` 内部 | 把每个子进程命令行记到 `%ProgramData%\ensp-vbox-shim\vboxmanage_wrapper.log`。纯记录，可省略。 |
 | VEH 崩溃记录器 | `VBox52.dll` 内部 | 只观察的向量化异常处理器。记录异常；从不改变控制流。 |
 | `VBoxManage.exe` 包装器 | `…\Oracle\VirtualBox\`（一份能工作的安装里可能有一个） | 可选的透传，记录调用并原样转发给 `VBoxManage_real.exe`。eNSP 的 `clonevm`/`modifyvm`/`startvm` 都是原生 7.2.8 命令，对着真实二进制跑得好好的。**源码不在本仓库，这里也没有任何东西依赖它。** |
 

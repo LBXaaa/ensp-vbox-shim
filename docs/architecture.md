@@ -110,9 +110,15 @@ thunk。**注意**：当前 `map[N]` 是一刀切的 `N+4`（`vbox52_proxy.cpp` 
 - `ole32!CoGetClassObject` → 拦截 `CLSID_VirtualBox` 并交回 `g_factory`（代理类
   厂），这样进程内的 `CoGetClassObject` 也被桥接。一个 `g_factory_guard` 标志
   防止递归。
-- `kernel32!CreateProcessW` → **只观察。** 把每个子进程命令行记到
-  `C:\vbox\vboxmanage_wrapper.log`，然后**原封不动**调用真实的 `CreateProcessW`。
-  它不改写参数、也不重定向目标。纯诊断；可忽略或删除。
+- `kernel32!CreateProcessW` → 命令行日志 + **一处承重改写**。日志写到
+  `%ProgramData%\ensp-vbox-shim\vboxmanage_wrapper.log`。改写只针对
+  `modifyvm <vm> --uartmode2 server <管道>` 且缺 `--uart2` 的情形，就地补上
+  `--uart2 0x2f8 3`。VBox 7.2 里 UART2 默认关闭，不补这句 VBoxHeadless 不建
+  COM2 命名管道，eNSP 的 `CAgentStaticCfgProcess::Startup` 会以 `errorcode=2`
+  失败、设备报 error 40。其余参数与目标进程原样透传。
+
+  这处用的是**入口点 detour** 而非 IAT 钩子：插件 DLL（`NGFW_Plugin.dll`）在
+  自己的 IAT 里另有一份 `CreateProcessW`，只钩宿主 exe 的 IAT 会漏掉它。
 
 进程级还装了一个**只观察**的 **VEH** 崩溃记录器：它记录每个异常，从不改变控制
 流。
