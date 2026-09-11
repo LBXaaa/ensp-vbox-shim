@@ -189,5 +189,46 @@ thunk_clone_check PROC
     ret     0Ch                       ; clean eNSP's 3 incoming args
 thunk_clone_check ENDP
 
-; 
+; ===== Wrapper slots [5]/[6]: call the real getter, then consume TWO dwords =====
+;
+; NGFW_Plugin.dll pushes TWO stack dwords at these call sites, but the real VBox 7.2
+; getter only pops one (its own out-param). Measured on FUN_1000dbe0:
+;     call site  esp = 0x41EF838        (frame base E = 0x41EF840)
+;     return     esp = 0x41EF83C        -> only 4 bytes consumed, 4 left behind
+; so every pass leaked one dword and the frame ended up 4 bytes short. FUN_1000dbe0
+; then read [esp+0x3C] -- normally its own argument slot, but 4 bytes lower it is the
+; function's RETURN ADDRESS -- and tried to release it as a CString, faulting on
+; `lock xadd [ecx], edx` with ecx = 0x1000EC16 (code, not heap).
+;
+; A tail jump (UNI_THUNK_DIAG) cannot fix this: the real method returns straight to
+; the caller, so there is no chance to drop the surplus dword. So: `call` it, then
+; correct esp before jumping back to the caller's return address.
+;
+; Entry layout:  [esp]=ret_to_caller, [esp+4]=arg1, [esp+8]=arg2
+; Exit  layout:  jump to ret_to_caller with esp advanced by 8 (both args consumed)
+EXTRA_POP_THUNK MACRO name, vtable_idx, diag_idx
+name PROC
+    push    ebx
+    mov     ebx, ecx
+    push    ebx
+    push    diag_idx
+    call    diag_method_call@8
+    mov     ecx, ebx
+    pop     ebx
+    mov     eax, dword ptr [ecx+12]     ; eax = realVBox
+    mov     edx, dword ptr [esp+4]      ; edx = arg1 (caller's out-param)
+    push    edx                         ; arg1
+    push    eax                         ; this (COM = __stdcall, this is arg0)
+    mov     edx, dword ptr [eax]
+    mov     edx, dword ptr [edx+vtable_idx*4]
+    call    edx                         ; real getter pops this+arg1 (ret 8)
+    mov     edx, dword ptr [esp+4]      ; edx = ret_to_caller
+    add     esp, 12                     ; drop our arg1 copy + caller's two dwords
+    jmp     edx
+name ENDP
+ENDM
+
+EXTRA_POP_THUNK thunk_pop2_6, 13, 6     ; wrapper[5] -> realVBox[13] get_homeFolder
+EXTRA_POP_THUNK thunk_pop2_7, 14, 7     ; wrapper[6] -> realVBox[14] get_settingsFilePath
+
 END

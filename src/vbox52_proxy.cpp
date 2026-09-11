@@ -684,6 +684,8 @@ extern "C" {
     void im_e_174(void);
     void thunk_QI(void);   void thunk_AR(void);   void thunk_RL(void);
     void thunk_clone_check(void);   // vtable[1]: 3-arg clone precondition probe (ret 0xc)
+    void thunk_pop2_6(void);        // wrapper[5]: call realVBox[13], consume 2 dwords
+    void thunk_pop2_7(void);        // wrapper[6]: call realVBox[14], consume 2 dwords
     void thunk_0(void);    void thunk_1(void);    void thunk_2(void);
     void thunk_3(void);    void thunk_4(void);    void thunk_5(void);
     void thunk_6(void);    void thunk_7(void);    void thunk_8(void);
@@ -711,10 +713,28 @@ const void* g_vbox52_vtable[] = {
     (void*)&thunk_QI,         // [0]  QueryInterface
     (void*)&thunk_clone_check, // [1] clone precondition probe (ret 0xc) -- NOT AddRef; this is eNSP's only call
     (void*)&thunk_RL,         // [2]  Release
-    (void*)&spoof_get_version,      // [3]  get_version            -> spoof "5.2.22"
-    (void*)&spoof_get_versionNormalized, // [4]  get_versionNormalized  -> spoof "5.2.22"
-    (void*)&spoof_get_revision,     // [5]  get_revision           -> spoof "22"
-    (void*)&spoof_get_packageType, // [6]  get_packageType      -> spoof "5.2.22"
+    // [3]-[6]: reached ONLY by NGFW_Plugin.dll (eNSP itself calls just [1] on this
+    // object). The genuine VBox52.dll GetVBoxInstance object implements these as
+    // forwarding getters that take ONE out-param:
+    //   [3] -> realVBox[7]  get_APIVersion        plain forward, raw HRESULT
+    //   [4] -> realVBox[7]  get_APIVersion        returns the BSTR, E_FAIL if null
+    //   [5] -> realVBox[9]->[8]->[10]             chained
+    //   [6] -> realVBox[10]->[7]->[9]             chained
+    // The old stubs were bare `xor eax,eax; ret`: they never read the argument and
+    // never wrote the out-param. Every caller pre-builds an out-param slot first
+    // (FUN_1000dbe0 @0x1000DD57 / @0x1000DE3C, FUN_1000df70 @0x1000DF95), so the
+    // stub also left the stack misaligned relative to what the caller expected.
+    // FUN_1000dbe0 addresses its locals esp-relative with NO frame pointer (ebp holds
+    // the CVBoxWrapper), so a misaligned esp made it read the wrong slot, pick up a
+    // CString whose data pointer was NULL, and die in CloneData(0 - 0x10) reading
+    // 0xFFFFFFF0.
+    // UNI_THUNK_DIAG tail-jumps: it only swaps `this` for realVBox and leaves the
+    // arguments untouched, so the real method's own ret N cleans the stack exactly
+    // as it does for the genuine wrapper.
+    (void*)&thunk_4,      // [3]  -> realVBox[11] get_APIVersion        (genuine: realVBox[7])
+    (void*)&thunk_4,      // [4]  -> realVBox[11] get_APIVersion        (genuine: realVBox[7])
+    (void*)&thunk_pop2_6, // [5]  -> realVBox[13] get_homeFolder        (genuine: realVBox[9])
+    (void*)&thunk_pop2_7, // [6]  -> realVBox[14] get_settingsFilePath  (genuine: realVBox[10])
     (void*)&thunk_4,      // [7]  get_APIVersion         -> VBox[11]
     (void*)&thunk_5,      // [8]  get_APIRevision        -> VBox[12]
     (void*)&thunk_6,      // [9]  get_homeFolder         -> VBox[13]
