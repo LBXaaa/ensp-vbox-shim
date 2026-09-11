@@ -11,8 +11,8 @@
 | `注册设备.bat` | **后备**:仅当自动注册被跳过(右键用了别的管理员账户)时,用平时启动 eNSP 的账户双击它补做 |
 | `install_all.ps1` | 编排器(被 `安装.bat` 调用):提权打补丁,再以登录用户身份注册设备 |
 | `install.ps1` | 实际打补丁的脚本(被 `install_all.ps1` 提权调用,也被 `卸载.bat` 调用) |
-| `导入防火墙包.bat` | **按需**:导入 USG6000V 的防火墙设备包。把 `vfw_usg.vdi` 拖到它上面即可 |
-| `import_fw.ps1` | 防火墙设备包导入脚本(被 `导入防火墙包.bat` 调用) |
+| `导入设备包.bat` | **按需**:导入设备包(镜像)。把镜像或它的 zip 拖到它上面即可 |
+| `import_device.ps1` | 设备包导入脚本(被 `导入设备包.bat` 调用) |
 | `register_vms.ps1` | 注册脚本(被 `install_all.ps1` 和 `注册设备.bat` 调用) |
 | `payload/VBox52.dll` | 预编译好的 COM/vtable 垫片,安装时拷进 eNSP\tools\ |
 
@@ -78,29 +78,25 @@ eNSP 界面上的「导入设备包」对话框是**通用**的(提示文案是 
 **同一场景在旧版垫片下是另一副样子**:VBox 服务进程直接退出,界面上没有任何提示,
 只看到进度条不走 —— 这处差别是垫片修掉的,不是 eNSP 的问题。
 
-**本脚本目前只覆盖 USG6000V** —— 它是这批里唯一随 eNSP 一起被公开分发、且经实测跑通的。
-其余五台需要各自取得镜像;拿到之后照防火墙那套(放镜像 → 注册模板声明的 VM →
-补 `_Link` 快照)应当同理可行,但**未经实测**(手上没有这些镜像),故未在脚本中实现。
+**导入方式:把镜像(或它的 zip)拖到 `导入设备包.bat` 上。** 脚本按镜像文件名自动识别
+是哪个设备,做两件事:
 
-拿到 `vfw_usg.vdi` 后,**把它拖到 `导入防火墙包.bat` 上**即可。脚本会做四件事,也就是
-eNSP 启动防火墙时所需要的全部状态:
+1. 把镜像放进该插件自己的 `Database\`(zip 只取里面那一个镜像,不整包解压);
+2. `VBoxManage registervm` 注册模板里声明的那台 VM。
 
-1. 复制镜像到 `<eNSP>\plugin\ngfw\Database\vfw_usg.vdi`;
-2. 以 eNSP 自带的 `vfw_usg_for_vbox5.0.vbox` 为蓝本,生成
-   `<eNSP>\plugin\ngfw\tools\ngfw\vfw_usg\vfw_usg.vbox`(磁盘路径改写为绝对路径);
-3. `VBoxManage registervm` 注册 `vfw_usg`;
-4. 补建链接克隆所需的 `vfw_usg_Link` 快照。
-
-此后 eNSP 启动 USG6000V 走的是 `clonevm vfw_usg --snapshot vfw_usg_Link --options link`,
-与 AR/WLAN 基础盘同一套机制,运行期不再需要本脚本。
+防火墙(USG6000V)还要多两步,因为它的插件走的是**链接克隆**:配置要生成到
+`tools\ngfw\vfw_usg\` 子目录并把磁盘路径改成绝对路径,再补一个 `vfw_usg_Link` 快照。
+其余五台的模板相对路径本来就能解析对,原地注册即可 —— eNSP 对它们只发
+`startvm <VM名> --type headless`,既不克隆也不要快照。
 
 只想看会做什么、不改动:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File import_fw.ps1 -Package "D:\USG6000V\vfw_usg.vdi" -Check
+powershell -ExecutionPolicy Bypass -File import_device.ps1 -Package "D:\设备包\USG6000V.zip" -Check
+powershell -ExecutionPolicy Bypass -File import_device.ps1 -Package "D:\设备包\CE.img" -Check
 ```
 
-撤销:`VBoxManage unregistervm vfw_usg`(不加 `--delete`,`Database\vfw_usg.vdi` 原样保留)。
+撤销:`VBoxManage unregistervm <VM名>`(不加 `--delete`,镜像原样保留)。
 
 与 `安装.bat` 一样分两段权限:写 `Program Files` 那段提权,注册那段退回登录账户身份
 (注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,必须与启动 eNSP 的账户一致)。
