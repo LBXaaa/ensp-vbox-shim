@@ -183,6 +183,14 @@ function Invoke-FileStage {
     # 以 eNSP 自带模板为蓝本,只把磁盘路径改成绝对路径(模板在 ngfw\ 下,相对路径
     # ../../DataBase/ 是按 VM 配置放在 tools\ngfw\ 根目录来解析的;本脚本把配置放进
     # vfw_usg\ 子目录,相对路径会指错地方)。
+    #
+    # 【已注册的绝不覆盖】:注册后那份 .vbox 归 VirtualBox 管,里面有快照段、可能还有
+    # 正在被克隆挂着的差分盘。拿模板去覆盖会把快照段冲掉(表现为重跑一次脚本就换一个
+    # vfw_usg_Link),克隆链也可能跟着断。
+    if($alreadyReg -and (Test-Path $vmBox)){
+        Write-Info "vfw_usg 已注册,沿用现有 VM 配置(不覆盖,以免丢掉已有快照)"
+        return
+    }
     $text = Get-Content $tpl -Raw
     $relAbs = $dbVdi.Replace('\','/')
     $new = $text -replace 'location="[^"]*vfw_usg\.vdi"', "location=`"$relAbs`""
