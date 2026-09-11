@@ -21,7 +21,7 @@
 1. 先装好**原版** eNSP 和**官方** VirtualBox 7.2.x(本仓库不附带它们)。
 2. 双击 **`安装.bat`**。
 3. 弹出 UAC 窗口点"是"(打补丁要写注册表 + 改 Program Files,需要管理员权限)。
-4. 看窗口里的两步:第 1 步打补丁(4 项 ✓),第 2 步自动注册基础设备 VM。结束后启动 eNSP 拉一台设备试试。
+4. 看窗口里的两步:第 1 步部署垫片、AR 补丁和运行时,第 2 步自动注册基础设备 VM。结束后启动 eNSP 拉一台设备试试。
 
 `安装.bat` 一次把两件事都做了:**打补丁**(提权)和**注册设备 VM**(以登录账户身份)。
 全程只需双击一次、UAC 只弹一次。
@@ -51,7 +51,7 @@ powershell -ExecutionPolicy Bypass -File register_vms.ps1 -Check
 
 ### 卸载还原
 
-双击 **`卸载.bat`**,会还原版本字符串、从 `.orig.bak` 还原 AR 插件与垫片 DLL。其中 `tools\`、`plugin\ngfw\tools\ngfw\` 两处有华为原文件的备份,会被还原回原版;eNSP 根目录、`vboxserver\` 两处的垫片是安装时新建的、无原文件备份,卸载时直接跳过(属正常)。CLSID 项需要手动跑一次 VBox 修复(见下方"卸载的最后一步")。
+双击 **`卸载.bat`**,会还原版本字符串、从 `.orig.bak` 还原 AR/NGFW 插件与垫片 DLL。其中 `tools\`、`plugin\ngfw\tools\ngfw\` 两处有华为原文件的备份,会被还原回原版;eNSP 根目录、`vboxserver\` 两处的垫片是安装时新建的、无原文件备份,卸载时直接跳过(属正常)。CLSID 项需要手动跑一次 VBox 修复(见下方"卸载的最后一步")。
 
 ### 只检测不改动
 
@@ -61,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File register_vms.ps1 -Check
 powershell -ExecutionPolicy Bypass -File install.ps1 -Check
 ```
 
-会打印 eNSP/VBox 路径、垫片 DLL 是否就位、注册表版本号、CLSID 指向、VAR_Plugin.dll 是出厂版还是已打补丁，并附一段**环境检测**（见下）。
+会打印 eNSP/VBox 路径、垫片 DLL 是否就位、注册表版本号、CLSID 指向、VAR_Plugin.dll 和 NGFW_Plugin.dll 的补丁状态，并附一段**环境检测**（见下）。
 
 ### 环境检测（排查用，只读不改动）
 
@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Check
 powershell -ExecutionPolicy Bypass -File install.ps1 -EnspDir "D:\Program Files\Huawei\eNSP" -VBoxDir "D:\Program Files\Oracle\VirtualBox"
 ```
 
-## 它到底改了什么(安装的 4 步)
+## 它到底改了什么(安装的 6 步)
 
 1. **部署垫片 DLL** —— 把 `payload\VBox52.dll` 覆盖到 eNSP 树内**全部 4 个加载位置**:`tools\`、`vboxserver\`、eNSP 根目录、`plugin\ngfw\tools\ngfw\`。每个位置先查 hash:已经是同一版本就跳过,否则备份原文件为 `.orig.bak` 后覆盖。
 
@@ -90,7 +90,16 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -EnspDir "D:\Program Files\
 
 4. **覆盖 AR 插件** —— 用 `payload\VAR_Plugin.dll`(预构建的已补丁版)直接覆盖 `plugin\ar1000v\VAR_Plugin.dll`,备份原文件为 `.orig.bak`。不再运行时打字节补丁。
 
-四步详细原理见仓库 `docs/architecture.md`。
+5. **部署 x86 VC++ 运行时** —— 把 `VCRUNTIME140.dll` / `MSVCP140.dll` 放进 VirtualBox 的 `x86\` 子目录。
+
+6. **授权 vboxserver\** —— 给登录用户授予运行期写权限。
+
+六步详细原理见仓库 `docs/architecture.md`。
+
+> **`NGFW_Plugin.dll` 不在这六步里。** 2026-09-10 的受控 A/B 实测显示,出厂原版与
+> 22 站点 vtable 补丁版在启动结果上没有任何差异(失败签名相差不到 1 毫秒),且出厂
+> 原版即可正常启动 USG6000V。补丁器仍留在 `patches/` 下备查,安装器不碰该文件。
+> `-Check` 仍会报告它的当前状态(出厂原版 / 被手工打过补丁),仅供排查。
 
 ## 自动检测逻辑
 

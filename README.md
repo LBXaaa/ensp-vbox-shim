@@ -73,7 +73,7 @@ Hyper-V 之上。代价是**网络设备启动明显变
 | [`installer/`](installer/) | **一键整合包**源文件：双击 `安装.bat` 自动检测路径、打补丁、按需注册基础设备 VM 并补建链接克隆快照(打包好的 zip 见 [Releases](../../releases)) |
 | [`src/`](src/)         | 垫片源码：`vbox52_proxy.cpp`、`vbox52_thunks.asm`、`spoof_thunks.cpp`、`imachine_entries.asm`、`vbox52.def` |
 | [`build/`](build/)     | `build.bat`（32 位 MSVC）和我们预编译好的 `VBox52.dll` |
-| [`patches/`](patches/) | `patch_var_plugin.py` 及 AR 插件补丁的规格说明 |
+| [`patches/`](patches/) | `patch_var_plugin.py`、`patch_ngfw_plugin.py` 及插件补丁规格说明 |
 | [`registry/`](registry/) | `.reg` 文件：版本伪装、CLSID 劫持、卸载 |
 | [`docs/`](docs/)       | 架构、vtable 映射、承重件清单 |
 | [`analysis/`](analysis/) | 支撑这一切的逆向脚本与发现 |
@@ -176,6 +176,11 @@ icacls "C:\Program Files\Huawei\eNSP\vboxserver" /grant "%USERNAME%:(OI)(CI)M" /
 ```
 
 第 1、3 步对应整合包脚本里覆盖全部加载位置与打补丁的动作;第 4、5 步是干净机上的承重步骤(整合包 `安装.bat` 会自动做)。eNSP 安装时已自动注册基础设备 VM(`AR_Base`、`WLAN_*_Base`),全新机器上通常无需额外操作;只有卸载重装等情况下注册可能指向失效路径或缺链接克隆快照,这时用平时启动 eNSP 的账户跑 `installer\register_vms.ps1`(会按需重注册并补建缺失的 `<VM>_Link` 快照),详见 [installer/README.md](installer/README.md)。
+
+> **`NGFW_Plugin.dll` 不在安装范围内。** 2026-09-10 的受控 A/B 实测显示,出厂原版与
+> 22 站点 vtable 补丁版在启动结果上没有任何差异(失败签名相差不到 1 毫秒),且出厂原版
+> 即可正常启动 USG6000V。补丁器仍留在 [`patches/`](patches/) 下备查,但安装器不碰华为的
+> 这个文件 —— 对第三方二进制做字节改写而不带来可验证的收益,不值得冒这个险。
 
 然后启动 eNSP，拉起一台设备即可。要还原，见
 [registry/README.md](registry/README.md) 以及

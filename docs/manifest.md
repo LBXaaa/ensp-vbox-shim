@@ -18,9 +18,26 @@
 | 2 | `VAR_Plugin.dll`（ar1000v） | PATCHED | `…\Huawei\eNSP\plugin\ar1000v\VAR_Plugin.dll` | AR 路由器插件通过写死的 5.2 vtable 偏移去调用真实的 7.2 `IVirtualBox`。没有这处 28 站点重映射补丁，AR 会打到错误的方法、一启动就崩。独立于 #1——AR 两者都需要。 |
 | 3 | 版本伪装 | REGISTRY | `HKLM\…\Oracle\VirtualBox` `Version`/`VersionExt`（两个视图） | eNSP 在 COM 之前的版本闸门拒绝任何非 `5.2.x` 的版本。字符串读作 `5.2.44`；二进制其实是 `7.2.8.173730`。 |
 | 4 | CLSID InprocServer32 | REGISTRY | `CLSID\{B1A7A4F2-…}\InprocServer32`（两个视图） | 把 `CLSID_VirtualBox` 的 32 位进程内服务器重指到 `VBox52.dll`，这样 eNSP 的 `CoCreateInstance` 加载的是我们的类厂，而非 VBox 原生的 proxy/stub。 |
-
 四项都已对照一份活的、能工作的安装核验过（AR 起到 `<Huawei>`，AC6605 起到
 `<AC6605>`）。
+### 曾经的候选：#5 `NGFW_Plugin.dll` —— 已剔除
+
+曾把「就地对 `NGFW_Plugin.dll` 做 22 站点 vtable 重映射」列为第 5 项承重件。
+**2026-09-10 的受控 A/B 实测否定了这一点**，该项已从安装器中移除：
+
+| 测试 | `NGFW_Plugin.dll` | 结果 | VM 存活 | 崩溃日志 |
+|---|---|---|---|---|
+| A | 22 站点补丁版 | error 40 | 5547 ms | 无 |
+| B | 出厂原版 | error 40 | **5546 ms** | 无 |
+
+两次失败签名完全相同（`startvm` 后约 4 秒插件超时 → `controlvm poweroff` +
+`unregistervm --delete`），相差不到 1 毫秒 —— 补丁版本对结果没有影响。
+而在 host（VBox 7.2.8）上，**出厂原版即可正常启动 USG6000V**，进到
+`Login authentication / Username:`。
+
+结论：这个补丁既非充分也未见必要，对第三方二进制做字节改写却不带来可验证的收益，
+不值得承担。补丁器仍留在 `patches/` 下备查，安装器不再触碰该文件。
+
 
 ### 进程内版本伪装（#1 的一部分）
 

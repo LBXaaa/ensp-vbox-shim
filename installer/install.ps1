@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ensp-vbox-shim 一键安装器 —— 让原版华为 eNSP 跑在 VirtualBox 7.x 上。
 
@@ -13,6 +13,11 @@
       3. CLSID InprocServer → 指向我们的 DLL(按真实路径生成)
       4. VAR_Plugin.dll     → 覆盖 payload 中预构建的已补丁版本
       5. VC++ 运行时(x86) → 部署到 VBox\x86\ 子目录(干净机缺它会 error 40 / 0x800700C1)
+    NGFW_Plugin.dll 不做处理:2026-09-10 的受控 A/B 实测显示,出厂原版与
+    22 站点补丁版在启动结果上没有任何差异(失败签名相差不到 1 毫秒),
+    且 host 上出厂原版即可正常启动 USG6000V。补丁器仍留在 patches/ 下备查,
+    但安装器不碰华为的这个文件。
+
 
     用法(一般经 安装.bat / 卸载.bat 自动提权调用):
       powershell -ExecutionPolicy Bypass -File install.ps1            # 安装
@@ -43,6 +48,13 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $CLSID_VBOX   = "{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}"  # CLSID_VirtualBox
 $DLL_NAME     = "VBox52.dll"
 $DLL_SHA256       = "40dad121b2efd321fac2d8de7156f3ac62f3503498686f79aa5505eb571acb20"
+# NGFW_Plugin.dll 的三态哈希 —— 仅用于 Do-Check 报告状态,安装器不改这个文件。
+# 必要性未经证实:2026-09-10 在 inst-51 上做的受控 A/B 显示,出厂原版与 22 站点
+# 补丁版都以完全相同的签名失败(VM 存活 5546 vs 5547 ms),而 host 上出厂原版
+# 即可正常启动。见 patches/README.md。
+$NGFW_PRISTINE_SHA256 = "a71b488ed31c038aae39863d47f253de8c7c46c2881f52d7868a83809defa14a"
+$NGFW_PATCHED_SHA256  = "8169f6169c86563f5ba8e2762cf579fad7eaab5374e76bb24bdce0d270641ec9"
+$NGFW_LEGACY_SHA256   = "0696612468e533262e7325f3120a63601bfbd685b0d0d4477afcbc452c2e0da0"
 $VARP_SHA256      = "f0107975ba1b04325af2d31189ee92833233c1163f4553600207789977f94451"
 
 # VC++ 运行时(x86)—— error 40 / 0x800700C1 的修法。
@@ -58,7 +70,7 @@ $VCRT_X86_FILES = @(
 
 $SPOOF_VER    = "5.2.44"
 $SPOOF_VEREXT = "5.2.44r139111"
-$REAL_VER     = "7.2.8"
+$REAL_VER     = "7.2.8"      # 卸载还原时的兜底值;优先动态读取已装 VBox 的真实版本
 $REAL_VEREXT  = "7.2.8r173730"
 
 # ---------------------------------------------------------------------------
@@ -285,18 +297,35 @@ function Do-Install {
 function Do-Uninstall {
     param([string]$EnspDir, [string]$VBoxDir)
 
-    Write-Step "1/5 还原版本字符串 -> $REAL_VER"
-    Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "Version"    $REAL_VER
-    Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "VersionExt" $REAL_VEREXT
-    Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "Version"    $REAL_VER
-    Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "VersionExt" $REAL_VEREXT
-    Write-OK "Version=$REAL_VER"
+    Write-Step "1/6 还原版本字符串"
+    # 动态读取已装 VBox 的真实版本(VBoxManage --version 形如 7.2.14r174565);
+    # 读不到(如已卸载 VBox)才退回常量兜底值。
+    $real = $REAL_VER; $realext = $REAL_VEREXT
+    $vbm = Join-Path $VBoxDir "VBoxManage.exe"
+    if (Test-Path $vbm) {
+        try {
+            $out = (& $vbm --version 2>$null | Select-Object -First 1)
+            if ($out -match '^(\d+\.\d+\.\d+)r(\d+)$') {
+                $real = $Matches[1]; $realext = $out.Trim()
+            }
+        } catch { }
+    }
+    Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "Version"    $real
+    Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "VersionExt" $realext
+    Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "Version"    $real
+    Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "VersionExt" $realext
+    Write-OK "Version=$real"
 
-    Write-Step "2/5 还原 AR 插件 VAR_Plugin.dll"
+    Write-Step "2/6 还原 AR 插件 VAR_Plugin.dll"
     $varp = Join-Path $EnspDir "plugin\ar1000v\VAR_Plugin.dll"
     Restore-FromBak $varp
 
-    Write-Step "3/5 还原所有位置的 VBox52.dll"
+    Write-Step "3/6 还原 NGFW 防火墙插件"
+    # 安装器不打这个补丁,所以这里通常无事可做;仅当用户曾手工跑过
+    # patches\patch_ngfw_plugin.py(会留下 .bak)时才需要还原。
+    Restore-FromBak (Join-Path $EnspDir "plugin\ngfw\NGFW_Plugin.dll")
+
+    Write-Step "4/6 还原所有位置的 VBox52.dll"
     $vboxDirs = @(
         (Join-Path $EnspDir "tools"),
         (Join-Path $EnspDir "vboxserver"),
@@ -307,12 +336,12 @@ function Do-Uninstall {
         Restore-FromBak (Join-Path $dir $DLL_NAME)
     }
 
-    Write-Step "4/5 CLSID InprocServer32(需手动)"
+    Write-Step "5/6 CLSID InprocServer32(需手动)"
     Write-Warn "CLSID 劫持指向的正确原始值随 VBox 构建而异,本脚本不擅自改写。"
     Write-Warn "请对 VirtualBox 7.2 跑一次【修复】(应用和功能 → VirtualBox → 修改/修复),"
     Write-Warn "它会把 $CLSID_VBOX 改回 Oracle 原生 proxy/stub。"
 
-    Write-Step "5/5 还原 x86\ 子目录的 VC++ 运行时"
+    Write-Step "6/6 还原 x86\ 子目录的 VC++ 运行时"
     if ($VBoxDir) {
         $x86sub = Join-Path $VBoxDir "x86"
         foreach ($f in $VCRT_X86_FILES) {
@@ -366,6 +395,17 @@ function Do-Check {
                else { "非标准版本(哈希不同)" }
         Write-Info "VAR_Plugin.dll : $tag"
     } else { Write-Info "VAR_Plugin.dll : 未找到(没装 AR 包)" }
+    $ngfwp = Join-Path $EnspDir "plugin\ngfw\NGFW_Plugin.dll"
+    if (Test-Path $ngfwp) {
+        $h = (Get-FileHash $ngfwp -Algorithm SHA256).Hash.ToLower()
+        # 安装器不再处理这个文件,这里只报状态供排查。
+        $tag = if ($h -eq $NGFW_PRISTINE_SHA256) { "出厂原版(安装器不动它)" }
+               elseif ($h -eq $NGFW_PATCHED_SHA256) { "被手工打过 22 站点补丁" }
+               elseif ($h -eq $NGFW_LEGACY_SHA256) { "被手工打过旧 28 站点补丁" }
+               else { "非标准版本(哈希不同)" }
+        Write-Info "NGFW_Plugin.dll : $tag"
+    } else { Write-Info "NGFW_Plugin.dll : 未找到(没装 USG6000V 包)" }
+
 
     if ($VBoxDir) {
         Write-Info "VC++ 运行时 x86(x86\ 子目录,修 0x800700C1):"
