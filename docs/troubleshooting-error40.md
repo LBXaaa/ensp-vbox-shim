@@ -79,6 +79,42 @@
 
 ---
 
+## 根因 D:host-only 网络过滤驱动绑定失效(升级 VirtualBox 后常见)
+
+**现象**:AR 一拉就报 40,进程看**一切正常**——垫片照常工作、eNSP 不崩、也不卡进度条,只是设备起不来。
+
+**根因**:VirtualBox 的 host-only 网络不是一块普通网卡,而是靠 **NDIS 过滤驱动**(7.x 里叫 `VirtualBox NDIS6 Bridged Networking Driver` / `oracle_VBoxNetLwf`)**绑定在虚拟适配器上**实现的。升级 VirtualBox、Windows 功能更新、或网卡被禁用/重命名之后,这个绑定会失效。此后 `startvm` 会在创建网络 LUN 时失败,**VBox 直接拒绝启动虚拟机** → eNSP 报 40。
+
+**辨别(三步,都不需要读懂垫片)**:
+
+1. 看 eNSP 自己的命令日志 `eNSP\vboxserver\log\VBoxManage.log`,出现:
+   ```
+   VBoxManage.exe: error: Failed to open/create the internal network
+   'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter' (VERR_INTNET_FLT_IF_NOT_FOUND)
+   VBoxManage.exe: error: Failed to attach the network LUN (VERR_INTNET_FLT_IF_NOT_FOUND)
+   ```
+   看到 `VERR_INTNET_FLT_IF_NOT_FOUND` 即可确诊。
+2. **垫片日志(`%ProgramData%\ensp-vbox-shim\vbox52_proxy.log`)里没有任何错误** —— `findMachine`、`clonevm`、`modifyvm` 全部成功,失败发生在随后的 `startvm`。这是与根因 A/B 最好区分的特征。
+3. **不用 eNSP 就能复现**:给任意一台 VM 接上 host-only 网卡再 `VBoxManage startvm`,报同一个错。据此可确认与 eNSP、与垫片都无关。
+
+**修复**(两步,均可在本机直接做):
+
+1. **禁用 → 再启用** host-only 适配器:
+   控制面板 → 网络连接(或`控制面板\网络和 Internet\网络连接`)→ 找到
+   **VirtualBox Host-Only Ethernet Adapter** → 右键**禁用** → 等几秒 → 右键**启用**。
+   命令行等价:`Disable-NetAdapter -Name "<适配器名>" -Confirm:$false`,等几秒后 `Enable-NetAdapter -Name "<适配器名>" -Confirm:$false`。
+2. **重启 VBox 服务**,让它重新枚举网络视图:任务管理器里结束 **`VBoxSVC.exe`** 和 **`VBoxSDS.exe`**(会自动重启),然后**完全关闭并重开 eNSP**。
+
+> 若第 1 步无效,再检查适配器的绑定:适配器属性里
+> **VirtualBox NDIS6 Bridged Networking Driver** 必须是**勾选**状态。
+> 若该适配器在设备管理器里有**多个同名副本**,先全部卸载再修一次 VirtualBox。
+
+**预防**:升级 VirtualBox 之后,先随便建一台带 host-only 网卡的 VM 启动一次验证网络栈,再开 eNSP。这一步比事后排查 error 40 便宜得多。
+
+**诊断记录(2026-09-14,Windows 11 + VBox 7.2.16)**:`install.log` 六步全绿、垫片日志 `findMachine`/`clonevm`/`modifyvm` 全成功、`startvm` 后 9.3 秒 eNSP 放弃并 `controlvm poweroff`;`VBoxManage.log` 里正是上述两条 `VERR_INTNET_FLT_IF_NOT_FOUND`。适配器本身存在且 Up、绑定项 Enabled=True、驱动服务正常——仅是绑定状态失效。执行上述两步修复后,同一台 VM 同一网卡配置 `startvm` 立刻成功。
+
+---
+
 ## 速查表
 
 | 现象 | 根因 | 去看 |
@@ -86,3 +122,4 @@
 | 干净机首拉 AR 即 40,`0x800700C1` | 缺 x86 VCRT / 加固 | 根因 A |
 | 卸载重装后 40,注册项失效/无快照 | 基础 VM 注册/快照 | 根因 B,跑 `注册设备.bat` |
 | 嵌套环境 AR 进度条卡满屏 `####`,headless 空转满核,内核 `c013e501` panic | VBox 走原生 VT-x,二级嵌套下崩 | 根因 C,启用 WHP 让 VBox 走 NEM |
+| 升级 VBox 后 40,垫片日志全绿,`VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND` | host-only 过滤驱动绑定失效 | 根因 D,禁用→启用 host-only 网卡 + 重启 VBoxSVC |
