@@ -202,13 +202,28 @@ function Test-PerfCountersFunctional {
 }
 
 # --- firewall --------------------------------------------------------------
+#
+# Get-NetFirewallRule text output groups each rule into a block separated by a
+# blank line. Testing the three fields independently over the whole blob lets an
+# unrelated rule satisfy them, so a DISABLED+BLOCK eNSP rule would be reported
+# as an allow rule whenever any other rule happens to be enabled+allow.
+# Each block is therefore evaluated whole.
+#
+# The literal below matches a lowercase rule name (observed as
+# "ensp_vboxserver") only because -match is case-insensitive by default.
+# Do not switch to -cmatch without normalising case first.
 function Parse-FirewallRulesForEnsp {
     param([string[]]$Lines)
     $text = ($Lines -join "`n")
-    $has = ($text -match '(?m)^DisplayName\s*:\s*.*eNSP_VBoxServer' -and
-            $text -match '(?m)^Enabled\s*:\s*True' -and
-            $text -match '(?m)^Action\s*:\s*Allow')
-    return [pscustomobject]@{ HasAllowRule = $has }
+    $blocks = [regex]::Split($text, '(\r?\n){2,}')
+    foreach ($b in $blocks) {
+        if ($b -match '(?m)^DisplayName\s*:\s*.*eNSP_VBoxServer' -and
+            $b -match '(?m)^Enabled\s*:\s*True' -and
+            $b -match '(?m)^Action\s*:\s*Allow') {
+            return [pscustomobject]@{ HasAllowRule = $true }
+        }
+    }
+    return [pscustomobject]@{ HasAllowRule = $false }
 }
 
 # --- eNSP server ports -----------------------------------------------------

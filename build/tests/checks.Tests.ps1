@@ -76,4 +76,27 @@ $ports = Parse-PortOccupancy -OccupiedPorts @(54012) -RequiredPorts @(54012, 540
 Assert-Equal $ports.Conflicts.Count 1 "one conflict"
 Assert-Equal $ports.Conflicts[0] 54012 "conflict is 54012"
 
+# A disabled+blocked eNSP rule must NOT be satisfied by an unrelated rule.
+$fwDecoy = @(
+    "DisplayName  : eNSP_VBoxServer",
+    "Enabled      : False",
+    "Direction    : Inbound",
+    "Action       : Block",
+    "",
+    "DisplayName  : SomeUnrelatedRule",
+    "Enabled      : True",
+    "Direction    : Inbound",
+    "Action       : Allow"
+)
+Assert-False (Parse-FirewallRulesForEnsp -Lines $fwDecoy).HasAllowRule "disabled eNSP rule is not rescued by another rule"
+
+# The real rule name on this machine is lowercase; -match is case-insensitive.
+$fwLower = @(
+    "DisplayName  : ensp_vboxserver",
+    "Enabled      : True",
+    "Direction    : Inbound",
+    "Action       : Allow"
+)
+Assert-True (Parse-FirewallRulesForEnsp -Lines $fwLower).HasAllowRule "lowercase rule name matches"
+
 Complete-TestRun
