@@ -112,4 +112,35 @@ Assert-True  $b.VBoxDevicesPresent     "ar base present"
 Assert-False $b.AllVBoxDevicesPresent  "not all vbox devices present"
 Assert-Equal $b.SplitHint "vbox-layer" "split hint points at vbox layer"
 
+Write-Host "=== Task 6: remaining checks ==="
+
+# 192.168.56.0/24 must be carried by exactly one interface.
+$c = Compare-SubnetOwners -Interfaces @(
+    @{ Name = "Ethernet 11"; IPv4 = "192.168.56.1" },
+    @{ Name = "VPN Adapter"; IPv4 = "192.168.56.1" }
+) -Prefix "192.168.56."
+Assert-Equal $c.OwnerCount 2 "two owners detected"
+Assert-True  $c.Conflict    "conflict flagged"
+
+$c1 = Compare-SubnetOwners -Interfaces @(@{ Name = "Ethernet 11"; IPv4 = "192.168.56.1" }) -Prefix "192.168.56."
+Assert-False $c1.Conflict "single owner is fine"
+
+# eNSP version vs. the devices actually installed.
+$v = Test-EnspVersionAgainstDevices -EnspVersion "1.2.00.500" -HasCeDevice $true -HasCx200 $true
+Assert-True  $v.CeNeedsNewer  "1.2.00.500 is too old for CE"
+Assert-True  $v.Cx200Removed  "1.2.00.500 removed CX200"
+
+$v2 = Test-EnspVersionAgainstDevices -EnspVersion "1.3.00.100" -HasCeDevice $true -HasCx200 $false
+Assert-False $v2.CeNeedsNewer "1.3.00.100 is fine for CE"
+
+# VRAMSize in the AR template.
+Assert-Equal (Get-VramSizeFromTemplate -Lines @("<Display VRAMSize=`"9`"/>")) 9 "vram parsed"
+Assert-True  (Test-VramTooSmall -VramSize 1) "1MB flagged"
+Assert-False (Test-VramTooSmall -VramSize 9) "9MB fine"
+
+# WinPcap vs Npcap must be distinguished, not merely "installed".
+$p = ClassifyPacketDriver -WinPcapVersion "4.1.3" -NpcapPresent $true
+Assert-True $p.NpcapConflict "npcap conflict flagged"
+Assert-False $p.WinPcapUsable "winpcap not usable while npcap is present"
+
 Complete-TestRun

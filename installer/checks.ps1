@@ -273,3 +273,120 @@ function Get-DeviceBackendProbe {
     }
     return $probe
 }
+
+# --- 192.168.56.x ownership -------------------------------------------------
+#
+# A VPN or VMware VMnet adapter holding an address in the same subnet breaks
+# device connectivity: traffic to 192.168.56.1 gets routed into the wrong
+# adapter. eNSP's own resources hard-code dest:192.168.56.1.
+function Compare-SubnetOwners {
+    param([object[]]$Interfaces, [string]$Prefix)
+    $owners = @($Interfaces | Where-Object { $_.IPv4 -like ($Prefix + "*") })
+    return [pscustomobject]@{
+        OwnerCount = $owners.Count
+        Owners     = @($owners | ForEach-Object { $_.Name })
+        Conflict   = ($owners.Count -gt 1)
+    }
+}
+
+# --- eNSP version vs. installed device packages ----------------------------
+#
+# Two hard constraints from the official changelog:
+#   - CE/NE/CX need >= 1.3.00.100 (that release fixed "second start fails").
+#   - CX200 and NE5000E were REMOVED in 1.2.00.500.
+function Test-EnspVersionAgainstDevices {
+    param([string]$EnspVersion, [bool]$HasCeDevice, [bool]$HasCx200)
+    $needsNewer = $false
+    $cxRemoved  = $false
+    if ($EnspVersion) {
+        try {
+            $v = [version]($EnspVersion -replace '[^0-9\.]', '')
+            if ($HasCeDevice -and $v -lt [version]"1.3.0.100") { $needsNewer = $true }
+            if ($HasCx200 -and $v -ge [version]"1.2.0.500")    { $cxRemoved  = $true }
+        } catch { }
+    }
+    return [pscustomobject]@{ CeNeedsNewer = $needsNewer; Cx200Removed = $cxRemoved }
+}
+
+# --- AR template VRAMSize --------------------------------------------------
+#
+# The factory template ships Display VRAMSize = 1 MB. That is small enough to
+# fail AR alone while switches and the firewall keep working, which is the
+# classic "only AR is broken" report.
+function Get-VramSizeFromTemplate {
+    param([string[]]$Lines)
+    foreach ($l in $Lines) {
+        if ($l -match 'VRAMSize\s*=\s*"(\d+)"') { return [int]$Matches[1] }
+    }
+    return $null
+}
+
+function Test-VramTooSmall {
+    param([int]$VramSize)
+    return ($VramSize -lt 9)
+}
+
+# --- packet capture driver -------------------------------------------------
+#
+# eNSP recognises WinPcap only; Npcap's WinPcap compatibility layer is not
+# sufficient. Presence of Npcap therefore blocks a working capture path even
+# when WinPcap's files are also present.
+function ClassifyPacketDriver {
+    param([string]$WinPcapVersion, [bool]$NpcapPresent)
+    $hasWin = (-not [string]::IsNullOrEmpty($WinPcapVersion))
+    return [pscustomobject]@{
+        WinPcapPresent  = $hasWin
+        NpcapPresent    = $NpcapPresent
+        NpcapConflict   = ($NpcapPresent)
+        WinPcapUsable   = ($hasWin -and (-not $NpcapPresent))
+    }
+}
+
+# Firewall rules are queried as OBJECTS and re-emitted as canonical text.
+# Taking Format-List output directly would make the "Enabled" field's spelling
+# depend on the OS display language; synthesising it from the enum keeps it
+# stable. The tested parser then consumes this text.
+function Get-FirewallRuleTextForEnsp {
+    $lines = @()
+    try {
+        $rules = Get-NetFirewallRule -ErrorAction Stop | Where-Object {
+            $_.DisplayName -like "*eNSP*" -or $_.DisplayName -like "*VBoxServer*"
+        }
+        foreach ($r in $rules) {
+            $lines += "DisplayName  : " + $r.DisplayName
+            $lines += "Enabled      : " + $r.Enabled.ToString()
+            $lines += "Direction    : " + $r.Direction.ToString()
+            $lines += "Action       : " + $r.Action.ToString()
+            $lines += ""
+        }
+    } catch { }
+    return $lines
+}
+
+# InterfaceDescription is the only stable key: connection names are localized.
+function Get-AdapterPropertyFacts {
+    $items = @()
+    try {
+        foreach ($a in (Get-NetAdapter -ErrorAction Stop)) {
+            $ndis = Get-NetAdapterBinding -Name $a.Name -ComponentID "oracle_VBoxNetLwf" -ErrorAction SilentlyContinue
+            $v6   = Get-NetAdapterBinding -Name $a.Name -ComponentID "ms_tcpip6" -ErrorAction SilentlyContinue
+            $items += [pscustomobject]@{
+                InterfaceName = $a.Name
+                Description   = $a.InterfaceDescription
+                Ndis6Bound    = ($ndis -and $ndis.Enabled)
+                IPv6Enabled   = ($v6 -and $v6.Enabled)
+            }
+        }
+    } catch { }
+    return $items
+}
+
+function Get-EnspServerPortsInUse {
+    param([int[]]$RequiredPorts = @(54012, 54013, 54014))
+    $occupied = @()
+    foreach ($p in $RequiredPorts) {
+        $conn = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+        if ($conn) { $occupied += $p }
+    }
+    return $occupied
+}
