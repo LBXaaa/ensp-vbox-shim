@@ -181,3 +181,42 @@ function Get-HostOnlyBindingFacts {
     } catch { }
     return $items
 }
+
+# --- performance counters --------------------------------------------------
+#
+# eNSP depends on Windows performance counters; when they are damaged devices
+# print '####' forever. Detection MUST run a counter for real: on current
+# Windows the classic Perflib\009\Counter registry check reports missing on a
+# perfectly healthy machine (verified 2026-09-15 -- only _V2Providers exists).
+function Test-PerfCountersFunctional {
+    try {
+        $c = Get-Counter -Counter "\Processor(_Total)\% Processor Time" -MaxSamples 1 -ErrorAction Stop
+        $ok = ($c.CounterSamples.Count -gt 0)
+        return [pscustomobject]@{ Functional = $ok; Reason = "Get-Counter succeeded" }
+    } catch {
+        return [pscustomobject]@{
+            Functional = $false
+            Reason     = $_.Exception.Message
+        }
+    }
+}
+
+# --- firewall --------------------------------------------------------------
+function Parse-FirewallRulesForEnsp {
+    param([string[]]$Lines)
+    $text = ($Lines -join "`n")
+    $has = ($text -match '(?m)^DisplayName\s*:\s*.*eNSP_VBoxServer' -and
+            $text -match '(?m)^Enabled\s*:\s*True' -and
+            $text -match '(?m)^Action\s*:\s*Allow')
+    return [pscustomobject]@{ HasAllowRule = $has }
+}
+
+# --- eNSP server ports -----------------------------------------------------
+function Parse-PortOccupancy {
+    param([int[]]$OccupiedPorts, [int[]]$RequiredPorts)
+    $conflicts = @()
+    foreach ($p in $RequiredPorts) {
+        if ($OccupiedPorts -contains $p) { $conflicts += $p }
+    }
+    return [pscustomobject]@{ Conflicts = $conflicts; AllFree = ($conflicts.Count -eq 0) }
+}

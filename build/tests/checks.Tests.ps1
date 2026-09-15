@@ -53,4 +53,27 @@ $cmpOk = Compare-HostOnlyName -VBoxNames @("VirtualBox Host-Only Ethernet Adapte
                               -TemplateNames @("VirtualBox Host-Only Ethernet Adapter")
 Assert-False $cmpOk.HasMismatch "clean case has no mismatch"
 
+Write-Host "=== Task 4: eNSP-native layer ==="
+
+$fwLines = @(
+    "DisplayName  : eNSP_VBoxServer",
+    "Enabled      : True",
+    "Direction    : Inbound",
+    "Action       : Allow",
+    "",
+    "DisplayName  : SomethingElse",
+    "Enabled      : True",
+    "Direction    : Inbound",
+    "Action       : Allow"
+)
+$fw = Parse-FirewallRulesForEnsp -Lines $fwLines
+Assert-True  $fw.HasAllowRule "allow rule for eNSP_VBoxServer found"
+
+$fwNone = Parse-FirewallRulesForEnsp -Lines @("DisplayName  : Other", "Action       : Allow")
+Assert-False $fwNone.HasAllowRule "no rule => false"
+
+$ports = Parse-PortOccupancy -OccupiedPorts @(54012) -RequiredPorts @(54012, 54013, 54014)
+Assert-Equal $ports.Conflicts.Count 1 "one conflict"
+Assert-Equal $ports.Conflicts[0] 54012 "conflict is 54012"
+
 Complete-TestRun
