@@ -9,5 +9,5 @@ HardwareAddress: 0a:00:27:00:00:29
 MediumType:      Ethernet
 Wireless:        No
 Status:          Up
-VBoxNetworkName: HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter
+VBoxNetworkName: HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter #2
 
