@@ -1,0 +1,5 @@
+{
+  "Name": "以太网 11",
+  "InterfaceDescription": "VirtualBox Host-Only Ethernet Adapter",
+  "Status": "Up"
+}

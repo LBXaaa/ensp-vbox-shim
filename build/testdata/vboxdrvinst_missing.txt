@@ -1,0 +1,170 @@
+Oracle VirtualBox VBoxDrvInst (Driver Installation Utility) Version 7.2.16 - r174877 (amd64)
+Copyright (C) 2026 Oracle and/or its affiliates
+
+VBoxDrvInst 7.2.16 r174877 (verbosity: 0) (Aug 13 2026 19:48:05) release log (amd64)
+Log opened 2026-09-15T12:12:36.020434300Z
+OS Product: Windows 11
+OS Release: 10.0.29667.1000
+OS Service Pack: 
+Executable: C:\Program Files\Oracle\VirtualBox\VBoxDrvInst.exe
+Process ID: 3656
+Package type: WINDOWS_64BITS_GENERIC
+Location: C:\WINDOWS\INF
+
+OEM INF File                             | Version                                 
+    Model (First)                        | PnP ID (First)                          
+--------------------------------------------------------------------------------
+oem0.inf                                 | 06/17/2026                              
+    IntelGfx.NTAMD64.10.0...18362        | HDAUDIO\FUNC_01&VEN_8086&DEV_2812&SUBSYS_80860101
+oem1.inf                                 | 10/14/2024                              
+    Intel.NTAMD64.10.0...17763           | INTELAUDIO\DIF_0001&UIF_0000&CTLR_DEV_A0C8&LINKTYPE_02&DEVTYPE_00&VEN_8086&DEV_AE20
+oem11.inf                                | 04/20/2024                              
+    IntelGfx.NTAMD64.10.0...18362        | PCI\VEN_8086&DEV_A0C8                   
+oem13.inf                                | 04/24/2024                              
+    Intel.NTAMD64.10.0...17763           | PCI\VEN_8086&DEV_7ACC                   
+oem14.inf                                | 09/07/2025                              
+    Standard.NTAMD64                     | ACPI\NVDA0820                           
+oem15.inf                                | 07/29/2026                              
+    Device.NTAMD64.10.0...17735          | PCI\VEN_8086&DEV_4D40&SUBSYS_02948086   
+oem16.inf                                | 06/17/2026                              
+    IntelGfx.NTAMD64.10.0...17763        | SWC\101.7088_VEN8086_GFXUI_Yangra       
+oem17.inf                                | 11/22/2024                              
+    ApoComponents.NTAMD64.10.0...16299   | SWC\VEN_14F1&AID_APO1                   
+oem18.inf                                | 05/18/2023                              
+    Intel.NTAMD64.10.0...17763           | HDAUDIO\FUNC_01&VEN_8086&DEV_2816&SUBSYS_80860101
+oem2.inf                                 | 04/20/2024                              
+    IntelGfx.NTAMD64.10.0...17763        | SWC\101.5445_VEN8086_IGCC               
+oem20.inf                                | 10/28/2024                              
+    FtdiHw.NTAMD64                       | FTDIBUS\COMPORT&VID_0403&PID_6001       
+oem21.inf                                | 02/18/2026                              
+    IntelDevice.NTAMD64.6.1              | SWC\PROVIDER_Intel_COMPONENT_XTU        
+oem22.inf                                | 10/28/2024                              
+    FtdiHw.NTAMD64                       | USB\VID_0403&PID_6001                   
+oem24.inf                                | 10/14/2024                              
+    Intel.NTAMD64.10.0...17763           | INTELAUDIO\DIF_000A&UIF_0000&DSP_CTLR_DEV_A0C8&VEN_8086&DEV_0222
+oem25.inf                                | 12/08/2025                              
+    Microsoft.NTAMD64.10.0...18362       | XvddRootDevice                          
+oem27.inf                                | 12/01/2025                              
+    NVIDIA.NTAMD64.10.0...14393          | HDAUDIO\FUNC_01&VEN_10DE&DEV_0071&SUBSYS_14140020
+oem28.inf                                | 06/08/2022                              
+    INTEL.NTAMD64.10.0...15063           | PCI\VEN_8086&DEV_A282&CC_0106           
+oem29.inf                                | 06/20/2024                              
+    XTUExtension.NTAMD64.10.0...15063    | ACPI\GenuineIntel_-_Intel64_Family_6_Model_85
+oem3.inf                                 | 12/19/2024                              
+    Senary.NTAMD64.10.0...17763          | INTELAUDIO\FUNC_01&VEN_14F1&DEV_1F86&SUBSYS_D2701022
+oem30.inf                                | 12/18/2024                              
+    Intel.NTAMD64.10.0...17763           | INTELAUDIO\DSP_CTLR_DEV_51C8&VEN_8086&DEV_0222&SUBSYS_1A061EC9
+oem31.inf                                | 04/25/2024                              
+    INTEL.NTAMD64.10.0...18362           | ACPI\INT33D5                            
+oem32.inf                                | 10/11/2024                              
+    Intel.NTAMD64.10.0...17763           | {DD8E82AE-334B-49A2-AEAE-AEB0FD5C40DD}\DetectionVerification
+oem33.inf                                | 10/14/2024                              
+    Intel.NTAMD64.10.0...17763           | INTELAUDIO\DIF_0001&UIF_0000&CTLR_DEV_A0C8&LINKTYPE_03&DEVTYPE_00&VEN_8086&DEV_AE30
+oem35.inf                                | 06/11/2025                              
+    Standard.NTAMD64                     | Root\OrayIddDriver                      
+oem36.inf                                | 03/11/2026                              
+    gameflt                              |                                         
+oem37.inf                                | 08/21/2025                              
+    Standard.NTAMD64.10.0...17134        | PCI\VEN_10DE&DEV_1AD7                   
+oem38.inf                                | 12/29/2022                              
+    Standard.NTAMD64                     | Oray\OrayVGC                            
+oem39.inf                                | 03/04/2026                              
+    gameflt                              |                                         
+oem4.inf                                 | 07/08/2026                              
+    INTEL.NTAMD64.10.0...22621           | PCI\VEN_8086&DEV_461D                   
+oem41.inf                                | 04/06/2026                              
+    Microsoft.NTAMD64.10.0...18362       | XvddRootDevice                          
+oem42.inf                                | 04/20/2024                              
+    IntelGfx.NTAMD64.10.0...17763        | PCI\VEN_8086&DEV_9A49                   
+oem43.inf                                | 07/11/2023                              
+    Intel.NTAMD64.10.0                   | SWC\3C4852D6-D47B-4F46-B05E-B5EDC1AA440E
+oem44.inf                                | 05/01/2026                              
+    gameflt                              |                                         
+oem45.inf                                | 04/20/2024                              
+    IntelGfx.NTAMD64.10.0...18362        | HDAUDIO\FUNC_01&VEN_8086&DEV_2812&SUBSYS_80860101
+oem46.inf                                | 04/20/2024                              
+    IntelGfx.NTAMD64.10.0...17763        | SWC\101.5445_VEN8086_GFXUI_Yangra       
+oem5.inf                                 | 06/16/2026                              
+    MSVoiceClarityComponentAPO.NTAMD64.10.0...26100 | SWC\VEN_MSFT&AUDIO_EFFECTPACK_VOICECLARITY
+oem50.inf                                | 04/20/2024                              
+    IntelGfx.NTAMD64.10.0...17763        | PCI\VEN_8086&DEV_9A49                   
+oem51.inf                                | 08/13/2025                              
+    Standard.NTAMD64                     | PCI\VEN_1F0A&DEV_6801&REV_01            
+oem54.inf                                | 11/25/2024                              
+    ApoComponents.NTAMD64.10.0...17763   | SWC\VEN_14F1&AID_LN06                   
+oem55.inf                                | 10/14/2024                              
+    Intel.NTAMD64.10.0...17763           | INTELAUDIO\DIF_0001&UIF_0000&CTLR_DEV_A0C8&LINKTYPE_05&DEVTYPE_05&VEN_8086&DEV_AE35
+oem56.inf                                | 06/05/2026                              
+    Microsoft.NTAMD64.10.0...18362       | XvddRootDevice                          
+oem57.inf                                | 10/14/2024                              
+    Intel.NTAMD64.10.0...17763           | INTELAUDIO\DIF_0001&UIF_0000&CTLR_DEV_A0C8&LINKTYPE_03&DEVTYPE_04&VEN_8086&DEV_AE34
+oem58.inf                                | 09/02/2025                              
+    INTC.NTAMD64.10.0...19041            | ACPI\INT3F0D                            
+oem59.inf                                | 08/20/2026                              
+    NVIDIA_Devices.NTAMD64.10.0...17134  | PCI\VEN_10DE&DEV_1E90&SUBSYS_10691D05   
+oem6.inf                                 | 12/19/2024                              
+    DeviceExtensions.NTAMD64.10.0...17763 | INTELAUDIO\FUNC_01&VEN_14F1&DEV_1F86&SUBSYS_D2701022
+oem60.inf                                | 07/24/2023                              
+    Senary_SoftwareComponent.NTAMD64.10.0...17763 | SWC\VEN_14F1&PID_HSA_GenSA3Audio_01     
+oem61.inf                                | 07/22/2024                              
+    INTEL.NTAMD64.10.0...19041           | PCI\VEN_8086&DEV_09AB                   
+oem62.inf                                | 10/13/2021                              
+    Wintun.NTAMD64                       | Wintun                                  
+oem64.inf                                | 06/17/2026                              
+    IntelGfx.NTAMD64.10.0...18362        | PCI\VEN_8086&DEV_A0C8                   
+oem65.inf                                | 04/24/2024                              
+    Intel.NTAMD64.10.0...17763           | ACPI\INTC1056                           
+oem67.inf                                | 04/20/2026                              
+    gameflt                              |                                         
+oem68.inf                                | 10/14/2024                              
+    Intel.NTAMD64.10.0...17763           | PCI\VEN_8086&DEV_A0C8&CC_0401           
+oem69.inf                                | 06/17/2026                              
+    IntelGfx.NTAMD64.10.0...17763        | PCI\VEN_8086&DEV_9A40                   
+oem7.inf                                 | 07/31/2026                              
+    Device.NTAMD64.10.0...16299          | USB\VID_8087&PID_0026&REV_0000          
+oem70.inf                                | 09/14/2021                              
+    Intel.NTAMD64.10.0                   | PCI\VEN_8086&DEV_5A11                   
+oem71.inf                                | 10/14/2024                              
+    Intel.NTAMD64.10.0...17763           | INTELAUDIO\DIF_0002&UIF_0000&SDW_CTLR_DEV_A0C8&VEN_8086&DEV_0333
+oem72.inf                                | 01/30/2024                              
+    ZTOP.NTAMD64                         | USB\VID_350B&PID_9101                   
+oem73.inf                                | 10/14/2024                              
+    Intel.NTAMD64.10.0...17763           | INTELAUDIO\DIF_0001&UIF_0000&CTLR_DEV_A0C8&LINKTYPE_06&DEVTYPE_06&VEN_8086&DEV_AE50
+oem74.inf                                | 01/05/2026                              
+    USB.NTAMD64.10.0...22000             | USB\VID_0B95&PID_178A                   
+oem75.inf                                | 06/29/2023                              
+    INTEL.NTAMD64.10.0...15063           | PCI\VEN_8086&DEV_9A0B                   
+oem76.inf                                | 11/16/2022                              
+    ZTOP.NTAMD64                         | USB\VID_2310&PID_9086                   
+oem77.inf                                | 06/16/2025                              
+    Intel.NTAMD64.10.0...17763           | HDAUDIO\FUNC_01&VEN_8086&DEV_2816&SUBSYS_80860101
+oem79.inf                                | 10/28/2025                              
+    Standard.NTAMD64                     | ACPI\INOU0000                           
+oem8.inf                                 | 04/23/2026                              
+    Microsoft.NTAMD64.10.0...18362       | XvddRootDevice                          
+oem80.inf                                | 03/08/2023                              
+    Standard.NTAMD64                     | root\OrayUSBVHCI                        
+oem81.inf                                | 01/13/2026                              
+    Standard.NTAMD64                     | ACPI\NVDA0820                           
+oem82.inf                                | 06/02/2026                              
+    Standard.NTAMD64                     | ACPI\NVDA0820                           
+oem83.inf                                | 08/06/2026                              
+    gameflt                              |                                         
+oem84.inf                                | 02/12/2026                              
+    Device.NTAMD64.10.0...17735          | PCI\VEN_8086&DEV_7740&SUBSYS_00708086   
+oem85.inf                                | 06/08/2022                              
+    INTEL.NTAMD64.10.0...15063           | PCI\VEN_8086&DEV_2822&CC_0104           
+oem86.inf                                | 05/20/2026                              
+    Standard.NTAMD64                     | ACPI\NVDA0820                           
+oem88.inf                                | 07/16/2026                              
+    Microsoft.NTAMD64.10.0...18362       | XvddRootDevice                          
+oem89.inf                                | 06/21/2006                              
+    Microsoft.NTAMD64                    | {084F01FA-E634-4D77-83EE-074817C03581}  
+oem9.inf                                 | 07/23/2026                              
+    NVIDIA.NTAMD64.10.0...14393          | HDAUDIO\FUNC_01&VEN_10DE&DEV_0071&SUBSYS_14140020
+oem90.inf                                | 08/13/2026                              
+oem91.inf                                | 08/13/2026                              
+
+Found 76 entries.
+
+Hint: Use DOS-style wildcards to adjust results.
