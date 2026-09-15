@@ -310,9 +310,16 @@ function Test-EnspVersionAgainstDevices {
 
 # --- AR template VRAMSize --------------------------------------------------
 #
-# The factory template ships Display VRAMSize = 1 MB. That is small enough to
-# fail AR alone while switches and the firewall keep working, which is the
-# classic "only AR is broken" report.
+# A VRAM size small enough makes AR fail while switches and the firewall keep
+# working -- the classic "only AR is broken" report.
+#
+# Threshold rationale, and a correction to the usual telling: community write-ups
+# describe a 1 MB factory default, but that came from the VirtualBox 5.0 era.
+# Measured on eNSP V1.3.00.100 (2026-09-15): AR_Base.vbox = 16, vfw_usg.vbox = 12,
+# WLAN_AC_Base.vbox = 16. No shipped template is anywhere near 1. So this check
+# fires only when the value has been actively lowered -- it is a guard against
+# a bad edit, not against a factory state. Report the value regardless; the
+# number is what makes the "only AR is broken" case diagnosable.
 function Get-VramSizeFromTemplate {
     param([string[]]$Lines)
     foreach ($l in $Lines) {
