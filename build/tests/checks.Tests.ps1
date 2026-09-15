@@ -99,4 +99,17 @@ $fwLower = @(
 )
 Assert-True (Parse-FirewallRulesForEnsp -Lines $fwLower).HasAllowRule "lowercase rule name matches"
 
+Write-Host "=== Task 5: backend split ==="
+
+$dirs = @{
+    HasSwitchExe = $true
+    HasArBase    = $true
+    HasVfwUsg    = $false
+}
+$b = Get-DeviceBackendFacts -Probe $dirs
+Assert-True  $b.HostSideDevicesPresent "switch exe present"
+Assert-True  $b.VBoxDevicesPresent     "ar base present"
+Assert-False $b.AllVBoxDevicesPresent  "not all vbox devices present"
+Assert-Equal $b.SplitHint "vbox-layer" "split hint points at vbox layer"
+
 Complete-TestRun

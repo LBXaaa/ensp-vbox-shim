@@ -235,3 +235,41 @@ function Parse-PortOccupancy {
     }
     return [pscustomobject]@{ Conflicts = $conflicts; AllFree = ($conflicts.Count -eq 0) }
 }
+
+# --- device backend facts --------------------------------------------------
+#
+# eNSP devices split across three backends. Host-side devices (S5700 and the
+# like) are plain user-mode processes and never touch VirtualBox, so their
+# availability is a free discriminator: if they work and AR does not, the fault
+# is in the VirtualBox layer; if they also fail, look at eNSP itself.
+function Get-DeviceBackendFacts {
+    param([hashtable]$Probe)
+    $hostSide = [bool]$Probe.HasSwitchExe
+    $vboxAr   = [bool]$Probe.HasArBase
+    $vboxFw   = [bool]$Probe.HasVfwUsg
+    $vboxAny  = ($vboxAr -or $vboxFw)
+    $allVbox  = ($vboxAr -and $vboxFw)
+
+    $hint = "unknown"
+    if ($hostSide -and $vboxAny) { $hint = "vbox-layer" }
+    elseif (-not $hostSide)      { $hint = "ensp-native-layer" }
+
+    return [pscustomobject]@{
+        HostSideDevicesPresent = $hostSide
+        VBoxDevicesPresent     = $vboxAny
+        AllVBoxDevicesPresent  = $allVbox
+        SplitHint              = $hint
+    }
+}
+
+function Get-DeviceBackendProbe {
+    param([string]$EnspDir)
+    if (-not $EnspDir) { $EnspDir = Find-EnspDir }
+    $probe = @{ HasSwitchExe = $false; HasArBase = $false; HasVfwUsg = $false }
+    if ($EnspDir) {
+        $probe.HasSwitchExe = Test-Path (Join-Path $EnspDir "vboxserver\devices\LSW\s5700\eNSP_Switch.exe")
+        $probe.HasArBase    = Test-Path (Join-Path $EnspDir "vboxserver\AR_Base\AR_Base.vbox")
+        $probe.HasVfwUsg    = Test-Path (Join-Path $EnspDir "plugin\ngfw\tools\ngfw\vfw_usg.vbox")
+    }
+    return $probe
+}
