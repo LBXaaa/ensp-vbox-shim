@@ -156,17 +156,26 @@ function Has-Snapshot($vbm,[string]$vm,[string]$snapName){
 # "does not have any snapshots" -> 设备起不来(error 40)。本函数仅在【缺失】时补建,
 # 【绝不】删除或改动已存在的快照(它可能正被已有克隆挂载,删除会破坏克隆链)。
 #
-# 返回: "ok"(已有,未动) / "created"(补建成功) / "skip-running"(非poweroff跳过) /
+# 返回: "ok"(已有,未动) / "created"(补建成功) / "skip-running"(VM 仍有内存镜像,跳过) /
 #       "fail"(补建失败) / "no-vm"(VM不存在)
 function Ensure-LinkSnapshot($vbm,[string]$vm,[bool]$checkOnly){
     $snap = "${vm}_Link"
     if(Has-Snapshot $vbm $vm $snap){ return "ok" }
 
-    # 缺快照。补建前必须确认 VM 处于 poweroff —— 对在线/saved 状态拍快照会把
-    # 内存状态拍进去,污染本应纯净的基础盘。
+    # 缺快照。补建前必须确认 VM【没有内存镜像】—— 对 running/paused/saved 等状态
+    # 拍快照会把内存状态拍进去,污染本应纯净的基础盘。
+    #
+    # 判据是"有没有内存镜像",不是"电不电源关闭"。
+    # poweroff 与 aborted 都没有内存镜像:aborted 是异常终止(崩溃/被杀),不是
+    # 挂起,不存在可被拍进去的内存状态。实测:对 aborted 的基础盘 take 一次即成功,
+    # 随后 clonevm 也正常。
+    #
+    # 曾经只认 poweroff,于是 aborted 的 AR_Base 被跳过补建,而它恰好是拉路由器要用的
+    # 那台 —— 设备起不来(error 40),提示却写着"请在 eNSP/VBox 里关掉后重跑",而
+    # 崩溃终止的 VM 根本没得关。aborted="true" 会持久写在 .vbox 里,不会自行消失。
     $state = Get-VMState $vbm $vm
     if($state -eq ""){ return "no-vm" }
-    if($state -ne "poweroff"){ return "skip-running" }
+    if($state -ne "poweroff" -and $state -ne "aborted"){ return "skip-running" }
 
     if($checkOnly){ return "created" }   # -Check: 报告将补建,不实际动手
 
