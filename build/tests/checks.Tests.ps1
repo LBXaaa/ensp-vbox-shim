@@ -271,4 +271,141 @@ Assert-Equal $orphan.Count 1 "orphan: record still returned"
 Assert-Equal $orphan[0].IfName "" "orphan: no adapter name"
 Assert-Equal $orphan[0].Interface $null "orphan: no adapter object"
 
+Write-Host "=== Task 7: base VM registration and link snapshots ==="
+
+# Fixtures here are real captures from a machine with the shim installed, so
+# the parsers are exercised against the shapes VirtualBox actually emits --
+# including the aborted state that the 2026-09-16 snapshot bug turned on.
+$vms = Parse-VBoxListVms -Lines (Get-Content (Get-TestDataPath "vbox_list_vms.txt"))
+Assert-Equal $vms.Count 5 "list vms: five base VMs"
+Assert-True  $vms.ContainsKey("AR_Base") "list vms: AR_Base present"
+
+$reg = Parse-VBoxMachineRegistry -Lines (Get-Content (Get-TestDataPath "vbox_machine_registry.xml"))
+Assert-True $reg.ContainsKey($vms["AR_Base"]) "registry: AR_Base uuid resolves to a src"
+Assert-Match $reg[$vms["AR_Base"]] 'AR_Base\.vbox$' "registry: src names AR_Base.vbox"
+
+$snaps = Parse-VBoxSnapshotList -Lines (Get-Content (Get-TestDataPath "vbox_snapshots_with_link.txt"))
+Assert-Equal @($snaps).Count 1 "snapshot list: one name collected"
+Assert-Equal @($snaps)[0] "AR_Base_Link" "snapshot list: link snapshot read verbatim"
+Assert-True  (Test-LinkSnapshotPresent -SnapshotNames $snaps -VmName "AR_Base") "link snapshot found"
+Assert-False (Test-LinkSnapshotPresent -SnapshotNames $snaps -VmName "WLAN_AC_Base") "another VM is not credited with it"
+Assert-False (Test-LinkSnapshotPresent -SnapshotNames @() -VmName "AR_Base") "empty list => absent"
+
+# Nested snapshots carry a -N suffix; the name still has to come through.
+Assert-True (Test-LinkSnapshotPresent -SnapshotNames (Parse-VBoxSnapshotList -Lines @('SnapshotName-1="AR_Base_Link"')) -VmName "AR_Base") `
+            "nested snapshot name is read"
+Assert-Equal (Parse-VmState -Lines (Get-Content (Get-TestDataPath "vbox_showvminfo_state.txt"))) "aborted" `
+             "showvminfo: aborted is read verbatim"
+Assert-Equal (Parse-VmState -Lines @('name="x"')) "" "showvminfo: no state line reads as empty"
+
+Assert-True  (Test-SameVmPath -A 'C:\a\\b\AR_Base.vbox' -B 'c:\A\b\AR_Base.vbox') "path: separators and case fold"
+Assert-True  (Test-SameVmPath -A 'C:\a\b\' -B 'C:\a\b') "path: trailing separator folds"
+Assert-False (Test-SameVmPath -A 'C:\a\b.vbox' -B 'C:\a\c.vbox') "path: different files differ"
+Assert-False (Test-SameVmPath -A '' -B 'C:\a') "path: an empty side is never equal"
+
+# The join is pure, so the whole decision table is reachable here: registered
+# with a good path, registered with a stale path, registered but snapshotless,
+# and not installed at all.
+$dirs = @(
+    [pscustomobject]@{ Name = "AR_Base";       DirPresent = $true;  VBoxFile = 'C:\e\AR_Base.vbox' },
+    [pscustomobject]@{ Name = "WLAN_AC_Base"; DirPresent = $true;  VBoxFile = 'C:\e\WLAN_AC_Base.vbox' },
+    [pscustomobject]@{ Name = "WLAN_AD_Base"; DirPresent = $true;  VBoxFile = 'C:\e\WLAN_AD_Base.vbox' },
+    [pscustomobject]@{ Name = "WLAN_AP_Base"; DirPresent = $false; VBoxFile = '' }
+)
+$res = @(Resolve-BaseVmRegistration -BaseVmDirs $dirs `
+        -RegisteredVms @{ "AR_Base" = "u-ar"; "WLAN_AC_Base" = "u-ac"; "WLAN_AD_Base" = "u-ad" } `
+        -RegistrySrc   @{ "u-ar" = 'C:\e\AR_Base.vbox'; "u-ac" = 'C:\STALE\WLAN_AC_Base.vbox'; "u-ad" = 'C:\e\WLAN_AD_Base.vbox' } `
+        -VmStates      @{ "AR_Base" = "poweroff" } `
+        -VmSnapshots   @{ "AR_Base" = @("AR_Base_Link") })
+
+Assert-Equal $res.Count 4 "join: one record per base VM"
+Assert-True  $res[0].PathValid "join: good registration has a valid path"
+Assert-True  $res[0].LinkSnapshot "join: snapshot present"
+Assert-Equal $res[0].State "poweroff" "join: state carried"
+Assert-True  $res[1].Registered "join: stale registration is still registered"
+Assert-False $res[1].PathValid "join: stale path is flagged"
+Assert-True  $res[2].PathValid "join: second good registration"
+Assert-False $res[2].LinkSnapshot "join: missing snapshot is flagged"
+Assert-False $res[3].DirPresent "join: absent device package"
+Assert-False $res[3].Registered "join: absent package is not registered"
+# An unregistered VM is never queried for snapshots, so its false here means
+# "unknown" rather than "gone" -- the report has to phrase it that way.
+Assert-False $res[3].LinkSnapshot "join: unregistered VM reports no snapshot"
+
+Write-Host "=== Task 8: device templates and install-tree facts ==="
+
+$uOk = @(Parse-UartPorts -Lines (Get-Content (Get-TestDataPath "arbase_uart_ok.vbox")))
+Assert-Equal $uOk.Count 1 "uart ok: one port parsed"
+Assert-Equal $uOk[0].Slot "1" "uart ok: slot 1"
+Assert-True  $uOk[0].Enabled "uart ok: enabled"
+Assert-Equal $uOk[0].HostMode "HostPipe" "uart ok: host pipe"
+Assert-Match $uOk[0].Path 'pipe\\config$' "uart ok: pipe path survives its own slashes"
+Assert-True  (Test-UartPipePresent -Ports $uOk) "uart ok: pipe present"
+
+$uDis = Parse-UartPorts -Lines (Get-Content (Get-TestDataPath "arbase_uart_disabled.vbox"))
+Assert-False (Test-UartPipePresent -Ports $uDis) "uart disabled: no pipe"
+
+# A .vbox with snapshots repeats <Hardware> inside each <Snapshot>. Reading
+# those would report the saved state's disabled port as the live one.
+$uSnap = @(Parse-UartPorts -Lines (Get-Content (Get-TestDataPath "arbase_with_snapshot.vbox")))
+Assert-Equal $uSnap.Count 1 "uart snapshot: only the live hardware block is read"
+Assert-True  (Test-UartPipePresent -Ports $uSnap) "uart snapshot: the live port wins"
+Assert-False (Test-UartPipePresent -Ports @()) "uart: no ports => no pipe"
+
+# Built from char codes because this file must stay ASCII-only.
+$cjk = [string]([char]0x5F20) + [string]([char]0x4E09)
+Assert-False (Test-NonAsciiPath -Path 'C:\Program Files\Huawei\eNSP') "path check: ascii passes"
+Assert-True  (Test-NonAsciiPath -Path ('C:\Users\' + $cjk + '\Desktop')) "path check: non-ascii profile is flagged"
+Assert-True  (Test-NonAsciiPath -Path ('C:\eNSP' + $cjk)) "path check: non-ascii install dir is flagged"
+Assert-False (Test-NonAsciiPath -Path '') "path check: empty is not flagged"
+
+$xEmpty = Get-X86VcRuntimeFacts -VBoxDir ""
+Assert-False $xEmpty.X86DirFound "x86 vcrt: no VBox dir => no x86 dir"
+Assert-Equal @($xEmpty.Files).Count 2 "x86 vcrt: both files still reported"
+Assert-False $xEmpty.Complete "x86 vcrt: missing dir is not complete"
+$xGone = Get-X86VcRuntimeFacts -VBoxDir 'C:\definitely\not\here'
+Assert-False $xGone.X86DirFound "x86 vcrt: nonexistent dir"
+Assert-False $xGone.Complete "x86 vcrt: nonexistent dir is not complete"
+
+# Ownership decides whether a VBoxHeadless is eNSP's leftover or the user's own
+# VM, so the two must never be confused in either direction.
+Assert-True  (Test-EnspOwnedVmPath -CfgFile 'C:\Program Files\Huawei\eNSP\vboxserver\AR_Base\AR_Base.vbox' `
+                                   -EnspDir 'C:\Program Files\Huawei\eNSP') "owned: under the install tree"
+Assert-True  (Test-EnspOwnedVmPath -CfgFile 'C:\Users\u\AppData\Local\eNSP\AR_1\AR_1.vbox' `
+                                   -EnspDir 'C:\Program Files\Huawei\eNSP' `
+                                   -LocalAppData 'C:\Users\u\AppData\Local') "owned: clone under LOCALAPPDATA"
+Assert-False (Test-EnspOwnedVmPath -CfgFile 'D:\VMs\MyOwn\MyOwn.vbox' `
+                                   -EnspDir 'C:\Program Files\Huawei\eNSP') "owned: the user's own VM is not eNSP's"
+Assert-False (Test-EnspOwnedVmPath -CfgFile '' -EnspDir 'C:\e') "owned: an unknown path is never claimed"
+# A sibling directory sharing the prefix must not match.
+Assert-False (Test-EnspOwnedVmPath -CfgFile 'C:\Program Files\Huawei\eNSP2\x.vbox' `
+                                   -EnspDir 'C:\Program Files\Huawei\eNSP') "owned: prefix must end on a separator"
+
+$own = @(Resolve-RunningVmOwnership -RunningVmNames @("AR_1", "MyOwn") `
+        -RegisteredVms @{ "AR_1" = "u1"; "MyOwn" = "u2" } `
+        -RegistrySrc   @{ "u1" = 'C:\Program Files\Huawei\eNSP\vboxserver\AR_1\AR_1.vbox'; "u2" = 'D:\VMs\MyOwn\MyOwn.vbox' } `
+        -EnspDir 'C:\Program Files\Huawei\eNSP')
+Assert-Equal $own.Count 2 "ownership: one record per running VM"
+Assert-True  $own[0].EnspOwned "ownership: eNSP clone is claimed"
+Assert-False $own[1].EnspOwned "ownership: the user's VM is left alone"
+
+Write-Host "=== Task 9: packet capture driver ==="
+
+# "WinPcap" contains "nPcap", and -like is case-insensitive. Testing for Npcap
+# first reports a conflict on a machine where WinPcap is working perfectly;
+# this assertion is the one that caught it.
+$pWin = ClassifyPacketDllProduct -Product "WinPcap" -Present $true
+Assert-True  $pWin.IsWinPcap "packet dll: WinPcap is WinPcap"
+Assert-False $pWin.IsNpcap   "packet dll: WinPcap is NOT misread as Npcap"
+$pNp = ClassifyPacketDllProduct -Product "Npcap" -Present $true
+Assert-True  $pNp.IsNpcap   "packet dll: Npcap is Npcap"
+Assert-False $pNp.IsWinPcap "packet dll: Npcap is not WinPcap"
+$pNone = ClassifyPacketDllProduct -Product "" -Present $false
+Assert-False $pNone.IsWinPcap "packet dll: absent file is neither"
+Assert-False $pNone.IsNpcap   "packet dll: absent file is neither (npcap)"
+# A present file with an unrecognised product name is not silently called WinPcap.
+$pOther = ClassifyPacketDllProduct -Product "Some Vendor Capture" -Present $true
+Assert-False $pOther.IsWinPcap "packet dll: unknown product is not WinPcap"
+Assert-False $pOther.IsNpcap   "packet dll: unknown product is not Npcap"
+
 Complete-TestRun

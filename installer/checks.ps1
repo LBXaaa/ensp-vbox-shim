@@ -666,3 +666,561 @@ function Get-EnspServerPortsInUse {
     }
     return $occupied
 }
+
+# ===========================================================================
+# Device readiness: base VM registration, link snapshots, templates
+# ===========================================================================
+#
+# Every AR / WLAN / USG device is a link clone of a base VM. Making the clone
+# takes three things that are all invisible from the shim's own log when they
+# are missing -- the clonevm call is never reached, eNSP just reports error 40:
+#
+#   1. a registration entry for the base VM
+#   2. a snapshot named "<VM>_Link" on the base disk (the clone source)
+#   3. a template that still carries the wiring eNSP expects
+#
+# None of the three is checked by anything else in this file, and (1)+(2) are
+# the ones that actually broke on 2026-09-16.
+
+# The five base VMs eNSP link-clones from. The directory name under
+# vboxserver\ is also the VM name, which is what makes the join below possible
+# without asking VirtualBox anything.
+function Get-BaseVmDirs {
+    param(
+        [string]$EnspDir,
+        [string[]]$BaseVms = @("AR_Base", "WLAN_AC_Base", "WLAN_AD_Base", "WLAN_AP_Base", "WLAN_SAP_Base")
+    )
+    $items = @()
+    if (-not $EnspDir) { return $items }
+    $root = Join-Path $EnspDir "vboxserver"
+    foreach ($vm in $BaseVms) {
+        $dir = Join-Path $root $vm
+        $present = Test-Path $dir
+        $vboxFile = ""
+        if ($present) {
+            $vboxFile = Find-MachineConfig -Dir $dir
+        }
+        $items += [pscustomobject]@{
+            Name       = $vm
+            Dir        = $dir
+            DirPresent = $present
+            VBoxFile   = $vboxFile
+        }
+    }
+    return $items
+}
+
+# Picks the machine config out of a base VM directory.
+#
+# A directory can hold several .vbox files: eNSP writes dated/suffixed copies
+# next to the live one, and the live one is the SHORTEST name (the others carry
+# extra suffixes). Sorting by name length and taking the first that actually
+# parses as a machine reproduces register_vms.ps1's Select-VBoxFile, which is
+# what the repair path will later act on -- the two must agree or the report
+# would describe a different file than the one that gets registered.
+function Find-MachineConfig {
+    param([string]$Dir)
+    if (-not $Dir -or -not (Test-Path $Dir)) { return "" }
+    $cands = Get-ChildItem -Path $Dir -Filter *.vbox -File -ErrorAction SilentlyContinue |
+             Sort-Object { $_.Name.Length }
+    foreach ($f in $cands) {
+        $t = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+        if ($t -match '<Machine ') { return $f.FullName }
+    }
+    return ""
+}
+
+# `VBoxManage list vms` prints one line per registered VM:
+#
+#     "AR_Base" {0f3e5d1c-8a44-4b1e-9c2f-6d0a7b3e5f21}
+#
+# Returns name -> lowercased uuid. The name is the join key everywhere else in
+# this file; the uuid is only needed to reach into the registry map below.
+function Parse-VBoxListVms {
+    param([string[]]$Lines)
+    $m = @{}
+    foreach ($line in $Lines) {
+        if ($line -match '^"([^"]+)"\s+\{([0-9a-fA-F-]+)\}') {
+            $m[$Matches[1]] = $Matches[2].ToLower()
+        }
+    }
+    return $m
+}
+
+# The user's VirtualBox.xml keeps one entry per registered VM:
+#
+#     <MachineEntry uuid="{0f3e...}" src="C:\Program Files\...\AR_Base.vbox"/>
+#
+# This is the authoritative registered path, and reading it costs one file read
+# instead of one `showvminfo` per VM. VirtualBox writes doubled backslashes and
+# inconsistent casing here, hence the normalisation in Test-SameVmPath.
+#
+# Case matters in the pattern: VirtualBox writes both attribute names
+# lowercase, and [regex]::Matches is case-sensitive where -match is not. A
+# fixture that spells them differently will silently yield an empty map.
+function Parse-VBoxMachineRegistry {
+    param([string[]]$Lines)
+    $m = @{}
+    $text = ($Lines -join "`n")
+    foreach ($mt in [regex]::Matches($text, 'uuid="\{([0-9a-fA-F-]+)\}"\s+src="([^"]+)"')) {
+        $m[$mt.Groups[1].Value.ToLower()] = $mt.Groups[2].Value
+    }
+    return $m
+}
+
+# `VBoxManage snapshot <vm> list --machinereadable` prints, per snapshot:
+#
+#     SnapshotName="AR_Base_Link"
+#     SnapshotUUID="..."
+#     SnapshotName-1="AR_Base_Link"        <- nested children use a -N suffix
+#
+# Only the names are read. Note the command FAILS (non-zero exit) on a VM with
+# no snapshots at all, so an empty result is the normal answer for a bare base
+# disk and is not an error condition this parser can see.
+function Parse-VBoxSnapshotList {
+    param([string[]]$Lines)
+    $names = @()
+    foreach ($line in $Lines) {
+        if ($line -match '^SnapshotName(-[0-9]+)?="([^"]+)"') { $names += $Matches[2] }
+    }
+    return $names
+}
+
+# `showvminfo <vm> --machinereadable` prints VMState="poweroff" among many
+# other lines. Empty string means the VM could not be queried at all, which is
+# a different thing from any state and is reported as such.
+function Parse-VmState {
+    param([string[]]$Lines)
+    foreach ($line in $Lines) {
+        if ($line -match '^VMState="([^"]+)"') { return $Matches[1] }
+    }
+    return ""
+}
+
+# eNSP's link clone needs the base disk to carry a snapshot literally named
+# "<base VM name>_Link". Its absence is what makes a freshly re-registered base
+# disk unusable: clonevm fails with "does not have any snapshots".
+function Test-LinkSnapshotPresent {
+    param([string[]]$SnapshotNames, [string]$VmName)
+    if (-not $VmName) { return $false }
+    return (@($SnapshotNames) -contains ($VmName + "_Link"))
+}
+
+# Two paths name the same file after folding the differences VirtualBox
+# introduces: doubled separators in src, and casing that does not match disk.
+# Both sides are normalised the same way, so this is symmetric.
+function Test-SameVmPath {
+    param([string]$A, [string]$B)
+    if (-not $A -or -not $B) { return $false }
+    $na = ($A.Trim() -replace '\\+', '\').TrimEnd('\').ToLower()
+    $nb = ($B.Trim() -replace '\\+', '\').TrimEnd('\').ToLower()
+    return ($na -eq $nb)
+}
+
+# Joins the three views into one record per base VM. Pure: every input is
+# already-collected data, so the whole decision table is reachable from
+# fixtures without a VirtualBox install.
+#
+# The verdict is deliberately split into two independent fields rather than one
+# status string. "Registered but pointing at a deleted path" and "not
+# registered at all" have the same repair (unregister if needed, then register)
+# but different evidence, and the report prints the evidence.
+function Resolve-BaseVmRegistration {
+    param(
+        [object[]]$BaseVmDirs,
+        [hashtable]$RegisteredVms,
+        [hashtable]$RegistrySrc,
+        [hashtable]$VmStates,
+        [hashtable]$VmSnapshots
+    )
+    if (-not $RegisteredVms) { $RegisteredVms = @{} }
+    if (-not $RegistrySrc)   { $RegistrySrc   = @{} }
+    if (-not $VmStates)      { $VmStates      = @{} }
+    if (-not $VmSnapshots)   { $VmSnapshots   = @{} }
+
+    $out = @()
+    foreach ($b in @($BaseVmDirs)) {
+        if ($null -eq $b) { continue }
+        $name = $b.Name
+        $isReg = $RegisteredVms.ContainsKey($name)
+        $src = ""
+        if ($isReg) {
+            $u = $RegisteredVms[$name]
+            if ($RegistrySrc.ContainsKey($u)) { $src = $RegistrySrc[$u] }
+        }
+        $pathOk = ($isReg -and (Test-SameVmPath -A $src -B $b.VBoxFile))
+        $state = ""
+        if ($VmStates.ContainsKey($name)) { $state = $VmStates[$name] }
+        $snaps = @()
+        if ($VmSnapshots.ContainsKey($name)) { $snaps = @($VmSnapshots[$name]) }
+
+        $out += [pscustomobject]@{
+            Name           = $name
+            DirPresent     = [bool]$b.DirPresent
+            VBoxFile       = $b.VBoxFile
+            Registered     = $isReg
+            RegisteredPath = $src
+            PathValid      = $pathOk
+            State          = $state
+            # Only meaningful when registered: an unregistered VM is never
+            # queried for snapshots, so $false here means "unknown", not "gone".
+            LinkSnapshot   = $(if ($isReg) { Test-LinkSnapshotPresent -SnapshotNames $snaps -VmName $name } else { $false })
+        }
+    }
+    return $out
+}
+
+# --- AR template UART / COM2 pipe ------------------------------------------
+#
+# A device template carries its serial ports inside <Hardware><UART>:
+#
+#     <UART>
+#       <Port slot="1" enabled="true" IOBase="0x2f8" IRQ="3"
+#             server="true" path="\\.\pipe\config" hostMode="HostPipe"/>
+#     </UART>
+#
+# eNSP's console attaches to that named pipe. A template whose slot-1 port is
+# missing or disabled leaves eNSP waiting on a pipe nothing ever creates: the
+# device never reaches its CLI even though the VM itself booted fine.
+#
+# Attribute parsing stops at the first '>' and never at '/', because the pipe
+# path itself contains slashes ("\\.\pipe\config") -- a [^/>]* class would cut
+# the match short mid-value and lose every attribute after "path".
+#
+# Only the FIRST <Hardware> block is read. A .vbox that has snapshots repeats
+# the entire hardware section inside each <Snapshot>, and reading those would
+# report a saved state's port as if it were the live configuration.
+function Parse-UartPorts {
+    param([string[]]$Lines)
+    $text = ($Lines -join "`n")
+    $hw = ""
+    if ($text -match '(?s)<Hardware>(.*?)</Hardware>') { $hw = $Matches[1] }
+    $ports = @()
+    foreach ($m in [regex]::Matches($hw, '<Port\s+([^>]*?)\s*/?>')) {
+        $attrs = $m.Groups[1].Value
+        $slot = ""
+        $enabled = $false
+        $hostMode = ""
+        $path = ""
+        if ($attrs -match 'slot="(\d+)"')                { $slot     = $Matches[1] }
+        if ($attrs -match 'enabled="(true|false)"')      { $enabled  = ($Matches[1] -eq "true") }
+        if ($attrs -match 'hostMode="([^"]*)"')          { $hostMode = $Matches[1] }
+        if ($attrs -match 'path="([^"]*)"')              { $path     = $Matches[1] }
+        $ports += [pscustomobject]@{
+            Slot     = $slot
+            Enabled  = $enabled
+            HostMode = $hostMode
+            Path     = $path
+        }
+    }
+    return $ports
+}
+
+# Slot 1 is COM2. The two fields that decide whether a pipe endpoint exists at
+# all are enabled and path; hostMode is carried in the facts but NOT required,
+# because a template from an older eNSP may simply omit it and would otherwise
+# be reported as broken on the strength of a missing attribute.
+function Test-UartPipePresent {
+    param([object[]]$Ports)
+    foreach ($p in @($Ports)) {
+        if ($null -eq $p) { continue }
+        if (($p.Slot -eq "1") -and $p.Enabled -and $p.Path) { return $true }
+    }
+    return $false
+}
+
+# --- x86 VC++ runtime ------------------------------------------------------
+#
+# 32-bit eNSP marshals IVirtualBox through x86\VBoxProxyStub-x86.dll, which
+# (via VBoxRT-x86.dll) needs the x86 VCRUNTIME140.dll and MSVCP140.dll. A clean
+# machine has neither, the loader then finds the x64 copies in the main
+# VirtualBox directory through PATH, and the mismatch surfaces as
+# ERROR_BAD_EXE_FORMAT (0x800700C1) -> error 40.
+#
+# The installer deploys both into VBox\x86\, so this checks for them there and
+# NOT anywhere else: an x64 copy in the main directory is exactly the failure
+# state, not a pass. VCRUNTIME140_1.dll is genuinely not needed -- the proxystub
+# dependency tree does not include it -- so its absence must not be reported.
+function Get-X86VcRuntimeFacts {
+    param([string]$VBoxDir)
+    $x86 = ""
+    if ($VBoxDir) { $x86 = Join-Path $VBoxDir "x86" }
+    $dirOk = ($x86 -ne "") -and (Test-Path $x86)
+    $files = @()
+    foreach ($n in @("VCRUNTIME140.dll", "MSVCP140.dll")) {
+        $ok = $false
+        if ($dirOk) { $ok = Test-Path (Join-Path $x86 $n) }
+        $files += [pscustomobject]@{ Name = $n; Present = $ok }
+    }
+    return [pscustomobject]@{
+        X86Dir      = $x86
+        X86DirFound = $dirOk
+        Files       = $files
+        Complete    = (@($files | Where-Object { -not $_.Present }).Count -eq 0)
+    }
+}
+
+# --- vboxserver write permission -------------------------------------------
+#
+# eNSP installs under Program Files. VBoxHeadless runs unelevated and has to
+# create <vboxserver>\<VM>\Logs\ and write NVRAM / saved state there; without
+# write permission the VM fails to power on and eNSP reports error 40 with
+# nothing in its own log to explain it. The installer grants Modify on the tree
+# (install.ps1's Grant-VBoxServerWrite), so what this checks is whether that
+# grant -- or an equivalent one -- is present.
+#
+# The ACL is READ, never exercised: opening the directory for write to test it
+# would be a side effect, and this file is contractually side-effect free.
+#
+# Consequently this is an approximation, and the caller must treat it as one.
+# Deny entries are not ordered against allow entries, and group nesting is not
+# expanded, so a positive result is strong evidence while a negative one is
+# only a hint. Both the verdict and the raw grant list are returned so the
+# report can show what the verdict was drawn from.
+#
+# The SID list comes from the CURRENT process token. Running the diagnostic
+# elevated answers a different question than running it as the account that
+# starts eNSP, which is why the report says which account it was run as.
+function Get-VBoxServerAclFacts {
+    param([string]$EnspDir)
+    $dir = ""
+    if ($EnspDir) { $dir = Join-Path $EnspDir "vboxserver" }
+    $exists = ($dir -ne "") -and (Test-Path $dir)
+
+    $sidList = @()
+    try {
+        $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $sidList += $id.User.Value
+        foreach ($g in $id.Groups) { $sidList += $g.Value }
+    } catch { }
+
+    $grants = @()
+    $has = $false
+    if ($exists) {
+        try {
+            $acl = Get-Acl $dir -ErrorAction Stop
+            foreach ($ace in $acl.Access) {
+                if ($ace.AccessControlType -ne "Allow") { continue }
+                $rights = $ace.FileSystemRights
+                $write = (($rights -band [System.Security.AccessControl.FileSystemRights]::WriteData) -ne 0) -or
+                         (($rights -band [System.Security.AccessControl.FileSystemRights]::Modify)    -ne 0) -or
+                         (($rights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne 0)
+                if (-not $write) { continue }
+                $sid = ""
+                try {
+                    $sid = $ace.IdentityReference.Translate(
+                        [System.Security.Principal.SecurityIdentifier]).Value
+                } catch { }
+                $grants += [pscustomobject]@{ Account = $ace.IdentityReference.Value; Sid = $sid }
+                if ($sid -and ($sidList -contains $sid)) { $has = $true }
+            }
+        } catch { }
+    }
+    return [pscustomobject]@{
+        Directory       = $dir
+        Exists          = $exists
+        WriteGrants     = $grants
+        CurrentUserHasWrite = $has
+    }
+}
+
+# --- packet capture driver -------------------------------------------------
+#
+# eNSP's capture path recognises WinPcap only. Npcap ships a WinPcap-compatible
+# wpcap.dll that eNSP does not accept, AND its presence blocks installing the
+# real WinPcap ("a newer version is already installed"). So the two have to be
+# told apart, not merely detected.
+#
+# The discriminator is which product owns the wpcap.dll that eNSP loads, not
+# which driver services happen to exist.
+#
+# Counting driver services would be wrong. Measured on 2026-09-16: npf.sys
+# (WinPcap's driver) RUNNING alongside npcap.sys STOPPED, with wpcap.dll still
+# WinPcap 4.1.3 from Riverbed. That is a healthy pair, not a conflict -- two
+# packet drivers coexist quietly and eNSP works. Treating "an npcap service
+# exists" as Npcap having displaced WinPcap reported a false conflict on a
+# machine that was fine. Hence the services below are facts for the report,
+# never inputs to the verdict.
+#
+# SysWOW64 is the copy that matters: eNSP is a 32-bit process and loads the
+# 32-bit wpcap.dll. A 64-bit mismatch in System32 would not reach it.
+#
+# ProductName is the only thing that tells the two apart -- both install as
+# wpcap.dll, and Npcap sets its own product name even though the file name
+# and exported API are identical.
+function Get-PacketDriverFacts {
+    $dll = Join-Path $env:SystemRoot "SysWOW64\wpcap.dll"
+    $version = ""
+    $product = ""
+    $present = Test-Path $dll
+    if ($present) {
+        try {
+            $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($dll)
+            $version = [string]$vi.FileVersion
+            $product = [string]$vi.ProductName
+        } catch { }
+    }
+
+    # Npcap living in its own subdirectory leaves the system wpcap.dll alone,
+    # so the capture path still works. Both the 32- and 64-bit Npcap folders
+    # are looked for because Npcap may be installed for one architecture only.
+    $npcapDir = (Test-Path (Join-Path $env:SystemRoot "SysWOW64\Npcap")) -or
+                (Test-Path (Join-Path $env:SystemRoot "System32\Npcap"))
+    $npfSvc   = Get-Service -Name "npf"   -ErrorAction SilentlyContinue
+    $npcapSvc = Get-Service -Name "npcap" -ErrorAction SilentlyContinue
+
+    $c = ClassifyPacketDllProduct -Product $product -Present $present
+    # Only a displaced wpcap.dll breaks eNSP, so that alone feeds the verdict.
+    $r = ClassifyPacketDriver -WinPcapVersion $(if ($c.IsWinPcap) { $version } else { "" }) `
+                              -NpcapPresent $c.IsNpcap
+
+    return [pscustomobject]@{
+        DllPath         = $dll
+        DllPresent      = $present
+        Version         = $version
+        Product         = $product
+        NpfService      = [bool]$npfSvc
+        NpcapService    = [bool]$npcapSvc
+        # Any form of Npcap being present, reported so the reader can see why
+        # a later WinPcap install would refuse ("a newer version is installed").
+        NpcapInstalled  = ($c.IsNpcap -or $npcapDir -or [bool]$npcapSvc)
+        NpcapDisplaced  = $c.IsNpcap
+        WinPcapPresent  = $r.WinPcapPresent
+        WinPcapUsable   = $r.WinPcapUsable
+    }
+}
+
+# Which product owns the wpcap.dll that eNSP loads, decided from its version
+# resource alone. Split out from Get-PacketDriverFacts so the rule below is
+# reachable from a fixture instead of only from a machine that happens to have
+# both products installed.
+#
+# ORDER MATTERS, and Windows-style matching is why. "WinPcap" CONTAINS "nPcap"
+# -- the n is the last letter of "Win" -- and -like is case-insensitive, so
+# testing for Npcap first classifies WinPcap as Npcap and reports a conflict on
+# a healthy WinPcap-only machine. That is the exact false positive this pair of
+# functions exists to avoid; it was caught on 2026-09-16 by running the probe
+# against a machine with WinPcap installed, and the assertion in
+# build/tests/checks.Tests.ps1 pins it. WinPcap is therefore tested first and
+# Npcap only when it did not match.
+function ClassifyPacketDllProduct {
+    param([string]$Product, [bool]$Present)
+    $isWinPcap = ($Product -like "*WinPcap*")
+    $isNpcap   = ($Present -and (-not $isWinPcap) -and ($Product -like "*Npcap*"))
+    return [pscustomobject]@{
+        IsWinPcap = $isWinPcap
+        IsNpcap   = $isNpcap
+    }
+}
+
+# --- non-ASCII paths -------------------------------------------------------
+#
+# eNSP passes paths through ANSI code pages in places, so an install directory
+# or a user profile containing non-ASCII characters breaks device startup. The
+# rule applies to the WHOLE path, not to any one component: a Chinese user
+# profile under an ASCII eNSP directory is just as broken as the reverse.
+#
+# Pure and per-path on purpose -- the caller checks each root it knows about and
+# names the one that failed, because the fix differs (move eNSP vs. the profile
+# cannot be moved at all without a new account).
+function Test-NonAsciiPath {
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    foreach ($ch in $Path.ToCharArray()) {
+        if ([int]$ch -gt 127) { return $true }
+    }
+    return $false
+}
+
+# --- leftover VirtualBox processes -----------------------------------------
+#
+# Closing eNSP sends `controlvm poweroff` to every device. The Linux-guest
+# devices (CE / CX / NE40E / NE5000E / NE9000) tear down slowly -- measured at
+# over five minutes -- and a few crash while doing it, holding 0.4-1.5 GB each
+# until the "application error" dialog is dismissed. Nothing is leaked; the
+# memory returns once they finish. But it makes a healthy machine look broken,
+# and nothing else in this report would reveal it.
+#
+# Ownership is decided by the VM's config path, never by the process name: a
+# VBoxHeadless the user started from VirtualBox's own GUI is not eNSP's
+# leftover and must not be reported as one. Same boundary cleanup_orphans.ps1
+# draws before it kills anything.
+function Test-EnspOwnedVmPath {
+    param([string]$CfgFile, [string]$EnspDir, [string]$LocalAppData)
+    if (-not $CfgFile) { return $false }
+    $p = ($CfgFile.Trim() -replace '\\+', '\').TrimEnd('\').ToLower()
+    $roots = @($EnspDir)
+    if ($LocalAppData) { $roots += (Join-Path $LocalAppData "eNSP") }
+    foreach ($root in $roots) {
+        if (-not $root) { continue }
+        $r = ($root.Trim() -replace '\\+', '\').TrimEnd('\').ToLower()
+        if ($p.StartsWith($r + '\')) { return $true }
+    }
+    return $false
+}
+
+# Running VMs joined against the registry map, which is where the config path
+# comes from -- so this costs no extra VBoxManage call per VM.
+function Resolve-RunningVmOwnership {
+    param(
+        [string[]]$RunningVmNames,
+        [hashtable]$RegisteredVms,
+        [hashtable]$RegistrySrc,
+        [string]$EnspDir,
+        [string]$LocalAppData
+    )
+    if (-not $RegisteredVms) { $RegisteredVms = @{} }
+    if (-not $RegistrySrc)   { $RegistrySrc   = @{} }
+    $out = @()
+    foreach ($n in @($RunningVmNames)) {
+        if (-not $n) { continue }
+        $src = ""
+        if ($RegisteredVms.ContainsKey($n)) {
+            $u = $RegisteredVms[$n]
+            if ($RegistrySrc.ContainsKey($u)) { $src = $RegistrySrc[$u] }
+        }
+        $out += [pscustomobject]@{
+            Name    = $n
+            CfgFile = $src
+            EnspOwned = (Test-EnspOwnedVmPath -CfgFile $src -EnspDir $EnspDir -LocalAppData $LocalAppData)
+        }
+    }
+    return $out
+}
+
+# `VBoxManage list runningvms` prints the same shape as `list vms`, so the
+# names come out of Parse-VBoxListVms's key set rather than a second parser.
+function Get-RunningVmNames {
+    param([hashtable]$RegisteredVms)
+    if (-not $RegisteredVms) { return @() }
+    return @($RegisteredVms.Keys)
+}
+
+# Process facts for the two sides of the question: is eNSP up, and how many
+# VirtualBox processes are holding memory. Get-Process is read-only and needs
+# no elevation for other users' processes.
+function Get-VBoxProcessFacts {
+    $names = @("VBoxHeadless", "VBoxSVC", "VBoxSDS", "VirtualBoxVM")
+    $items = @()
+    foreach ($n in $names) {
+        $procs = @(Get-Process -Name $n -ErrorAction SilentlyContinue)
+        foreach ($p in $procs) {
+            $mem = 0
+            try { $mem = [math]::Round($p.WorkingSet64 / 1MB, 1) } catch { }
+            $items += [pscustomobject]@{
+                Name    = $n
+                Id      = $p.Id
+                MemMB   = $mem
+                Started = $(try { $p.StartTime.ToString("yyyy-MM-dd HH:mm:ss") } catch { "" })
+            }
+        }
+    }
+    $ensp = @(Get-Process -Name "eNSP" -ErrorAction SilentlyContinue).Count -gt 0
+    $srv  = @(Get-Process -Name "eNSP_VBoxServer" -ErrorAction SilentlyContinue).Count -gt 0
+    return [pscustomobject]@{
+        EnspRunning     = $ensp
+        ServerRunning   = $srv
+        Processes       = $items
+        HeadlessCount   = @($items | Where-Object { $_.Name -eq "VBoxHeadless" }).Count
+    }
+}

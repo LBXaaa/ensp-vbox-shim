@@ -1,0 +1,5 @@
+"AR_Base" {5aa4275f-3791-41f1-aa74-ffc1e93b01fb}
+"WLAN_AC_Base" {4b31a60a-9faf-4209-993e-e747b3b2adce}
+"WLAN_AD_Base" {4bb88a71-19a6-4ae1-8526-9c35a933e2db}
+"WLAN_AP_Base" {8778881a-f9bd-4ae0-bf40-f1ef8a0bdc56}
+"WLAN_SAP_Base" {9bdf564a-b7c2-4c14-8dad-ec0256c8dd73}

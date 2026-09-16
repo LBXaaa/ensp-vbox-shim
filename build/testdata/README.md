@@ -1,7 +1,8 @@
 # 测试夹具来源说明
 
 这些文件是**真机命令输出的原样捕获**，供 `build/tests/` 下的解析器测试使用。
-全部捕获于 2026-09-15，机器状态为 VirtualBox 7.2.16 安装完好（网络驱动已正确注册）。
+捕获于 2026-09-15 与 2026-09-16，机器状态为 VirtualBox 7.2.16 安装完好
+（网络驱动已正确注册、eNSP 1.3.00.100 已装、垫片已装）。
 
 | 文件 | 来源 | 说明 |
 |---|---|---|
@@ -11,6 +12,15 @@
 | `hostonlyifs_suffixed.txt` | 由上者派生 | 接口名带 `#2` 后缀 |
 | `dhcpservers_normal.txt` | `VBoxManage list dhcpservers` | 单个 DHCP 服务器，`Enabled: Yes` |
 | `netadapter_normal.txt` | `Get-NetAdapter \| ConvertTo-Json` | 连接名为本地化字串（抓取时为「以太网 11」），`InterfaceDescription` 为稳定键 |
+| `vbox_list_vms.txt` | `VBoxManage list vms` | 五个基础设备 VM 全部注册的健康基线 |
+| `vbox_machine_registry.xml` | `%USERPROFILE%\.VirtualBox\VirtualBox.xml` 的 `<MachineRegistry>` 段 | 注册路径的权威来源；注意 `src` 的大小写与反斜杠写法 |
+| `vbox_snapshots_with_link.txt` | `VBoxManage snapshot AR_Base list --machinereadable` | 含 `AR_Base_Link`，即链接克隆所需的那一个快照 |
+| `vbox_showvminfo_state.txt` | `VBoxManage showvminfo AR_Base --machinereadable` | 只截取了 `name=` / `VMState=` 几行；**`VMState="aborted"`** 是真实抓到的状态 |
+| `arbase_uart_ok.vbox` | 真机 `AR_Base.vbox` 的 `<Hardware>` 段 | COM2（slot 1）已启用且指向 `\\.\pipe\config` |
+| `arbase_uart_disabled.vbox` | 由上者派生 | 把 slot 1 改成 `enabled="false"`，模拟 UART2 未开 |
+| `arbase_with_snapshot.vbox` | 由上者派生 | 额外套了一个 `<Snapshots>` 段，其 `<Hardware>` 里的 slot 1 是**禁用**的 |
+
+## 使用夹具时必须知道的几点
 
 ## 使用夹具时必须知道的几点
 
@@ -55,3 +65,24 @@
 
 `netadapter_normal.txt` 的 `Name` 字段是抓取时的系统语言（中文）。这是刻意的——
 它正是「**不可按连接名匹配，只能用 `InterfaceDescription` 关联**」这条设计决策的证据。
+
+### 5. `arbase_with_snapshot.vbox` 钉的是「只读第一个 `<Hardware>`」
+
+真实 `.vbox` 在**每个 `<Snapshot>` 里重复整段 `<Hardware>`**（真机 `AR_Base.vbox` 就是
+如此：文件里有两处 `<Port slot=`，一处是实况、一处是快照存档）。`arbase_with_snapshot.vbox`
+把这两处**做成互相矛盾**——实况 slot 1 启用、快照 slot 1 禁用——于是：
+
+- 解析器只读第一个 `<Hardware>` → 报告「管道可用」（正确）
+- 若哪天有人把解析器改成读所有 `<Hardware>` → 立刻报出多余端口，断言随之失败
+
+### 6. `vbox_showvminfo_state.txt` 抓到的 `aborted` 不是制作的
+
+2026-09-16 的 `AR_Base` 确实停在 `aborted`（异常终止），而这正是当时那个 bug 的成因：
+旧版 `register_vms.ps1` 只认 `poweroff`，于是跳过补建快照。这个夹具因此同时钉住两件事——
+解析器要能读出 `aborted`，且它必须被当作「可以补快照」而不是「设备还在跑」。
+
+### 7. 新增夹具的编码
+
+`arbase_uart_*.vbox` 与 `*.xml` 由 PowerShell 5.1 的 `Set-Content -Encoding UTF8` 写出，
+**带 UTF-8 BOM**。`Get-Content` 读入时会剥掉它，解析器不受影响；但用别的工具按字节
+处理时要记得它的存在。

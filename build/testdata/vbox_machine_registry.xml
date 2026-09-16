@@ -1,0 +1,7 @@
+<MachineRegistry>
+      <MachineEntry uuid="{5aa4275f-3791-41f1-aa74-ffc1e93b01fb}" src="C:\Program Files\Huawei\eNSP\vboxserver\AR_Base\AR_Base.vbox"/>
+      <MachineEntry uuid="{4b31a60a-9faf-4209-993e-e747b3b2adce}" src="C:\Program Files\Huawei\eNSP\vboxserver\WLAN_AC_Base\WLAN_AC_Base.vbox"/>
+      <MachineEntry uuid="{4bb88a71-19a6-4ae1-8526-9c35a933e2db}" src="C:\Program Files\Huawei\eNSP\vboxserver\WLAN_AD_Base\WLAN_AD_Base.vbox"/>
+      <MachineEntry uuid="{8778881a-f9bd-4ae0-bf40-f1ef8a0bdc56}" src="C:\Program Files\Huawei\eNSP\vboxserver\WLAN_AP_Base\WLAN_AP_Base.vbox"/>
+      <MachineEntry uuid="{9bdf564a-b7c2-4c14-8dad-ec0256c8dd73}" src="C:\Program Files\Huawei\eNSP\vboxserver\WLAN_SAP_Base\WLAN_SAP_Base.vbox"/>
+    </MachineRegistry>

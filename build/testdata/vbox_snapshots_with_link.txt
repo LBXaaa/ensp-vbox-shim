@@ -1,0 +1,5 @@
+SnapshotName="AR_Base_Link"
+SnapshotUUID="acff2bbe-2205-4014-ae4b-c0c5cf5a7e1c"
+CurrentSnapshotName="AR_Base_Link"
+CurrentSnapshotUUID="acff2bbe-2205-4014-ae4b-c0c5cf5a7e1c"
+CurrentSnapshotNode="SnapshotName"

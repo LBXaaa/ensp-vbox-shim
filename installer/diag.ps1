@@ -1325,6 +1325,21 @@ try {
 Write-Fact "VBox 目录" $(if ($VBoxDir) { $VBoxDir } else { "(未定位到)" })
 Write-Fact "eNSP 目录" $(if ($EnspDir) { $EnspDir } else { "(未定位到)" })
 
+# 非 ASCII 路径。判据是【整条路径】而不是某一段:eNSP 装在纯英文目录、用户目录却带
+# 中文,一样会坏。用户目录几乎没法改(要新建账户才能换),所以这一项只报影响面,
+# 不给修法 —— 与 hyper-v 那一项同理,报事实比报一个做不到的建议有用。
+$nonAsciiRoots = @()
+foreach ($pair in @(@("eNSP 目录", $EnspDir), @("VBox 目录", $VBoxDir), @("用户目录", $env:USERPROFILE))) {
+    if ($pair[1] -and (Test-NonAsciiPath -Path $pair[1])) { $nonAsciiRoots += $pair[0] }
+}
+if ($nonAsciiRoots.Count -eq 0) {
+    Write-Fact "非 ASCII 路径" "无"
+} else {
+    Write-Host ("  [ !! ] 非 ASCII 路径: " + ($nonAsciiRoots -join " / "))
+    Write-Note "     eNSP 调用链上有若干处按 ANSI 代码页传路径,带中文的目录会让设备起不来。"
+    Write-Note "     eNSP 与 VBox 目录可以改(重装到纯英文路径);用户目录要新建账户才能改。"
+}
+
 # 垫片 DLL 的四个投放位置。期望值按文本从 install.ps1 里取,不执行该文件。
 $expectedSha = ""
 try {
@@ -1367,6 +1382,37 @@ if (-not $EnspDir) {
             Write-Fail $rel $_.Exception.Message
         }
     }
+}
+
+# --- x86 VC++ 运行时 --------------------------------------------------------
+# 32 位 eNSP 经 COM marshal IVirtualBox 时加载 x86\VBoxProxyStub-x86.dll,它(经
+# VBoxRT-x86.dll)依赖 VBox\x86\ 下的 x86 版 VCRUNTIME140 / MSVCP140。干净机这俩
+# 都缺,加载器会沿 PATH 抓到主目录的 x64 版 → ERROR_BAD_EXE_FORMAT(0xC1) → error 40。
+#
+# 只认 x86\ 子目录:主目录里放着同名 x64 文件正是【故障态】而不是通过,所以这一项
+# 绝不去主目录找同名文件来"凑齐"。
+try {
+    Write-Host ""
+    Write-Host "  -- x86 VC++ 运行时 (VBox\x86\) --"
+    if (-not $VBoxDir) {
+        Write-Note "[跳过] 未定位到 VBox 目录,无法核对。请用 -VBoxDir 指定。"
+    } else {
+        $vc = Get-X86VcRuntimeFacts -VBoxDir $VBoxDir
+        if (-not $vc.X86DirFound) {
+            Write-Host ("  [ !! ] 没有 " + $vc.X86Dir)
+            Write-Note "     VBox 7.x 正常安装自带这个目录;它不在说明 VBox 安装异常。"
+        } else {
+            foreach ($vf in $vc.Files) {
+                Write-Host ("  [" + $(if ($vf.Present) { " OK " } else { "缺失" }) + "] " + $vf.Name)
+            }
+            if (-not $vc.Complete) {
+                Write-Note "  !! 缺的这几份会让 32 位 COM 激活失败(0x800700C1),AR 一拉就报 40。"
+                Write-Note "     修法: 重跑 安装.bat,或把 payload\msvcrt-x86\*.dll 复制到上面这个目录。"
+            }
+        }
+    }
+} catch {
+    Write-Fail "x86 VC++ 运行时" $_.Exception.Message
 }
 
 # ===========================================================================
@@ -1736,6 +1782,42 @@ try {
     Write-Fail "服务端口" $_.Exception.Message
 }
 
+# --- 抓包驱动 (WinPcap / Npcap) ---------------------------------------------
+# eNSP 的抓包只认 WinPcap;Npcap 的兼容层不被接受。
+#
+# 判据是【谁占着系统 wpcap.dll】,不是谁的服务在跑。这两件事实测会分叉(2026-09-16):
+# npf.sys(WinPcap 的驱动)与 npcap.sys(Npcap 的驱动)可以并存且互不干扰,此时
+# wpcap.dll 仍是 WinPcap 4.1.3,eNSP 抓包完全正常 —— 把"存在 npcap 服务"当成冲突,
+# 会在一台健康机器上报出假警。所以服务只作为事实列出,不参与判定。
+try {
+    Write-Host ""
+    Write-Host "  -- 抓包驱动 (WinPcap / Npcap) --"
+    $pk = Get-PacketDriverFacts
+    Write-Fact "wpcap.dll" ($(if ($pk.DllPresent) { $pk.DllPath } else { "(不存在)" }))
+    if ($pk.DllPresent) {
+        Write-Fact "版本 / 产品" ($pk.Version + "   " + $pk.Product)
+    }
+    Write-Host ("  [" + $(if ($pk.NpfService) { "运行" } else { "  - " }) + "] npf 服务 (WinPcap 的驱动)")
+    Write-Host ("  [" + $(if ($pk.NpcapService) { "有  " } else { "  - " }) + "] npcap 服务 (Npcap 的驱动)")
+
+    if ($pk.NpcapDisplaced) {
+        Write-Host ""
+        Write-Note "  !! 系统 wpcap.dll 是 Npcap 提供的 —— eNSP 抓包不认它。"
+        Write-Note "     而且 Npcap 在装时会让 WinPcap 安装程序报『已有更新版本』而拒绝安装。"
+        Write-Note "     修法: 卸载 Npcap(或只保留其独立模式),再把 wpcap.dll 换回 WinPcap 4.1.3。"
+    } elseif ($pk.WinPcapUsable) {
+        Write-Note "  WinPcap 就位,eNSP 抓包路径可用。"
+        if ($pk.NpcapInstalled) {
+            Write-Note "    另外装了 Npcap,但它没抢走系统 wpcap.dll,两者并存不影响 —— 不用动它。"
+        }
+    } else {
+        Write-Note "  没有可用的 WinPcap。抓包与部分设备的启动会失败。"
+        Write-Note "     修法: 安装 WinPcap 4.1.3。装之前若报『已有更新版本』,先卸载 Npcap。"
+    }
+} catch {
+    Write-Fail "抓包驱动" $_.Exception.Message
+}
+
 # ===========================================================================
 # 第 5 节  网络补充
 # ===========================================================================
@@ -1809,10 +1891,112 @@ try {
 }
 
 # ===========================================================================
-# 第 6 节  设备包与版本
+# 第 6 节  设备就绪:注册、快照与模板
 # ===========================================================================
-Write-Section "[6] 设备包与版本"
+Write-Section "[6] 设备就绪:注册、快照与模板"
 $sectionsOk += "6"
+
+# --- 基础 VM 注册与 _Link 快照 ----------------------------------------------
+#
+# 每台 AR / WLAN / USG 都是基础 VM 的链接克隆,克隆要成立必须有注册项与
+# <VM>_Link 快照。缺任何一样时【垫片日志都是干净的】—— clonevm 根本没被调到,
+# eNSP 直接报 40,报告里也就只剩这一处能看出问题。
+#
+# 这不是理论缺口,是 2026-09-16 实际踩到的:AR_Base.vbox 里留着 aborted="true",
+# 而旧版 register_vms.ps1 只认 poweroff,于是跳过补建快照 —— 而 AR_Base 恰恰是
+# 拉路由器要用的那台。补过后克隆恢复正常。
+#
+# 探测是逐台跑的,所以能省则省:只查【已注册】的 VM,且只有当快照确实缺失时才去
+# 查电源状态(状态只用于判断"现在能不能补",健康机器上不需要)。
+try {
+    Write-Host ""
+    Write-Host "  -- 基础 VM 注册与 _Link 快照 --"
+    if (-not $EnspDir) {
+        Write-Note "[跳过] 未定位到 eNSP 目录,无法核对注册与快照。请用 -EnspDir 指定。"
+    } else {
+        $baseDirs = @(Get-BaseVmDirs -EnspDir $EnspDir)
+
+        $regVms = @{}
+        if ($vboxManageExe -and (Test-Path $vboxManageExe)) {
+            $vmsProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("list", "vms")
+            if ($vmsProbe.Ok) { $regVms = Parse-VBoxListVms -Lines $vmsProbe.Lines }
+            else { Write-Fail "VBoxManage list vms" $vmsProbe.Error }
+        }
+
+        # 注册路径取自 VirtualBox.xml 的 MachineRegistry:一次文件读换来全部
+        # 已注册路径,省掉每台一次 showvminfo。
+        $regSrc = @{}
+        $vbHome = $env:VBOX_USER_HOME
+        if (-not $vbHome) { $vbHome = Join-Path $env:USERPROFILE ".VirtualBox" }
+        $vbXml = Join-Path $vbHome "VirtualBox.xml"
+        if (Test-Path $vbXml) {
+            try {
+                $regSrc = Parse-VBoxMachineRegistry -Lines @(Get-Content -Path $vbXml -ErrorAction Stop)
+            } catch {
+                Write-Fail "VirtualBox.xml" $_.Exception.Message
+            }
+        } else {
+            Write-Note ("  [ !! ] 找不到 " + $vbXml)
+            Write-Note "     这个文件按账户存放,须用【平时启动 eNSP 的那个账户】跑本诊断。"
+        }
+
+        $vmStates = @{}
+        $vmSnapshots = @{}
+        foreach ($b in $baseDirs) {
+            if (-not $b.DirPresent) { continue }
+            if (-not $regVms.ContainsKey($b.Name)) { continue }
+            $snProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("snapshot", $b.Name, "list", "--machinereadable")
+            $snaps = @()
+            # VM 无快照时该命令返回非 0 并什么都不输出 —— 那是正常答案,不是故障。
+            if ($snProbe.Ok) { $snaps = @(Parse-VBoxSnapshotList -Lines $snProbe.Lines) }
+            $vmSnapshots[$b.Name] = $snaps
+            if (-not (Test-LinkSnapshotPresent -SnapshotNames $snaps -VmName $b.Name)) {
+                $stProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("showvminfo", $b.Name, "--machinereadable")
+                if ($stProbe.Ok) { $vmStates[$b.Name] = Parse-VmState -Lines $stProbe.Lines }
+            }
+        }
+
+        $vmFacts = @(Resolve-BaseVmRegistration -BaseVmDirs $baseDirs `
+                     -RegisteredVms $regVms -RegistrySrc $regSrc `
+                     -VmStates $vmStates -VmSnapshots $vmSnapshots)
+
+        foreach ($vm in $vmFacts) {
+            if (-not $vm.DirPresent) {
+                Write-Note ("  - " + $vm.Name + " : 未装该设备包,跳过")
+                continue
+            }
+            Write-Host ("  * " + $vm.Name)
+            if (-not $vm.Registered) {
+                Write-Host "      [ !! ] 注册: 未注册"
+            } elseif (-not $vm.PathValid) {
+                Write-Host "      [ !! ] 注册: 已注册,但注册路径已失效"
+                Write-Host ("             现指向: " + $vm.RegisteredPath)
+                Write-Host ("             应为  : " + $vm.VBoxFile)
+            } else {
+                Write-Host "      [ OK ] 注册: 已注册且路径正确"
+            }
+            if (-not $vm.Registered) {
+                Write-Host "      [ -- ] _Link 快照: 未注册,无法查询"
+            } elseif ($vm.LinkSnapshot) {
+                Write-Host "      [ OK ] _Link 快照: 有"
+            } else {
+                Write-Host ("      [ !! ] _Link 快照: 缺   (当前状态 " + $(if ($vm.State) { $vm.State } else { "取不到" }) + ")")
+            }
+        }
+
+        $badReg  = @($vmFacts | Where-Object { $_.DirPresent -and ((-not $_.Registered) -or (-not $_.PathValid)) })
+        $badSnap = @($vmFacts | Where-Object { $_.DirPresent -and $_.Registered -and (-not $_.LinkSnapshot) })
+        if (($badReg.Count -gt 0) -or ($badSnap.Count -gt 0)) {
+            Write-Host ""
+            Write-Note "  !! 上面标 !! 的项会让对应设备一拉就报 40,而垫片日志里看不出异常。"
+            Write-Note "     修法: 双击 注册设备.bat —— 它按需重注册并补建缺失的 _Link 快照,"
+            Write-Note "     幂等且不删磁盘。补快照要求 VM 没有内存镜像:poweroff 与 aborted"
+            Write-Note "     都满足,running / paused / saved 不满足(那几种状态请先关掉设备)。"
+        }
+    }
+} catch {
+    Write-Fail "基础 VM 注册" $_.Exception.Message
+}
 
 # --- eNSP 版本 --------------------------------------------------------------
 $enspVersion = ""
@@ -1935,29 +2119,234 @@ try {
     Write-Fail "AR_Base 模板 VRAMSize" $_.Exception.Message
 }
 
+# --- 设备模板 UART / COM2 命名管道 ------------------------------------------
+#
+# 模板里的 <UART><Port slot="1" ... hostMode="HostPipe" path="\\.\pipe\config"/>
+# 就是 eNSP 控制台挂上去的那根管道。端口没开时管道两端没有任何一端被创建,
+# 设备【虚拟机启动是正常的】,只是永远进不了 CLI —— 现象与"卡在启动"一模一样。
+#
+# 解析器只读第一个 <Hardware> 块:带快照的 .vbox 会在每个 <Snapshot> 里重复整段
+# 硬件配置,读进去就会把某个存档态里的端口当成实况。
+try {
+    Write-Host ""
+    Write-Host "  -- 设备模板 UART / COM2 管道 --"
+    if (-not $EnspDir) {
+        Write-Note "[跳过] 未定位到 eNSP 目录。请用 -EnspDir 指定。"
+        $uartTargets = @()
+    } else {
+        $uartTargets = @()
+        foreach ($b in @(Get-BaseVmDirs -EnspDir $EnspDir)) {
+            if ($b.VBoxFile) { $uartTargets += @{ Name = $b.Name; File = $b.VBoxFile } }
+        }
+        $ngfwTpl = Join-Path $EnspDir "plugin\ngfw\tools\ngfw\vfw_usg.vbox"
+        if (Test-Path $ngfwTpl) { $uartTargets += @{ Name = "vfw_usg"; File = $ngfwTpl } }
+
+        if ($uartTargets.Count -eq 0) {
+            Write-Note "  没找到任何设备模板,跳过。"
+        }
+        $uartBad = 0
+        foreach ($t in $uartTargets) {
+            $ports = @(Parse-UartPorts -Lines (Get-Content -Path $t.File -ErrorAction Stop))
+            $ok = Test-UartPipePresent -Ports $ports
+            $p1 = @($ports | Where-Object { $_.Slot -eq "1" })
+            $desc = $(if ($p1.Count -eq 0) { "模板里没有 slot 1 端口" }
+                      else { "slot 1 enabled=" + $p1[0].Enabled + "  path=" + $(if ($p1[0].Path) { $p1[0].Path } else { "(空)" }) })
+            Write-Host ("  [" + $(if ($ok) { " OK " } else { " !! " }) + "] " + $t.Name.PadRight(14) + $desc)
+            if (-not $ok) { $uartBad++ }
+        }
+        if ($uartBad -gt 0) {
+            Write-Note "  !! 上面标 !! 的模板没有可用的 COM2 命名管道,对应设备进不了 CLI。"
+            Write-Note "     模板由 eNSP 安装时生成,改动它属【有损且非必需】,本工具不自动做。"
+            Write-Note "     手动修法见 docs\troubleshooting-error40.md,或重装该设备包恢复模板。"
+        }
+    }
+} catch {
+    Write-Fail "设备模板 UART" $_.Exception.Message
+}
+
+# --- vboxserver 写权限 -------------------------------------------------------
+#
+# eNSP 装在 Program Files 下,普通账户默认不可写。而 VBoxHeadless 是非提权进程,
+# 它必须在 <vboxserver>\<VM>\ 下建 Logs\ 并写 NVRAM / saved-state —— 写不进去时
+# 建目录静默失败,VM 起不来,eNSP 报 40,而 eNSP 自己的日志里什么都没有。
+try {
+    Write-Host ""
+    Write-Host "  -- vboxserver 目录写权限 --"
+    if (-not $EnspDir) {
+        Write-Note "[跳过] 未定位到 eNSP 目录。请用 -EnspDir 指定。"
+    } else {
+        $acl = Get-VBoxServerAclFacts -EnspDir $EnspDir
+        if (-not $acl.Exists) {
+            Write-Note "[跳过] 没有 vboxserver 目录(未装设备包?)。"
+        } else {
+            Write-Fact "目录" $acl.Directory
+            foreach ($g in @($acl.WriteGrants)) {
+                Write-Host ("        可写: " + $g.Account)
+            }
+            if ($acl.CurrentUserHasWrite) {
+                Write-Host "  [ OK ] 当前账户在可写列表里"
+            } else {
+                Write-Host "  [ !! ] 当前账户【不在】可写列表里"
+                Write-Note "     修法: 重跑 安装.bat(它会授权 vboxserver\ 树);"
+                Write-Note "     手动等价命令见 installer\README.md 的权限一节。"
+            }
+            Write-Host ""
+            Write-Note "  判据说明: 这里读的是 ACL,并没有真去写一次 —— 本诊断承诺全程只读。"
+            Write-Note "  因此 deny 项与组的嵌套没有按系统的方式展开,结论偏保守:"
+            Write-Note "  显示可写时基本确实可写;显示不可写时,请用【平时启动 eNSP 的账户】"
+            Write-Note "  重跑本节确认后再下结论。"
+        }
+    }
+} catch {
+    Write-Fail "vboxserver 写权限" $_.Exception.Message
+}
+
 # ===========================================================================
-# 第 7 节  日志尾部
+# 第 7 节  残留进程
 # ===========================================================================
-Write-Section "[7] 日志尾部"
+Write-Section "[7] 残留进程"
 $sectionsOk += "7"
+
+# 关闭 eNSP 时它会为每台设备补发 controlvm poweroff。CE / CX / NE 那几台的客户机
+# 是 Linux,硬断电收尾极慢(实测 5 分钟以上),个别进程还会在收尾时崩溃并弹出
+# 「应用程序错误」框,不点掉就一直挂着,每台占 0.4-1.5 GB。这不是泄漏 —— 全部退完
+# 内存会正常归还 —— 但它会让一台好机器看起来像坏的,而本报告其余各节都看不出。
+#
+# 归属按【VM 配置文件的路径】判,不按进程名:eNSP 已关时任何 VBoxHeadless 都算残留,
+# 但用户自己从 VirtualBox GUI 起的 VM 不算。这与 清理残留.bat 划的是同一条线。
+try {
+    Write-Host ""
+    Write-Host "  -- VirtualBox 进程 --"
+    $proc = Get-VBoxProcessFacts
+    Write-Fact "eNSP 主程序" $(if ($proc.EnspRunning) { "运行中" } else { "未运行" })
+    Write-Fact "eNSP_VBoxServer" $(if ($proc.ServerRunning) { "运行中" } else { "未运行" })
+    if ($proc.HeadlessCount -eq 0) {
+        Write-Fact "VBoxHeadless" "无"
+    } else {
+        Write-Host ("  VBoxHeadless: " + $proc.HeadlessCount + " 个")
+        foreach ($p in @($proc.Processes | Where-Object { $_.Name -eq "VBoxHeadless" })) {
+            Write-Host ("      PID " + $p.Id + "   " + $p.MemMB + " MB   启动于 " + $p.Started)
+        }
+    }
+
+    $runProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("list", "runningvms")
+    if (-not $runProbe.Ok) {
+        Write-Fail "VBoxManage list runningvms" $runProbe.Error
+    } else {
+        $runningMap = Parse-VBoxListVms -Lines $runProbe.Lines
+        $vbHome2 = $env:VBOX_USER_HOME
+        if (-not $vbHome2) { $vbHome2 = Join-Path $env:USERPROFILE ".VirtualBox" }
+        $regSrc2 = @{}
+        $xml2 = Join-Path $vbHome2 "VirtualBox.xml"
+        if (Test-Path $xml2) {
+            try { $regSrc2 = Parse-VBoxMachineRegistry -Lines @(Get-Content -Path $xml2 -ErrorAction Stop) } catch { }
+        }
+        $localApp = $env:LOCALAPPDATA
+        $owned = @(Resolve-RunningVmOwnership -RunningVmNames @(Get-RunningVmNames -RegisteredVms $runningMap) `
+                   -RegisteredVms $runningMap -RegistrySrc $regSrc2 `
+                   -EnspDir $EnspDir -LocalAppData $localApp)
+
+        if ($owned.Count -eq 0) {
+            Write-Fact "正在运行的 VM" "无"
+        } else {
+            Write-Host ("  正在运行的 VM: " + $owned.Count + " 台")
+            foreach ($o in $owned) {
+                Write-Host ("      " + $o.Name.PadRight(20) + $(if ($o.EnspOwned) { "<- eNSP 的客户机" } else { "<- 非 eNSP 所有,不动" }))
+            }
+        }
+
+        if ((-not $proc.EnspRunning) -and ($proc.HeadlessCount -gt 0)) {
+            Write-Host ""
+            Write-Note "  eNSP 已关闭,但仍有 VBoxHeadless 占着内存。"
+            Write-Note "     CE / CX / NE 的客户机是 Linux,硬断电收尾慢,实测 5 分钟以上;"
+            Write-Note "     期间内存不释放,个别进程崩溃后弹出的「应用程序错误」框不点掉会一直挂住。"
+            Write-Note "     全部退完后内存正常归还,【不是永久泄漏】,本工具也不把它算作故障。"
+            Write-Note "     不想等就双击 清理残留.bat —— 它按归属列清单后确认,不碰用户自己的 VM。"
+        } elseif ($proc.EnspRunning -and ($owned.Count -gt 0)) {
+            Write-Note "  eNSP 正在运行,上面这些 VM 是它的在用设备,属正常。"
+        }
+    }
+} catch {
+    Write-Fail "残留进程" $_.Exception.Message
+}
+
+# ===========================================================================
+# 第 8 节  日志尾部
+# ===========================================================================
+Write-Section "[8] 日志尾部"
+$sectionsOk += "8"
 
 Write-Note "采集范围: 只取下列【当前】文件并截断尾部。同目录下数十个历史 .bak_*"
 Write-Note "一律不采 —— 全量打包会把报告撑成几十 MB 的噪音。"
 Write-Host ""
-Write-Note "VBoxSVC.log 与 eNSP 的 vboxserver\log\VBoxManage.log 是网络层故障的决定性"
-Write-Note "证据所在: 例如 VERR_INTNET_FLT_IF_NOT_FOUND 只在后者里出现。"
+Write-Note "后面七份里,有三份是故障定性的关键证据所在:"
+Write-Note "  * eNSP 的 vboxserver\log\VBoxManage.log —— VERR_INTNET_FLT_IF_NOT_FOUND 只在它这里出现;"
+Write-Note "  * VBox.log(最近一次启动)—— 走的是 HM 还是 NEM、网络 LUN 建没建起来,都在这里;"
+Write-Note "  * VBoxHardening.log —— 加固拒绝加载时才有,写的是【是哪个 DLL 被拒的】。"
+Write-Note "后两份取自最近被写过的那一次设备启动,因此它们反映的是【最近一次失败现场】。"
 
 # 日志源用「访问器函数」返回,而不是 $script: 作用域的数组变量。
 # 从函数内部读 $script:Name 会绑定到调用方的作用域、拿到 $null
 # (这正是 checks.ps1 顶部注释里记的那个坑),所以这里按参数取 EnspDir 现算。
+# 最近被写过的那份 VM 日志。
+#
+# VBox.log 与 VBoxHardening.log 记的是【某一次虚拟机启动】发生了什么:走了哪个
+# 执行后端、加固有没有拒绝、网络 LUN 有没有建起来。这类事实只在启动当时存在,
+# 机器静止时任何只读探测都看不到 —— 所以必须把日志本身带进报告。
+#
+# 不猜是哪台 VM:eNSP 每次拉设备都会新建克隆(在 %LOCALAPPDATA%\eNSP 下),
+# 基础盘又在安装目录下,两个地方都可能有。按最后写入时间取最新的一份,
+# 那正是"最近那次启动"。
+function Find-NewestVmLog {
+    param([string]$FileName, [string]$VBoxUserHome, [string]$EnspDir)
+    if (-not $FileName) { return "" }
+    # VirtualBox 把 Logs\ 放在【VM 配置文件所在目录】下,所以搜索根就是三类配置文件
+    # 的所在地,而不是想当然的 .VirtualBox\VMs:
+    #   - eNSP 安装目录下的基础盘(AR_Base 等)——它们的 Logs\ 就在 AR_Base\ 里
+    #   - %LOCALAPPDATA%\eNSP 下的克隆
+    #   - .VirtualBox\VMs(从默认机器目录注册的 VM;本机为空,但别的机器会有)
+    # 漏掉前两个会让这份日志在任何一台按本项目方式安装的机器上都取不到。
+    $roots = @()
+    if ($EnspDir)         { $roots += (Join-Path $EnspDir "vboxserver") }
+    if ($env:LOCALAPPDATA){ $roots += (Join-Path $env:LOCALAPPDATA "eNSP") }
+    if ($VBoxUserHome)    { $roots += (Join-Path $VBoxUserHome "VMs") }
+    $best = ""
+    $bestTime = [datetime]::MinValue
+    foreach ($r in $roots) {
+        if (-not (Test-Path $r)) { continue }
+        try {
+            $f = Get-ChildItem -Path $r -Filter $FileName -Recurse -File -Depth 4 -ErrorAction SilentlyContinue |
+                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($f -and $f.LastWriteTime -gt $bestTime) {
+                $best = $f.FullName
+                $bestTime = $f.LastWriteTime
+            }
+        } catch { }
+    }
+    return $best
+}
+
+# 每项带一个 Why:路径为空时用它解释原因。
+#
+# 原来只有一句「eNSP 目录未定位到」,那是当时唯一可能的原因;现在源变多了,
+# 再把"这台机器还没启动过设备"说成"eNSP 目录没找到"就是纯粹的误导 ——
+# 用户会去修一个根本不存在的路径问题。
 function Get-DiagLogSources {
     param([string]$EnspDir)
+    $vbHome = $env:VBOX_USER_HOME
+    if (-not $vbHome) { $vbHome = Join-Path $env:USERPROFILE ".VirtualBox" }
+    $noEnsp  = "未定位到 eNSP 目录,请用 -EnspDir 指定。"
+    $noStart = "未找到该日志 —— 本机还没启动过任何 eNSP 设备时属正常(设备一启动就会有)。"
     return @(
-        @{ Label = "shim install";    Path = "$env:ProgramData\ensp-vbox-shim\install.log";            Tail = 200 },
-        @{ Label = "shim proxy";      Path = "$env:ProgramData\ensp-vbox-shim\vbox52_proxy.log";       Tail = 200 },
-        @{ Label = "shim wrapper";    Path = "$env:ProgramData\ensp-vbox-shim\vboxmanage_wrapper.log"; Tail = 200 },
-        @{ Label = "VBoxSVC";         Path = "$env:USERPROFILE\.VirtualBox\VBoxSVC.log";               Tail = 300 },
-        @{ Label = "eNSP VBoxManage"; Path = $(if ($EnspDir) { Join-Path $EnspDir "vboxserver\log\VBoxManage.log" } else { "" }); Tail = 200 }
+        @{ Label = "shim install";    Path = "$env:ProgramData\ensp-vbox-shim\install.log";            Tail = 200; Why = "路径未确定。" },
+        @{ Label = "shim proxy";      Path = "$env:ProgramData\ensp-vbox-shim\vbox52_proxy.log";       Tail = 200; Why = "路径未确定。" },
+        @{ Label = "shim wrapper";    Path = "$env:ProgramData\ensp-vbox-shim\vboxmanage_wrapper.log"; Tail = 200; Why = "路径未确定。" },
+        @{ Label = "VBoxSVC";         Path = (Join-Path $vbHome "VBoxSVC.log");                        Tail = 300; Why = "路径未确定。" },
+        @{ Label = "eNSP VBoxManage"; Path = $(if ($EnspDir) { Join-Path $EnspDir "vboxserver\log\VBoxManage.log" } else { "" }); Tail = 200; Why = $noEnsp },
+        # 最近一次 VM 启动的两份日志。VBox.log 回答"走的 HM 还是 NEM、网络 LUN 建没建
+        # 起来";VBoxHardening.log 只在加固拒绝时才有内容,回答"是哪个 DLL 被拒的"。
+        @{ Label = "VBox.log(最近一次启动)";     Path = (Find-NewestVmLog -FileName "VBox.log" -VBoxUserHome $vbHome -EnspDir $EnspDir);           Tail = 150; Why = $noStart },
+        @{ Label = "VBoxHardening.log(最近一次)"; Path = (Find-NewestVmLog -FileName "VBoxHardening.log" -VBoxUserHome $vbHome -EnspDir $EnspDir); Tail = 80;  Why = "未找到该日志 —— 它只在【进程加固拒绝加载】时才生成,没有它通常是好事。" }
     )
 }
 
@@ -1967,7 +2356,7 @@ try {
         Write-Host ("  == " + $src.Label + " ==")
         try {
             if (-not $src.Path) {
-                Write-Note "路径未确定(eNSP 目录未定位到,请用 -EnspDir 指定)。"
+                Write-Note $(if ($src.Why) { $src.Why } else { "路径未确定。" })
             } elseif (-not (Test-Path $src.Path)) {
                 Write-Note ("不存在: " + $src.Path)
             } else {
@@ -1991,10 +2380,10 @@ try {
 }
 
 # ===========================================================================
-# 第 8 节  收尾
+# 第 9 节  收尾
 # ===========================================================================
-Write-Section "[8] 收尾"
-$sectionsOk += "8"
+Write-Section "[9] 收尾"
+$sectionsOk += "9"
 
 Write-Host ""
 Write-Host ("  本次诊断到此结束,已产出第 " + ($sectionsOk -join " / ") + " 节。")
@@ -2005,8 +2394,8 @@ if ($script:DiagFailCount -eq 0) {
 }
 Write-Host ""
 Write-Host "  本报告只覆盖上面列出的这些节,不表示环境完全无问题:"
-Write-Host "  未覆盖的还有抓包驱动(WinPcap / Npcap),以及安装器自身的校验。"
-Write-Host "  报告里没报错,只说明已覆盖的这些项没发现问题。"
+Write-Host "  未覆盖的是安装器自身的校验与设备包镜像内容 —— 前者由 安装.bat 自己核对,"
+Write-Host "  后者不随本工具分发。报告里没报错,只说明已覆盖的这些项没发现问题。"
 Write-Host ""
 Write-Host "  本报告全程为只读采集,不含任何交互内容 —— 修复菜单在转录停止之后才运行,"
 Write-Host "  它那一段另写一份 <报告名>.repair.txt,不会混进本文件。"
