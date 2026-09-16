@@ -33,7 +33,12 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # install.ps1 / diag.ps1 共用同一份实现,本文件不重复任何探测逻辑。
 # 必须在 script 作用域执行:checks.ps1 里的 $script: 变量才落在本脚本的作用域里,
 # 其函数读取时才解析得到。
-. (Join-Path $ScriptDir "checks.ps1")
+#
+# 缺这个文件同样是"整合包损坏",且必须在这里就报 —— 这一行早于下面几个 Write-*
+# 辅助函数的定义,所以只用 Write-Host,不能调 Write-Err。
+$checksPs1 = Join-Path $ScriptDir "checks.ps1"
+if (-not (Test-Path $checksPs1)) { Write-Host "  [XX] 整合包损坏:缺 checks.ps1" -ForegroundColor Red; exit 1 }
+. $checksPs1
 
 function Write-Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Write-OK($m)  { Write-Host "  [OK] $m" -ForegroundColor Green }
