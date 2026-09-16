@@ -1,9 +1,9 @@
-# tui.ps1 -- console interaction layer for the repair menu (mechanism only)
+# tui.ps1 - console interaction layer for the repair menu (mechanism only)
 #
 # Encoding: pure ASCII, no BOM (library convention, same as checks.ps1 / fix.ps1).
 #   This file carries NO user-facing text: every label, prompt and message belongs to the
-#   caller (diag.ps1, UTF-8 with BOM, which holds the Chinese). Staying free of non-ASCII
-#   is what makes the ASCII / no-BOM encoding possible at all.
+#   caller (diag.ps1, UTF-8 with BOM, which holds the Chinese), so there is nothing
+#   here that needs a non-ASCII byte.
 #
 # Scope: console capability probe, console mode save/restore, key + mouse event reading,
 #   drawing primitives, and the selection loop. No menu, no wording, no policy.
@@ -252,10 +252,10 @@ try {
 # ---------------------------------------------------------------------------
 # Layout self-check
 #
-# The INPUT_RECORD union offset is the single most fragile thing in this file: get it
-# wrong and every mouse event is read from the wrong bytes, which surfaces to the user as
-# "clicking does nothing" and to the developer as nothing at all. Marshal.SizeOf is the
-# only place that shows it, so it is checked once at load time instead of being assumed.
+# Get the INPUT_RECORD union offset wrong and every mouse event is read from the wrong
+# bytes, which surfaces to the user as "clicking does nothing" and to the developer as
+# nothing at all. Marshal.SizeOf is the only place that shows it, so it is checked once
+# at load time instead of being assumed.
 # Expected: COORD 4, KEY_EVENT_RECORD 16, MOUSE_EVENT_RECORD 16, INPUT_RECORD 20.
 # ---------------------------------------------------------------------------
 function Test-TuiLayout {

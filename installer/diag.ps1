@@ -116,7 +116,7 @@ function Write-Note {
 # 计数用 $script: —— 本函数定义在 diag.ps1 内、且只从 diag.ps1 的顶层调用,
 # 所以 $script: 解析到的正是本文件的脚本作用域,不会踩 checks.ps1 那个
 # 「$script: 落到调用方作用域」的坑(那个坑说的是被 dot-source 的库函数)。
-# 这里写的是标量计数,不是数组。
+# 计数是标量,没有数组绑定那层问题。
 function Write-Fail {
     param([string]$Where, [string]$Message)
     $script:DiagFailCount = $script:DiagFailCount + 1
@@ -209,7 +209,7 @@ function New-MenuStdinReader {
 # 自己包一层 StreamReader 才有真的异步读,超时才会到点返回。
 #
 # 也不用 Read-Host:它在 EOF 上返回空串而不是 $null,菜单会当成「无效输入」反复重问,
-# 这正是无人值守时最常见的挂死形态。
+# 无人值守时就是这样挂死的。
 function Read-MenuLine {
     param([bool]$Redirected = $false, [int]$TimeoutMs = 15000, [object]$Reader = $null)
 
@@ -262,8 +262,8 @@ function ConvertTo-MenuSelection {
 # ---------------------------------------------------------------------------
 
 # 纯只读,且刻意绕开 DISM:Get-WindowsOptionalFeature 在本机会挂住(TrustedInstaller
-# 卡死,十分钟不返回),install.ps1 已为此改过一次。判据是「hypervisor 现在是否真的
-# 在跑」,而不是「Hyper-V 功能装没装」—— 前者才决定 VBox 拿不拿得到原生 VT-x。
+# 卡死,十分钟不返回),install.ps1 已为此改过一次。判据取「hypervisor 现在是否真的
+# 在跑」—— VBox 能不能拿到原生 VT-x 取决于这个,Hyper-V 功能装没装说明不了。
 function Get-HypervisorFacts {
     $known   = $false
     $present = $false
@@ -340,8 +340,8 @@ function Get-HypervisorNotes {
 # 只报「诊断确实发现的问题」,并给出对应的修复步骤。没查出问题就没有条目 ——
 # 菜单因此不会在健康机器上退化成一串空操作。
 #
-# 判据全部来自 checks.ps1 的同一批探测函数,和报告读的是同一套事实:报告说缺、
-# 菜单才会提;报告说好、菜单就不提。
+# 判据全部来自 checks.ps1 的同一批探测函数,和报告读的是同一套事实:报告里报缺的
+# 条目,菜单才会提。
 #
 # 触发项(与设计 §7.1 的档位对应):
 #   host-only 驱动未注册 / 一个 host-only 接口都没有  -> 四步链,confirm 档
@@ -350,7 +350,7 @@ function Get-HypervisorNotes {
 #
 # 读不到防火墙配置时不下结论、也不提供修复:那既可能是真的没有规则,也可能是权限
 # 不足;在「没读到」的基础上加一条规则,可能造出与已有规则重名的第二条。诊断本身
-# 就是按这个口径写的,菜单跟着它走。
+# 也是这么写的,菜单与它保持一致。
 #
 # 探测本身失败(抛异常)时也不静默跳过:那会让菜单把「没查到」说成「没问题」。
 # 那种情形落成一条 manual 条目,把失败原因如实打出来。
@@ -389,7 +389,7 @@ function Get-RepairFindings {
         $layers = Get-HostOnlyDriverLayers -DrvInstLines $drvLines
 
         # 接口数为 -1 表示没读到(和「读到 0 个」是两回事)。只有读到 0 才作为依据:
-        # 「取不到」不是证据,判成的只是「取到了而且没有」。
+        # 判成的只是「取到了,而且里面确实没有」。
         $ifCount = -1
         if ($vboxManage) {
             $probe = Invoke-Probe -Exe $vboxManage -Arguments @("list", "hostonlyifs")
@@ -608,7 +608,7 @@ function Get-RepairFindings {
     # --- AR 模板显存被改小 ---------------------------------------------------
     #
     # 与报告第 6 节读的是同一个函数、同一段(实况 <Hardware>)。挂 confirm 档
-    # 是因为它会写 eNSP 安装目录下的文件,标签据此写成"会改写模板"而不是"有损"。
+    # 是因为它会写 eNSP 安装目录下的文件,标签据此写成「会改写模板」。
     try {
         if ($EnspDir) {
             $arTpl = Join-Path (Join-Path $EnspDir "vboxserver\AR_Base") "AR_Base.vbox"
@@ -695,7 +695,7 @@ function Split-DisplayText {
 }
 
 # 把右栏贴到左栏同一行的右端。贴不下就并成一行交给折行 ——
-# 宁可折行也不能把右栏截掉:档位标记正是用户判断「这一项会不会断网」的依据。
+# 右栏被截掉会丢掉档位标记,那是用户判断「这一项会不会断网」的依据。
 function Join-MenuColumns {
     param([string]$Left = "", [string]$Right = "", [int]$Width = 74)
     if (-not $Right) { return $Left }
@@ -724,11 +724,9 @@ function Get-RepairMenuRows {
     for ($i = 0; $i -lt $Fixable.Count; $i++) {
         $it = $Fixable[$i]
         # 档位标签默认由档位推出来,但允许条目自带一个更准确的说法。
-        # Tier 决定的是【机制】(要不要第二次确认),标签说明的是【代价】——
-        # 两者在新增的几项上不再重合:VM 注册要动的是"用哪个账户跑",
-        # 改模板要动的是"会写 eNSP 的文件",都不是"有损"。继续套用
-        # 「有损」会让人为一件不疼的事多担一次心,而让人误判代价与让人误判
-        # 风险一样糟。
+        # Tier 决定的是【机制】(要不要第二次确认),标签说明的是【代价】。
+        # 两者在新增的几项上不再重合:VM 注册要动的是「用哪个账户跑」,
+        # 改模板要动的是「会写 eNSP 的文件」,都够不上「有损」。
         $tierText = "<无损>"
         if ($it.Tier -eq "confirm") { $tierText = "<有损,执行前单独确认>" }
         if ($it.TierLabel) { $tierText = $it.TierLabel }
@@ -941,8 +939,8 @@ function Read-RepairChoiceLine {
 # 第二档的独立确认。返回 $true 才执行。
 #
 # 「独立」是设计要求(§7.1):它与选中那一项必须是两次输入。选中是 Enter 或点击,
-# 而这里只有真的按下 Y 才算确认 —— 回车、Esc、鼠标、其它任何键一律跳过。
-# 默认落在「跳过」上,误按的代价因此是「这次没修」,而不是「网断了」。
+# 而这里只认提示出现之后按下的 Enter —— Esc、鼠标、其它任何键一律跳过。
+# 默认落在「跳过」上,误按一次最多是这次没修成。
 function Read-RepairConfirm {
     param(
         [object]$Item = $null,
@@ -1116,7 +1114,7 @@ function Invoke-RepairSelection {
 
         # 执行。顺序是硬依赖:中间一步失败就停下 —— fix.ps1 明确写过,
         # 前面的步骤没成就去建接口,会留下「接口在、栈不通」的状态,
-        # 症状与完全没修一模一样,是最难查的一种「修了没用」。
+        # 症状与完全没修一模一样。
         $failed = $false
         foreach ($step in $it.Steps) {
             $argMap = $step.Args
@@ -1297,10 +1295,9 @@ function Show-RepairMenu {
 
             # 修完【必须重新探测】。
             #
-            # 不重探的后果不是"列表有点旧",而是菜单会继续把刚修好的东西挂在上面
-            # ——用户按提示修完、回头看还是那几条,能得出的结论只有"修了没用"。
-            # 而"看起来修了没用"正是本项目花了最多笔墨去避免的一种误导(见 fix.ps1
-            # 头部关于步骤顺序的那段)。列表是本次探测的结论,不是一份历史记录。
+            # 不重探的话,菜单会继续把刚修好的东西挂在上面 —— 用户按提示修完、
+            # 回头看还是那几条,得出的结论只有「修了没用」。这正是 fix.ps1 头部
+            # 关于步骤顺序那一段要避免的:列表报的是本次探测的结果。
             if ($RefreshFindings) {
                 Write-Host ""
                 $refreshed = $false
@@ -1443,13 +1440,13 @@ function Invoke-RepairMenuEntry {
 # ---------------------------------------------------------------------------
 # -Fix:跳过报告,直接进菜单
 #
-# 报告那一整段是只读的,这里提前离开就不会产出报告文件 —— 用户要的是修,不是再看
-# 一遍已经看过的报告。菜单本身会把它发现的项、以及将要执行的命令完整打印出来。
+# 报告那一整段是只读的,这里提前离开就不会产出报告文件 —— 用户要的是修,报告此前
+# 多半已经看过一遍。菜单本身会把它发现的项、以及将要执行的命令完整打印出来。
 # 放在这里(而不是包住整段报告)是为了不打乱只读路径:报告那一节一行都不用改,
 # 也就不存在「加了菜单之后报告坏了」这种风险。
 # ---------------------------------------------------------------------------
 # 两个开关互相矛盾时以 -NoMenu 为准。-NoMenu 是自动化用的「绝不读输入」保证,
-# 不该被另一个开关悄悄推翻;这里明说一句,而不是沉默地挑一个执行。
+# 不该被另一个开关悄悄推翻,所以这里明说一句。
 if ($Fix -and $NoMenu) {
     Write-Host ""
     Write-Host "[提示] -NoMenu 与 -Fix 同时给出,按 -NoMenu 处理:只出报告,不进修复菜单。"
@@ -1577,7 +1574,7 @@ Write-Fact "eNSP 目录" $(if ($EnspDir) { $EnspDir } else { "(未定位到)" })
 
 # 非 ASCII 路径。判据是【整条路径】而不是某一段:eNSP 装在纯英文目录、用户目录却带
 # 中文,一样会坏。用户目录几乎没法改(要新建账户才能换),所以这一项只报影响面,
-# 不给修法 —— 与 hyper-v 那一项同理,报事实比报一个做不到的建议有用。
+# 不给修法 —— 与 hyper-v 那一项同理。
 $nonAsciiRoots = @()
 foreach ($pair in @(@("eNSP 目录", $EnspDir), @("VBox 目录", $VBoxDir), @("用户目录", $env:USERPROFILE))) {
     if ($pair[1] -and (Test-NonAsciiPath -Path $pair[1])) { $nonAsciiRoots += $pair[0] }
@@ -1639,8 +1636,8 @@ if (-not $EnspDir) {
 # VBoxRT-x86.dll)依赖 VBox\x86\ 下的 x86 版 VCRUNTIME140 / MSVCP140。干净机这俩
 # 都缺,加载器会沿 PATH 抓到主目录的 x64 版 → ERROR_BAD_EXE_FORMAT(0xC1) → error 40。
 #
-# 只认 x86\ 子目录:主目录里放着同名 x64 文件正是【故障态】而不是通过,所以这一项
-# 绝不去主目录找同名文件来"凑齐"。
+# 只认 x86\ 子目录:主目录里放着同名 x64 文件本身就是【故障态】,所以这一项绝不
+# 去主目录找同名文件来凑齐。
 try {
     Write-Host ""
     Write-Host "  -- x86 VC++ 运行时 (VBox\x86\) --"
@@ -1870,15 +1867,15 @@ try {
             } elseif ($tplNames.Count -eq 0) {
                 Write-Note "  [跳过] 模板里没有主机专用接口名,无从比对。"
             } else {
-                # 必须喂 Name,不能喂 VBoxNetworkName —— 后者带
-                # "HostInterfaceNetworking-" 前缀,与模板里的名字永远不相等。
+                # 要喂 Name;VBoxNetworkName 带 "HostInterfaceNetworking-" 前缀,
+                # 与模板里的名字永远不相等。
                 $cmp = Compare-HostOnlyName -VBoxNames $ifNames -TemplateNames $tplNames
                 Write-Fact "匹配" ($cmp.MatchedCount.ToString() + " / " + $tplNames.Count)
                 if ($cmp.HasMismatch) {
                     Write-Host ("  [ !! ] 模板里有 " + $cmp.MissingInVBox.Count + " 个名字在实际接口中不存在:")
                     foreach ($m in $cmp.MissingInVBox) { Write-Host ("         " + $m) }
-                    Write-Note "  这是 「#2」 类问题的正确判据。修法是重新注册设备(会重写模板中的名字),"
-                    Write-Note "  而不是把 「#2」 本身当成故障 —— 名字一致时带后缀也能用。"
+                    Write-Note "  这是 「#2」 类问题的正确判据。修法是重新注册设备(会重写模板中的名字);"
+                    Write-Note "  名字一致时带后缀也能用,不用去动 「#2」 本身。"
                 } else {
                     Write-Host "  [ OK ] 模板中的接口名与实际接口一致。"
                 }
@@ -1934,7 +1931,7 @@ try {
         Write-Note "  DHCP 该不该启用,本项目的设计(§10.1)把它列为【未核实】:"
         Write-Note "  社区资料称 host-only 的「启用服务器」应不勾选,而本项目安装器主动创建"
         Write-Note "  并启用了它;两者场景不同(5.2 与 7.2),尚未用实测对齐。"
-        Write-Note "  因此上面只报状态,不判定这个状态是对是错。"
+        Write-Note "  因此上面只报状态。"
     }
 } catch {
     Write-Fail "DHCP 服务器" $_.Exception.Message
@@ -1969,7 +1966,7 @@ try {
     Write-Note "  判定方式说明: 这里是真的去跑了一次计数器,而不是查注册表键"
     Write-Note "  HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\009。"
     Write-Note "  那个键在当前 Windows 上并不存在,照它判断会把每一台健康机器都"
-    Write-Note "  报成「计数器损坏」—— 是个只会误报、不会漏报的检查,故不采用。"
+    Write-Note "  报成「计数器损坏」;这个检查只会误报,故不采用。"
 } catch {
     Write-Fail "性能计数器" $_.Exception.Message
 }
@@ -2226,9 +2223,9 @@ $sectionsOk += "6"
 # <VM>_Link 快照。缺任何一样时【垫片日志都是干净的】—— clonevm 根本没被调到,
 # eNSP 直接报 40,报告里也就只剩这一处能看出问题。
 #
-# 这不是理论缺口,是 2026-09-16 实际踩到的:AR_Base.vbox 里留着 aborted="true",
-# 而旧版 register_vms.ps1 只认 poweroff,于是跳过补建快照 —— 而 AR_Base 恰恰是
-# 拉路由器要用的那台。补过后克隆恢复正常。
+# 2026-09-16 实际踩到过:AR_Base.vbox 里留着 aborted="true",而旧版
+# register_vms.ps1 只认 poweroff,于是跳过补建快照 —— 而 AR_Base 恰恰是拉路由器
+# 要用的那台。补过后克隆恢复正常。
 #
 # 探测是逐台跑的,所以能省则省:只查【已注册】的 VM,且只有当快照确实缺失时才去
 # 查电源状态(状态只用于判断"现在能不能补",健康机器上不需要)。
@@ -2313,8 +2310,8 @@ try {
 # CE / CX200 的判据取自 installer\README.md 的设备对照表,并已在本机核对:
 #   plugin\svrp -> CE6800 / CE12800,镜像落在 Database\CE.img
 #   plugin\cx   -> CX200,          镜像落在 Database\CX.img
-# 即判据是「该插件 Database\ 下存在它自己的镜像文件」,而不是目录本身存在
-# —— 全新安装时这些 Database\ 都是空的。
+# 判据是「该插件 Database\ 下存在它自己的镜像文件」;目录本身存在说明不了什么,
+# 全新安装时这些 Database\ 都是空的。
 $ceRel = "plugin\svrp\Database\CE.img"
 $cxRel = "plugin\cx\Database\CX.img"
 $hasCeDevice = $false
@@ -2342,8 +2339,7 @@ try {
     Write-Host ""
     Write-Host "  -- 版本 x 设备包 约束 --"
     if (-not $enspVersionKnown) {
-        # 版本取不到就不做约束判断。猜一个版本会给出错误的「需要升级」结论,
-        # 那比不判断更糟。
+        # 版本取不到就不做约束判断:猜一个版本会报出错误的「需要升级」结论。
         Write-Note "[跳过] eNSP 版本未取到(unknown),不做版本约束判断 —— 不猜。"
     } else {
         $vc = Test-EnspVersionAgainstDevices -EnspVersion $enspVersion -HasCeDevice $hasCeDevice -HasCx200 $hasCx200
@@ -2384,8 +2380,8 @@ try {
             if ($null -eq $vram) {
                 Write-Fact "VRAMSize" ("(模板里没有 VRAMSize 项)   <- " + $arBaseVbox)
             } else {
-                # 不论是否告警都必须打印这个值 —— 它正是「只有 AR 坏、交换机和
-                # 防火墙都正常」那一类报告唯一能定性的数据。
+                # 不论是否告警都必须打印这个值 —— 「只有 AR 坏、交换机和防火墙
+                # 都正常」那一类报告,要靠它定性。
                 Write-Fact "VRAMSize" ($vram.ToString() + " MB   <- " + $arBaseVbox)
                 # 先判 $null 再判阈值: $null 传进 [int] 参数会被转成 0,而 0 小于
                 # 阈值,不先挡一道就会把「没读到」误报成「太小」。
@@ -2398,7 +2394,7 @@ try {
             Write-Host ""
             Write-Note "  订正一条流传很广的说法: 「出厂默认 1 MB」出自 VirtualBox 5.0 时代。"
             Write-Note "  eNSP V1.3.00.100 上实测: AR_Base=16、vfw_usg=12、WLAN_AC_Base=16,"
-            Write-Note "  没有任何一个模板靠近 1。所以这一项防的是「被改坏」,不是防出厂状态。"
+            Write-Note "  没有任何一个模板靠近 1。所以这一项防的是「被改坏」,与出厂状态无关。"
         }
     }
 } catch {
@@ -2535,8 +2531,7 @@ function Get-EnspOrphanFacts {
 #
 # 这个函数存在的唯一理由是修复菜单:报告是一次性产出,缓存对它只有好处;
 # 而菜单要在一批修复【之后】重新探测,缓存此时正好挡在最前面 —— 不清掉的话
-# 重探拿回来的还是修复前那份,菜单会继续列已经修好的项。加缓存和加重探是两件
-# 互相拉扯的事,必须显式地在这里对上,不能靠"反正每次都会重跑"的错觉。
+# 重探拿回来的还是修复前那份,菜单会继续列已经修好的项。
 function Reset-DiagFactCaches {
     $script:BaseVmSheet = $null
     $script:OrphanSheet = $null
@@ -2550,8 +2545,8 @@ $sectionsOk += "7"
 
 # 关闭 eNSP 时它会为每台设备补发 controlvm poweroff。CE / CX / NE 那几台的客户机
 # 是 Linux,硬断电收尾极慢(实测 5 分钟以上),个别进程还会在收尾时崩溃并弹出
-# 「应用程序错误」框,不点掉就一直挂着,每台占 0.4-1.5 GB。这不是泄漏 —— 全部退完
-# 内存会正常归还 —— 但它会让一台好机器看起来像坏的,而本报告其余各节都看不出。
+# 「应用程序错误」框,不点掉就一直挂着,每台占 0.4-1.5 GB。全部退完之后内存会正常
+# 归还,不算泄漏;但它会让一台好机器看起来像坏的,而本报告其余各节都看不出。
 #
 # 归属按【VM 配置文件的路径】判,不按进程名:eNSP 已关时任何 VBoxHeadless 都算残留,
 # 但用户自己从 VirtualBox GUI 起的 VM 不算。这与 清理残留.bat 划的是同一条线。
@@ -2590,7 +2585,7 @@ try {
             Write-Note "  eNSP 已关闭,但仍有 VBoxHeadless 占着内存。"
             Write-Note "     CE / CX / NE 的客户机是 Linux,硬断电收尾慢,实测 5 分钟以上;"
             Write-Note "     期间内存不释放,个别进程崩溃后弹出的「应用程序错误」框不点掉会一直挂住。"
-            Write-Note "     全部退完后内存正常归还,【不是永久泄漏】,本工具也不把它算作故障。"
+            Write-Note "     全部退完后内存正常归还,本工具也不把它算作故障。"
             Write-Note "     不想等就双击 清理残留.bat —— 它按归属列清单后确认,不碰用户自己的 VM。"
         } elseif ($proc.EnspRunning -and ($owned.Count -gt 0)) {
             Write-Note "  eNSP 正在运行,上面这些 VM 是它的在用设备,属正常。"
@@ -2608,9 +2603,8 @@ $sectionsOk += "8"
 
 # 最近被写过的那份 VM 日志。
 #
-# 定义放在本节最前面,而不是紧挨着下面的日志源列表:本节开头的判读段要调用它,
-# 而 PowerShell 是顺序执行的 —— 函数定义在调用点之后,调用时就是 "not recognized"。
-# 这不是风格问题,踩过一次。
+# 定义放在本节最前面:本节开头的判读段要调用它,而 PowerShell 是顺序执行的 ——
+# 函数定义在调用点之后,调用时就是 "not recognized"。这条实际踩过一次。
 #
 # 它找的是【某一次虚拟机启动】留下的日志:走了哪个执行后端、加固有没有拒绝、
 # 网络 LUN 有没有建起来。这类事实只在启动当时存在,机器静止时任何只读探测都
@@ -2618,7 +2612,7 @@ $sectionsOk += "8"
 #
 # 不猜是哪台 VM:eNSP 每次拉设备都会新建克隆(在 %LOCALAPPDATA%\eNSP 下),
 # 基础盘又在安装目录下,两个地方都可能有。按最后写入时间取最新的一份,
-# 那正是"最近那次启动"。
+# 就是最近那次启动。
 function Find-NewestVmLog {
     param([string]$FileName, [string]$VBoxUserHome, [string]$EnspDir)
     if (-not $FileName) { return "" }
@@ -2659,8 +2653,8 @@ Write-Note "后两份取自最近被写过的那一次设备启动,因此它们�
 
 # --- 最近一次启动的判读 ------------------------------------------------------
 #
-# 原始日志贴在下面,但结论先给:这两份日志里真正决定性的就那么几行,让读者自己
-# 在几百行里找,等于把该做的事推回给读者 —— 而本报告存在的理由正是别让人靠翻日志。
+# 原始日志贴在下面,但结论先给:这两份日志里管用的就那么几行,让读者自己
+# 在几百行里找,等于把该做的事推回给读者。
 #
 # 格式都是照 VirtualBox 源码核过的(2026-09-16)。一条要点:十进制负号形式的 rc
 # **只出现在加固日志里**;VBox.log 打的是符号名(rc=VERR_...),VBoxManage 打的是
@@ -2783,9 +2777,9 @@ try {
     Write-Fail "启动日志判读" $_.Exception.Message
 }
 
-# 日志源用「访问器函数」返回,而不是 $script: 作用域的数组变量。
+# 日志源用「访问器函数」返回:$script: 作用域的数组变量在函数里读不到 ——
 # 从函数内部读 $script:Name 会绑定到调用方的作用域、拿到 $null
-# (这正是 checks.ps1 顶部注释里记的那个坑),所以这里按参数取 EnspDir 现算。
+# (见 checks.ps1 顶部注释里记的那个坑),所以这里按参数取 EnspDir 现算。
 #
 # 每项带一个 Why:路径为空时用它解释原因。
 #
@@ -2809,7 +2803,7 @@ function Get-DiagLogSources {
         @{ Label = "VBox.log(最近一次启动)";     Path = (Find-NewestVmLog -FileName "VBox.log" -VBoxUserHome $vbHome -EnspDir $EnspDir);           Tail = 150; Why = $noStart },
         # 加固日志【每次启动都会生成】(MachineImpl::launchVMProcess 先删旧的再传
         # --sup-hardening-log)。所以"文件不在"只说明这台机器还没启动过设备,
-        # 不代表加固没失败过 —— 判定要看内容里有没有错误锚点,不是看文件在不在。
+        # 不代表加固没失败过 —— 判定看的是内容里有没有错误锚点,文件在不在说明不了。
         @{ Label = "VBoxHardening.log(最近一次)"; Path = (Find-NewestVmLog -FileName "VBoxHardening.log" -VBoxUserHome $vbHome -EnspDir $EnspDir); Tail = 80;  Why = "未找到该日志 —— 本机还没启动过任何 eNSP 设备时属正常(该文件每次启动都会生成)。" }
     )
 }

@@ -1,4 +1,4 @@
-# checks.ps1 -- read-only environment probes for ensp-vbox-shim.
+# checks.ps1 - read-only environment probes for ensp-vbox-shim.
 #
 # Contract:
 #   - NEVER modifies the system, never writes files, never prints.
@@ -17,7 +17,7 @@
 #
 # Neither function exits and neither prints. An unusable -Override returns
 # $null exactly like any other miss, and the caller decides what to say about
-# it. That is the whole reason these live here rather than in install.ps1: a
+# it. That is why these live here rather than in install.ps1: a
 # function that calls exit takes the reporting decision away from whichever
 # script dot-sourced it, and install.ps1 cannot be dot-sourced at all (it has
 # top-level side effects and would run an install).
@@ -210,7 +210,7 @@ function Parse-HostOnlyIfs {
 # the nested "minLeaseTime:"-style lines and the odd "1/legacy:" entry cannot
 # be picked up as fields. "Groups:" / "Individual Configs:" do sit at column 0
 # like real fields and are skipped only because their labels are not in the
-# list -- do not loosen the patterns into a generic "key: value" match without
+# list. Do not loosen the patterns into a generic "key: value" match without
 # re-checking against build/testdata/dhcpservers_normal.txt.
 #
 # A block with no Enabled line reads as $false. VBoxManage always prints the
@@ -255,10 +255,10 @@ function Parse-DhcpServers {
 # adapter's name is the "VirtualBox Host-Only Ethernet Adapter" form with no
 # prefix, so it never equals a NetworkName; and a literal
 # "HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter" stops
-# matching the moment the adapter carries a "#N" suffix -- which is exactly the
+# matching the moment the adapter carries a "#N" suffix, which is exactly the
 # false alarm the deleted install.ps1 self-check used to produce. Feeding the
-# parsed VBoxNetworkName is what makes the suffix harmless: it travels into
-# VBoxNetworkName, so the two sides stay equal.
+# parsed VBoxNetworkName avoids this: the suffix travels into VBoxNetworkName,
+# so the two sides still compare equal.
 #
 # A server with no matching adapter is NOT an error and carries no verdict: it
 # keeps Interface = $null / IfName = "" and the caller decides what to say.
@@ -329,7 +329,7 @@ function Get-HostOnlyNetAdapterFacts {
 # --- layer 5: NDIS filter binding -----------------------------------------
 #
 # The binding also sits on physical NICs and every Hyper-V vEthernet adapter,
-# so it is NOT host-only specific -- the adapter must be joined by
+# so it is NOT host-only specific. The adapter must be joined by
 # InterfaceDescription, not by name.
 function Get-HostOnlyBindingFacts {
     $items = @()
@@ -353,7 +353,7 @@ function Get-HostOnlyBindingFacts {
 # eNSP depends on Windows performance counters; when they are damaged devices
 # print '####' forever. Detection MUST run a counter for real: on current
 # Windows the classic Perflib\009\Counter registry check reports missing on a
-# perfectly healthy machine (verified 2026-09-15 -- only _V2Providers exists).
+# perfectly healthy machine (verified 2026-09-15: only _V2Providers exists).
 function Test-PerfCountersFunctional {
     try {
         $c = Get-Counter -Counter "\Processor(_Total)\% Processor Time" -MaxSamples 1 -ErrorAction Stop
@@ -382,7 +382,7 @@ function Test-PerfCountersFunctional {
 # HasAllowRule alone is not enough to call the requirement met. A rule is only
 # effective on the profiles it covers, and Huawei's FAQ asks for Domain /
 # Private / Public. A Public-only rule on a domain-joined machine is enabled,
-# allows, and still does not apply -- so the matching block's Profile is
+# allows, and still does not apply. The matching block's Profile is
 # returned alongside the verdict and the caller decides whether the covered
 # set is good enough. This parser cannot decide it: which profile is ACTIVE
 # depends on the machine, not on the rule text.
@@ -504,8 +504,7 @@ function Get-InterfaceField {
 # Getting the address wrong is worse than a cosmetic bug: feeding raw
 # Get-NetIPAddress output to a parser that only understood { Name, IPv4 }
 # produced OwnerCount = 0 on a machine where an adapter genuinely held
-# 192.168.56.1 -- a false all-clear on a conflict check, which is worse than
-# having no check at all.
+# 192.168.56.1, a false all-clear on a conflict check.
 function Compare-SubnetOwners {
     param([object[]]$Interfaces, [string]$Prefix)
     $owners = @($Interfaces | Where-Object {
@@ -542,18 +541,18 @@ function Test-EnspVersionAgainstDevices {
 # --- AR template VRAMSize --------------------------------------------------
 #
 # A VRAM size small enough makes AR fail while switches and the firewall keep
-# working -- the classic "only AR is broken" report.
+# working: the classic "only AR is broken" report.
 #
 # Threshold rationale, and a correction to the usual telling: community write-ups
 # describe a 1 MB factory default, but that came from the VirtualBox 5.0 era.
 # Measured on eNSP V1.3.00.100 (2026-09-15): AR_Base.vbox = 16, vfw_usg.vbox = 12,
 # WLAN_AC_Base.vbox = 16. No shipped template is anywhere near 1. So this check
-# fires only when the value has been actively lowered -- it is a guard against
+# fires only when the value has been actively lowered: it is a guard against
 # a bad edit, not against a factory state. Report the value regardless; the
 # number is what makes the "only AR is broken" case diagnosable.
 #
 # Reads the LIVE hardware block only. Scanning the raw line list would return
-# the snapshot's VRAMSize, because <Snapshot> comes first in the file -- the
+# the snapshot's VRAMSize, because <Snapshot> comes first in the file, the
 # same trap Parse-UartPorts documents, and it was live here too: both parsers
 # were reading the snapshot and agreeing with reality only because the two
 # values happened to be identical on every template measured.
@@ -567,13 +566,13 @@ function Get-VramSizeFromTemplate {
 
 # The parameter is deliberately UNTYPED. With `param([int]$VramSize)` the
 # binder coerces $null to 0 before the body ever runs, and 0 < 9, so a template
-# that has no VRAMSize element at all -- Get-VramSizeFromTemplate returns $null
-# for exactly that case -- was reported as "too small". "Could not determine"
+# that has no VRAMSize element at all (Get-VramSizeFromTemplate returns $null
+# for exactly that case) was reported as "too small". "Could not determine"
 # is not the same finding as "too small": a probe must not invent a defect out
 # of a missing value, so an unreadable size is reported as NOT too small and the
 # caller decides what to say about the $null. The cast is moved into the body,
 # where it happens only after the guard, and is written explicitly because
-# `[int]$V -lt 9` is not the same expression as `([int]$V) -lt 9` -- and without
+# `[int]$V -lt 9` is not the same expression as `([int]$V) -lt 9`; without
 # the cast a string operand would compare as text ("10" -lt 9 is True).
 function Test-VramTooSmall {
     param($VramSize)
@@ -605,14 +604,14 @@ function ClassifyPacketDriver {
 #
 # Profile is emitted because a rule that does not cover the active profile is
 # not an effective allow rule. Without it the parser could only ever say "an
-# enabled allow rule exists" -- true, and useless on a domain-joined machine
+# enabled allow rule exists", true and useless on a domain-joined machine
 # whose rule covers Public only.
 function Get-FirewallRuleTextForEnsp {
     $lines = @()
     try {
         # COM (HNetCfg.FwPolicy2) rather than Get-NetFirewallRule. Measured
         # 2026-09-16 on a 1274-rule machine: 6.98 s via the NetSecurity cmdlet
-        # versus 0.08 s here -- the cmdlet's cost is in the CIM provider and does
+        # versus 0.08 s here. The cmdlet's cost is in the CIM provider and does
         # not shrink when a -DisplayName filter is supplied. The install-time
         # pre-check runs this on every install, so the 7 s was paid even on
         # healthy machines for a check that only ever reports.
@@ -679,7 +678,7 @@ function Get-EnspServerPortsInUse {
 #
 # Every AR / WLAN / USG device is a link clone of a base VM. Making the clone
 # takes three things that are all invisible from the shim's own log when they
-# are missing -- the clonevm call is never reached, eNSP just reports error 40:
+# are missing: the clonevm call is never reached, eNSP just reports error 40:
 #
 #   1. a registration entry for the base VM
 #   2. a snapshot named "<VM>_Link" on the base disk (the clone source)
@@ -722,7 +721,7 @@ function Get-BaseVmDirs {
 # next to the live one, and the live one is the SHORTEST name (the others carry
 # extra suffixes). Sorting by name length and taking the first that actually
 # parses as a machine reproduces register_vms.ps1's Select-VBoxFile, which is
-# what the repair path will later act on -- the two must agree or the report
+# what the repair path will later act on. The two must agree or the report
 # would describe a different file than the one that gets registered.
 function Find-MachineConfig {
     param([string]$Dir)
@@ -883,24 +882,23 @@ function Resolve-BaseVmRegistration {
 # the <Snapshot> element sits at line 24 and the live <Hardware> only at line
 # 75, so "take the first <Hardware>" silently returns the SNAPSHOT's hardware.
 #
-# That mistake is invisible while the two happen to agree -- which they did on
+# That mistake is invisible while the two happen to agree, which they did on
 # every template measured here, because the snapshot was taken moments after
 # the live config was written. It stops being invisible the moment someone
 # changes a setting after snapshotting: the report would then describe a saved
 # state as if it were the current one, and the VRAM/UART checks would both be
 # reading the past.
 #
-# Nesting is walked TAG BY TAG, not line by line, and that is not fussiness --
-# a line-at-a-time counter gets <Snapshot uuid="{a}"><Hardware>...</Hardware>
-# </Snapshot> wrong, because the line closes and reopens the depth in one go and
-# the <Hardware> in the middle is then read as live. A fixture written that way
-# caught it. Scanning tags left to right inside each line gets both layouts
-# right and costs nothing.
+# Nesting is walked TAG BY TAG, not line by line. A line-at-a-time counter gets
+# <Snapshot uuid="{a}"><Hardware>...</Hardware></Snapshot> wrong, because the
+# line closes and reopens the depth in one go and the <Hardware> in the middle is
+# then read as live. A fixture written that way caught it. Scanning tags left to
+# right inside each line handles both layouts.
 #
 # Both spellings of the container are accepted. VirtualBox 7.2 writes
-# <Snapshot> directly under <Machine> -- verified on a real AR_Base.vbox, there
-# is no wrapper element -- while other versions put them in <Snapshots>. The
-# tag pattern covers either:
+# <Snapshot> directly under <Machine>, with no wrapper element (verified on a
+# real AR_Base.vbox), while other versions put them in <Snapshots>. The tag
+# pattern covers either:
 #
 #   <Snapshots?[\s>]   <Snapshot ...>   <Snapshot>   <Snapshots>
 #   </Snapshots?>      </Snapshot>      </Snapshots>
@@ -945,7 +943,7 @@ function Get-LiveHardwareBlock {
 # device never reaches its CLI even though the VM itself booted fine.
 #
 # Attribute parsing stops at the first '>' and never at '/', because the pipe
-# path itself contains slashes ("\\.\pipe\config") -- a [^/>]* class would cut
+# path itself contains slashes ("\\.\pipe\config"); a [^/>]* class would cut
 # the match short mid-value and lose every attribute after "path".
 function Parse-UartPorts {
     param([string[]]$Lines)
@@ -996,8 +994,9 @@ function Test-UartPipePresent {
 #
 # The installer deploys both into VBox\x86\, so this checks for them there and
 # NOT anywhere else: an x64 copy in the main directory is exactly the failure
-# state, not a pass. VCRUNTIME140_1.dll is genuinely not needed -- the proxystub
-# dependency tree does not include it -- so its absence must not be reported.
+# state, not a pass. VCRUNTIME140_1.dll is genuinely not needed, since the
+# proxystub dependency tree does not include it, so its absence must not be
+# reported.
 function Get-X86VcRuntimeFacts {
     param([string]$VBoxDir)
     $x86 = ""
@@ -1024,7 +1023,7 @@ function Get-X86VcRuntimeFacts {
 # write permission the VM fails to power on and eNSP reports error 40 with
 # nothing in its own log to explain it. The installer grants Modify on the tree
 # (install.ps1's Grant-VBoxServerWrite), so what this checks is whether that
-# grant -- or an equivalent one -- is present.
+# grant (or an equivalent one) is present.
 #
 # The ACL is READ, never exercised: opening the directory for write to test it
 # would be a side effect, and this file is contractually side-effect free.
@@ -1093,8 +1092,8 @@ function Get-VBoxServerAclFacts {
 #
 # Counting driver services would be wrong. Measured on 2026-09-16: npf.sys
 # (WinPcap's driver) RUNNING alongside npcap.sys STOPPED, with wpcap.dll still
-# WinPcap 4.1.3 from Riverbed. That is a healthy pair, not a conflict -- two
-# packet drivers coexist quietly and eNSP works. Treating "an npcap service
+# WinPcap 4.1.3 from Riverbed. That is a healthy pair; two packet drivers
+# coexist quietly and eNSP works. Treating "an npcap service
 # exists" as Npcap having displaced WinPcap reported a false conflict on a
 # machine that was fine. Hence the services below are facts for the report,
 # never inputs to the verdict.
@@ -1102,7 +1101,7 @@ function Get-VBoxServerAclFacts {
 # SysWOW64 is the copy that matters: eNSP is a 32-bit process and loads the
 # 32-bit wpcap.dll. A 64-bit mismatch in System32 would not reach it.
 #
-# ProductName is the only thing that tells the two apart -- both install as
+# ProductName is the only thing that tells the two apart: both install as
 # wpcap.dll, and Npcap sets its own product name even though the file name
 # and exported API are identical.
 function Get-PacketDriverFacts {
@@ -1153,7 +1152,7 @@ function Get-PacketDriverFacts {
 # both products installed.
 #
 # ORDER MATTERS, and Windows-style matching is why. "WinPcap" CONTAINS "nPcap"
-# -- the n is the last letter of "Win" -- and -like is case-insensitive, so
+# (the n is the last letter of "Win"), and -like is case-insensitive, so
 # testing for Npcap first classifies WinPcap as Npcap and reports a conflict on
 # a healthy WinPcap-only machine. That is the exact false positive this pair of
 # functions exists to avoid; it was caught on 2026-09-16 by running the probe
@@ -1177,7 +1176,7 @@ function ClassifyPacketDllProduct {
 # rule applies to the WHOLE path, not to any one component: a Chinese user
 # profile under an ASCII eNSP directory is just as broken as the reverse.
 #
-# Pure and per-path on purpose -- the caller checks each root it knows about and
+# Pure and per-path on purpose: the caller checks each root it knows about and
 # names the one that failed, because the fix differs (move eNSP vs. the profile
 # cannot be moved at all without a new account).
 function Test-NonAsciiPath {
@@ -1192,8 +1191,8 @@ function Test-NonAsciiPath {
 # --- leftover VirtualBox processes -----------------------------------------
 #
 # Closing eNSP sends `controlvm poweroff` to every device. The Linux-guest
-# devices (CE / CX / NE40E / NE5000E / NE9000) tear down slowly -- measured at
-# over five minutes -- and a few crash while doing it, holding 0.4-1.5 GB each
+# devices (CE / CX / NE40E / NE5000E / NE9000) tear down slowly (measured at
+# over five minutes), and a few crash while doing it, holding 0.4-1.5 GB each
 # until the "application error" dialog is dismissed. Nothing is leaked; the
 # memory returns once they finish. But it makes a healthy machine look broken,
 # and nothing else in this report would reveal it.
@@ -1217,7 +1216,7 @@ function Test-EnspOwnedVmPath {
 }
 
 # Running VMs joined against the registry map, which is where the config path
-# comes from -- so this costs no extra VBoxManage call per VM.
+# comes from, so this costs no extra VBoxManage call per VM.
 function Resolve-RunningVmOwnership {
     param(
         [string[]]$RunningVmNames,
@@ -1296,7 +1295,7 @@ function Get-VBoxProcessFacts {
 
 # Names for the hardening codes worth naming at all. Source: include/VBox/err.h,
 # where -5600..-5679 is the VERR_SUP_VP_* block. Only three are listed because
-# only three have a known cause -- an unrecognised code is reported as its bare
+# only three have a known cause; an unrecognised code is reported as its bare
 # number rather than guessed at.
 function Get-HardeningCodeMeaning {
     param([int]$Code)
@@ -1324,7 +1323,7 @@ function Get-HardeningStepName {
 
 # VBoxHardening.log parser.
 #
-# Every line carries a "%x.%x: " prefix -- hex process id, dot, hex thread id,
+# Every line carries a "%x.%x: " prefix: hex process id, dot, hex thread id,
 # e.g. "1f2c.1f30: supR3HardenedWinVerifyProcess: ...". The prefix is stripped
 # before matching so the patterns below stay independent of it.
 #
@@ -1335,8 +1334,8 @@ function Get-HardeningStepName {
 #
 # A second form, "Error (rc=-5657):", comes from supR3HardenedErrorV. Both are
 # matched. There is NO end-of-log marker: a failing run simply stops after the
-# error, and the file is capped at 16 MiB, so absence of an anchor -- not the
-# presence of an ending -- is what says the run was clean.
+# error, and the file is capped at 16 MiB, so absence of an anchor, not the
+# presence of an ending, means the run was clean.
 #
 # A rejected module is named on its own line. The `rejecting '<path>'` shape is
 # the one that carries the file name; the slash-free pattern is used so that a
@@ -1368,7 +1367,7 @@ function Parse-HardeningLog {
             # a single automatic variable per scope: the enmWhat test below
             # overwrites it, and its pattern has only one group, so reading
             # $Matches[2] afterwards silently yields $null. Caught 2026-09-16 by
-            # the assertion on Where -- the code and the step both parsed fine,
+            # the assertion on Where: the code and the step both parsed fine,
             # which is exactly why the empty one was easy to miss.
             $code  = [int]$Matches[1]
             $where = $Matches[2]
@@ -1416,7 +1415,7 @@ function Parse-HardeningLog {
 # Which execution backend the VM actually used.
 #
 # The trap, and the reason this is a parser rather than three greps: the line
-# "HM: VT-x/AMD-V init method: Local" looks decisive and is not -- it describes
+# "HM: VT-x/AMD-V init method: Local" looks decisive and is not; it describes
 # how the HM module initialised, not which backend ran the guest. It appears on
 # NEM runs too. Only the lines below distinguish.
 #
@@ -1445,7 +1444,7 @@ function Parse-VBoxLogBackend {
         if ($line -like "*HM: HMR3Init: AMD-V*") { $native = $line; continue }
     }
 
-    # IEM is the last resort -- both hardware and WHP were unavailable, the
+    # IEM is the last resort: both hardware and WHP were unavailable, the
     # guest is being interpreted, and every device will be unusably slow.
     $backend = "unknown"
     if ($iem) { $backend = "iem" }
@@ -1466,7 +1465,7 @@ function Parse-VBoxLogBackend {
 #
 # Plain substrings, not regexes, because every one of these is copied verbatim
 # from the source and a regex would only add ways to be wrong. Notes live in
-# diag.ps1 -- this file is ASCII-only and the report is not.
+# diag.ps1; this file is ASCII-only and the report is not.
 #
 # Deliberately absent: "Failed to create pipe". That string does not exist
 # anywhere in the VirtualBox tree; the named-pipe driver writes

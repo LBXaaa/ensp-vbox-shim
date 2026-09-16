@@ -12,11 +12,11 @@
 # 本脚本**只处理 eNSP 自己的虚拟机**。判据是 VM 的配置文件(CfgFile)位于:
 #   - eNSP 安装目录之下(如 <eNSP>\VBoxServer\... 与 <eNSP>\plugin\...\...)
 #   - %LOCALAPPDATA%\eNSP 之下(eNSP 为每台设备创建的克隆)
-# **用户自己的其他虚拟机一律跳过**,无论 eNSP 是否在运行。
-# 无法确定归属的一律跳过 —— 宁可漏清,不可误杀。
+# **用户自己的其他虚拟机一律跳过**,这条不看 eNSP 有没有在跑。
+# 无法确定归属的一律跳过。
 #
 # 清理范围还取决于 eNSP 是否在运行:
-#   eNSP 在跑  -> 只清"VirtualBox 账本上已不在运行"的孤儿(正常使用的设备不动)
+#   eNSP 在跑  -> 只清 VirtualBox 记录里已不在运行的孤儿(正常使用的设备不动)
 #   eNSP 已关  -> eNSP 的设备全部算残留,列出后确认即结束
 
 param(
@@ -86,7 +86,7 @@ $running = @()
 foreach ($line in (& $vbox list runningvms 2>&1)) {
     if ($line -match '\{([0-9a-fA-F-]{36})\}') { $running += $matches[1].ToLower() }
 }
-Write-Host ("VirtualBox 账本上正在运行: {0} 台" -f $running.Count)
+Write-Host ("VirtualBox 记录中正在运行: {0} 台" -f $running.Count)
 
 # ---- UUID -> VM 名 / CfgFile ----
 $nameOf = @{}

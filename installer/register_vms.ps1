@@ -133,8 +133,8 @@ function Norm([string]$p){
     return $s.TrimEnd('\').ToLower()
 }
 
-# 这两个查询都会在【VM 未注册】时失败 —— 而"VM 未注册"恰恰是本脚本存在的理由,
-# -Check 模式更是专门用来报这个的。所以它们必须容忍失败:
+# 这两个查询都会在【VM 未注册】时失败,而 -Check 模式专门用来报这种状态,
+# 所以它们必须容忍失败:
 #
 # 原生 exe 往 stderr 写东西时,$ErrorActionPreference=Stop 会把它包成
 # NativeCommandError 抛出并【中断整个脚本】,2>$null 也拦不住。实测:
@@ -142,10 +142,10 @@ function Norm([string]$p){
 # 那行提示都没来得及打出来。
 #
 # 这与下面 Ensure-LinkSnapshot 里对 snapshot take 的处理是同一个坑,那里早有注释。
-# 之前只在 take 那一处打了补丁,漏了这两处 —— 于是 -Check 在最需要它的场景下
-# 必然崩,而普通(非 -Check)模式不会:那条路上 registervm 已经先跑过了。
+# 之前只在 take 那一处打了补丁,漏了这两处,-Check 因此在这个场景下会崩;
+# 普通(非 -Check)模式不会,因为那条路上 registervm 已经先跑过了。
 #
-# 局部降级为 Continue,并各自 try 兜底;失败返回 ""/$false,由调用方决定怎么说。
+# 局部降级为 Continue,并各自 try 兜底;失败返回 ""/$false,由调用方处理。
 
 # VM 当前电源状态(powermachinereadable 的 VMState),取不到返回 ""
 function Get-VMState($vbm,[string]$vm){
@@ -186,16 +186,15 @@ function Ensure-LinkSnapshot($vbm,[string]$vm,[bool]$checkOnly){
     $snap = "${vm}_Link"
     if(Has-Snapshot $vbm $vm $snap){ return "ok" }
 
-    # 缺快照。补建前必须确认 VM【没有内存镜像】—— 对 running/paused/saved 等状态
+    # 缺快照。补建前必须确认 VM【没有内存镜像】:对 running/paused/saved 等状态
     # 拍快照会把内存状态拍进去,污染本应纯净的基础盘。
     #
-    # 判据是"有没有内存镜像",不是"电不电源关闭"。
-    # poweroff 与 aborted 都没有内存镜像:aborted 是异常终止(崩溃/被杀),不是
-    # 挂起,不存在可被拍进去的内存状态。实测:对 aborted 的基础盘 take 一次即成功,
-    # 随后 clonevm 也正常。
+    # 判据是有没有内存镜像,与电源状态无关。poweroff 与 aborted 都没有内存镜像:
+    # aborted 是异常终止(崩溃/被杀),不是挂起,不存在可被拍进去的内存状态。
+    # 实测:对 aborted 的基础盘 take 一次即成功,随后 clonevm 也正常。
     #
-    # 曾经只认 poweroff,于是 aborted 的 AR_Base 被跳过补建,而它恰好是拉路由器要用的
-    # 那台 —— 设备起不来(error 40),提示却写着"请在 eNSP/VBox 里关掉后重跑",而
+    # 曾经只认 poweroff,于是 aborted 的 AR_Base 被跳过补建,而它恰好是拉路由器要用
+    # 的那台。设备起不来(error 40),提示却写着"请在 eNSP/VBox 里关掉后重跑",
     # 崩溃终止的 VM 根本没得关。aborted="true" 会持久写在 .vbox 里,不会自行消失。
     $state = Get-VMState $vbm $vm
     if($state -eq ""){ return "no-vm" }
@@ -264,7 +263,7 @@ foreach($vm in $BASE_VMS){
 
     $isReg=$uuids.ContainsKey($vm)
 
-    # 目标 .vbox:已注册的优先沿用当前注册路径(最忠实),拿不到再回退最短有效 .vbox
+    # 目标 .vbox:已注册的优先沿用当前注册路径,拿不到再回退最短有效 .vbox
     $target=$null
     $regSrc=$null
     if($isReg){
@@ -276,8 +275,8 @@ foreach($vm in $BASE_VMS){
     if(-not $target){ Write-Warn "$vm : 目录里没有有效的 .vbox,跳过"; $miss++; continue }
 
     if($isReg){
-        # 已注册。收紧:仅当注册状态确有问题(路径失效/指向别处)才注销重注册;
-        # 路径正确则不动注册项,直接进入快照核对 —— 避免对好端端的 VM 做无谓的
+        # 已注册。只有注册状态确有问题(路径失效/指向别处)才注销重注册;
+        # 路径正确则不动注册项,直接进入快照核对,避免对好端端的 VM 做无谓的
         # 注销/重注册写操作(中途若出意外反而会把可用的 VM 弄成已注销状态)。
         $regPathOk = $regSrc -and (Test-Path $regSrc) -and ((Norm $regSrc) -eq (Norm $target))
         if($regPathOk){

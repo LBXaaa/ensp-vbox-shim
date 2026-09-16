@@ -15,8 +15,7 @@
       5. VC++ 运行时(x86) → 部署到 VBox\x86\ 子目录(干净机缺它会 error 40 / 0x800700C1)
     NGFW_Plugin.dll 不做处理:2026-09-10 的受控 A/B 实测显示,出厂原版与
     22 站点补丁版在启动结果上没有任何差异(失败签名相差不到 1 毫秒),
-    且 host 上出厂原版即可正常启动 USG6000V。补丁器仍留在 patches/ 下备查,
-    但安装器不碰华为的这个文件。
+    且 host 上出厂原版即可正常启动 USG6000V。补丁器仍留在 patches/ 下备查。
 
 
     用法(一般经 安装.bat / 卸载.bat 自动提权调用):
@@ -213,12 +212,11 @@ function Set-RegValue($Path, $Name, $Value) {
 #
 # 设计 §7.1 把修复分三档,但【判断】不在这里:本文件跑在提权窗口里,那里没有
 # 用户的输入;而 -Check 又必须全程不提权、只读。所以"该修什么"与"征得同意"都在
-# install_all.ps1 那边完成,本文件只执行它传进来的计划。计划就是用户同意的记录
-# —— 这里多修一项是越权,少修一项则辜负了那句"本次安装会先修复"。
+# install_all.ps1 那边完成,本文件只执行它传进来的计划 —— 计划就是用户同意的记录。
 #
 # 令牌 -> 步骤 的展开只此一份。顺序是 fix.ps1 头部写死的硬依赖:只做 1-2 不做 3,
 # 绑定看着是 Enabled,但过滤驱动不在数据路径上,startvm 仍报
-# VERR_INTNET_FLT_IF_NOT_FOUND —— 症状与完全没修一模一样,是最难查的一种"修了没用"。
+# VERR_INTNET_FLT_IF_NOT_FOUND —— 症状与完全没修一模一样。
 #
 # BestEffort 是"这一项失败要不要拦下整个安装":
 #   hostonly     否。要用户点头、会断网的就是它,用户是为它点的头,没做成必须停下;
@@ -239,7 +237,7 @@ function Parse-RepairPlanTokens {
 }
 
 # 令牌 -> 步骤。认得的令牌展开成原语调用;不认得的令牌展开成一条 Fn 为空的步骤,
-# 由 Invoke-AgreedRepairs 当作失败报出来 —— 悄悄忽略它,等于"说好要修,其实没修"。
+# 由 Invoke-AgreedRepairs 当作失败报出来,不悄悄跳过。
 function Get-RepairPlanSteps {
     param([string[]]$Tokens, [string]$EnspDir = "", [string]$VBoxDir = "")
 
@@ -299,8 +297,8 @@ function Invoke-AgreedRepairs {
 
     $steps = @(Get-RepairPlanSteps -Tokens $plan -EnspDir $EnspDir -VBoxDir $VBoxDir)
 
-    # eNSP 必须先关闭 —— 重装驱动包 + 重绑网卡会打断正在运行的设备。这不是安全
-    # 余量,是设计 §7 的硬要求。非提权那边已经确认过一次,但用户完全可能在 UAC
+    # eNSP 必须先关闭 —— 重装驱动包 + 重绑网卡会打断正在运行的设备,这是设计 §7
+    # 的硬要求。非提权那边已经确认过一次,但用户完全可能在 UAC
     # 弹窗那几秒里把 eNSP 打开,所以动手前再确认一次。
     # 只管 host-only 那一条链:计数器与防火墙都不碰网络栈,拿"eNSP 开着"去拦它们,
     # 是拿一条不相干的理由挡掉一次本来做得成的修复。
@@ -680,8 +678,8 @@ function Write-EnvReportHostOnly {
     } catch { $problems += ("第 5 层读取失败: " + $_.Exception.Message) }
 
     # --- 第 6 层:模板名 vs 实际接口名 ---
-    # 这一层才是 "#2" 类问题的正确判据:带后缀本身不是故障,模板名和实际名对不上才是
-    # (VM 是按 hostonlyadapterN 的名字绑的)。旧版用通配符 "Adapter*" 判名字,把带 #2 的
+    # 这一层判的是模板名与实际接口名是否一致(VM 是按 hostonlyadapterN 的名字绑的),
+    # 名字里带 "#2" 本身说明不了什么。旧版用通配符 "Adapter*" 判名字,把带 #2 的
     # 适配器当成正常的,于是这一类问题从来没被报出来过。
     try {
         $tplPath = ""
@@ -834,9 +832,9 @@ function Write-EnvReport {
 # 因此这里只做信息提示(启动会慢),不当故障、不劝用户关 Hyper-V。
 function Write-EnvReportHyperV {
     try {
-        # 判据是「hypervisor 现在是否真的在跑」,不是「Hyper-V 功能装没装」。
-        # 前者才是决定 VBox 拿不拿得到原生 VT-x 的事实,而且 Win32_ComputerSystem
-        # 的 HypervisorPresent 免提权、不经过 DISM —— 本机的 DISM 会挂死
+        # 判据取「hypervisor 现在是否真的在跑」:它决定 VBox 拿不拿得到原生 VT-x,
+        # 「Hyper-V 功能装没装」与此无关。而且 Win32_ComputerSystem 的
+        # HypervisorPresent 免提权、不经过 DISM —— 本机的 DISM 会挂死
         # (TrustedInstaller 卡住,Get-WindowsOptionalFeature 十分钟不返回),
         # 原来那两次调用会让整个 -Check 永远跑不完。
         $cs = $null
@@ -887,7 +885,7 @@ function Write-EnvReportNested {
             Write-Info "客户机为 Win11(build $build)→ VBox 自动回退 NEM 后端,无此根因,无需处理。"
             return
         }
-        # 判据同样是「客户机里有没有 hypervisor 在跑」,而不是「WHP 功能装没装」。
+        # 判据同样是「客户机里有没有 hypervisor 在跑」;「WHP 功能装没装」与此无关。
         # 有 hypervisor 占着 VT-x,VBox 就拿不到原生 VT-x,只能走回退后端(NEM/WHP),
         # 上面那个 panic 根因也就不成立 —— 这正是原判据想表达的意思,只是换成了直接
         # 测量。$cs 在本函数开头已取,复用即可:不额外跑一次 CIM,更不碰 DISM。
@@ -968,7 +966,7 @@ Write-EnvReport -VBoxDir $vbox -EnspDir $ensp
 
 if ($Check) {
     # 只读分支。它既不修任何东西,也不看 $Repair —— -Check 全程只读、不提权,
-    # 这是它存在的意义,不能因为多了个 -Repair 参数就有缝。
+    # 不因为多了个 -Repair 参数就破例。
     Do-Check -EnspDir $ensp -VBoxDir $vbox
 } elseif ($Uninstall) {
     Do-Uninstall -EnspDir $ensp -VBoxDir $vbox

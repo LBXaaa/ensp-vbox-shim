@@ -1,4 +1,4 @@
-# fix.ps1 -- repair primitives for ensp-vbox-shim.
+# fix.ps1 - repair primitives for ensp-vbox-shim.
 #
 # This is the only file in the project that changes the system. Everything else
 # is read-only. The contract:
@@ -20,9 +20,9 @@
 #     changes nothing. Real mode runs SILENTLY. Showing the plan before running
 #     it (design section 7, constraint 3) is the caller's job: call once with
 #     -DryRun to display, then again without it to execute. Keeping real mode
-#     quiet is what leaves the interactive menu the single owner of the output.
+#     quiet leaves the interactive menu as the only thing printing.
 #
-#   - Order is a hard dependency, not a preference:
+#   - The steps below have to run in this order:
 #         1 Repair-InstallNetAdp     device instance for the host-only miniport
 #         2 Repair-InstallNetLwf     NetService component for the NDIS6 filter
 #         3 Repair-BounceAdapter     forces the rebind that puts the filter into
@@ -30,21 +30,18 @@
 #         4 Repair-CreateHostOnlyIf  interface + IP + DHCP entry
 #     Steps 1-2 install driver packages; neither alone puts the filter in the
 #     data path, which is what step 3 is for. Run step 4 first and the interface
-#     exists with no working stack under it -- a state whose symptom (startvm
-#     fails with VERR_INTNET_FLT_IF_NOT_FOUND) is identical to having repaired
-#     nothing at all. That false "fixed it and it did not help" is the single
-#     most expensive way to get this wrong.
+#     exists with no working stack under it: startvm still fails with
+#     VERR_INTNET_FLT_IF_NOT_FOUND, the same symptom as having repaired nothing.
 #
 #   - Two further steps sit OUTSIDE that chain, because nothing else depends on
 #     them and they depend on nothing else:
 #         5 Repair-RebuildPerfCounters  rebuild damaged Windows performance counters
 #         6 Repair-AllowEnspFirewall    inbound allow rule for eNSP_VBoxServer.exe
-#     They repair the SAME symptom as the chain above -- a device that prints
-#     '####' forever and never reaches a prompt -- from two different layers,
-#     which is why the diagnostic probes both and why leaving them out looks
-#     exactly like having repaired nothing. Neither touches the network stack or
-#     anything else on the machine, so both are the "lossless" tier of design
-#     section 7.1: reversible, no reboot, no effect on unrelated functions.
+#     They repair the SAME symptom as the chain above, from two different
+#     layers: a device that prints '####' forever and never reaches a prompt.
+#     The diagnostic probes both. Neither touches the network stack or anything
+#     else on the machine, so both are the "lossless" tier of design section
+#     7.1: reversible, no reboot, no effect on unrelated functions.
 #
 #   - Two different names belong to the same adapter and they are NOT
 #     interchangeable:
@@ -64,7 +61,7 @@
 #
 # checks.ps1 is dot-sourced for its pure parsers, so that a repair and the
 # diagnostic that recommended it read the system the same way. install.ps1 must
-# NEVER be dot-sourced -- it has top-level side effects and would run an install.
+# NEVER be dot-sourced: it has top-level side effects and would run an install.
 
 $fixScriptDir = $PSScriptRoot
 if (-not $fixScriptDir) { $fixScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -77,9 +74,8 @@ if ($fixChecksFile -and (Test-Path $fixChecksFile)) { . $fixChecksFile }
 # ===========================================================================
 
 # True when checks.ps1's parsers are loaded. Every function that needs one
-# tests this first: without it the failure would surface as "the term
-# 'Parse-HostOnlyIfs' is not recognized", and a repair library that throws on a
-# damaged install bundle is useless exactly when it is needed.
+# tests this first; without it the failure would surface as "the term
+# 'Parse-HostOnlyIfs' is not recognized".
 function Test-ChecksAvailable {
     return [bool](Get-Command Parse-HostOnlyIfs -ErrorAction SilentlyContinue)
 }
@@ -110,7 +106,7 @@ function New-RepairResult {
 
 # Renders a command line for display. Arguments containing a space are quoted,
 # because the paths this file deals with ("C:\Program Files\Oracle\VirtualBox")
-# all do, and a plan the user cannot copy back into a shell is not a plan.
+# all do.
 function Format-CommandLine {
     param([string]$Exe, [string[]]$Arguments = @())
     $parts = @()
@@ -120,11 +116,11 @@ function Format-CommandLine {
     return ($parts -join " ")
 }
 
-# Runs an external command and returns its output and exit code. Failure is a
-# result, not an exception. The ErrorActionPreference save is load-bearing: a
-# native command writing to stderr is promoted to a terminating error when the
-# caller has set "Stop", and VBoxDrvInst's release log goes to stderr on a
-# perfectly normal run.
+# Runs an external command and returns its output and exit code. A failed
+# command comes back in that same object. The ErrorActionPreference save is
+# necessary here: a native command writing to stderr is promoted to a
+# terminating error when the caller has set "Stop", and VBoxDrvInst's release
+# log goes to stderr on a perfectly normal run.
 function Invoke-Native {
     param([string]$Exe, [string[]]$Arguments = @())
     $prev = $ErrorActionPreference
@@ -170,7 +166,7 @@ function Write-DryRunLine {
 
 # Whether it is safe to run repairs at all. The network-component rebind in
 # steps 2-3 interrupts devices that are currently up, so eNSP must be closed
-# first: not a safety margin, a requirement.
+# first.
 #
 # -ProcessNames exists so this decision is testable. The names are given WITH
 # their .exe suffix because that is how the user sees them in Task Manager, and
@@ -178,8 +174,8 @@ function Write-DryRunLine {
 # the original spelling is what gets reported back.
 #
 # Elevated is an informational fact, NOT part of Ok. Being non-elevated does not
-# make a repair unsafe, it makes it ineffective -- a different finding with a
-# different remedy (re-run elevated), so the caller gets to distinguish them.
+# make a repair unsafe; it makes it ineffective, which needs a different remedy
+# (re-run elevated), so the caller gets to distinguish them.
 function Test-RepairPreconditions {
     param([string[]]$ProcessNames = @("eNSP.exe", "eNSP_VBoxServer.exe"))
 
@@ -251,10 +247,9 @@ function Get-HostOnlyState {
 
 # Pure: VBoxManage prints exactly
 #     Interface 'VirtualBox Host-Only Ethernet Adapter' was successfully created
-# and the name must be read out of it rather than assumed. Assuming is what
-# breaks after a fresh driver install, when the name comes back with a "#N"
-# suffix and a hard-coded "VirtualBox Host-Only Ethernet Adapter" no longer
-# names the adapter that was just created.
+# and the name must be read out of it rather than assumed. A hard-coded name
+# stops matching after a fresh driver install, when the name comes back with a
+# "#N" suffix.
 #
 # The quote characters are matched through \u escapes so this file stays ASCII.
 # VBoxManage emits the ASCII apostrophe; the curly forms are accepted too
@@ -269,19 +264,19 @@ function Parse-CreatedHostOnlyIfName {
 }
 
 # ===========================================================================
-# step 1 -- install the host-only miniport
+# step 1: install the host-only miniport
 # ===========================================================================
 
 # VBoxDrvInst installs the driver package AND creates a device instance for the
-# miniport, which is what makes the adapter appear at all. This is the step that
-# the 2026-09-15 failure needed: the package was missing from the driver store,
-# and no amount of disabling/enabling an adapter that does not exist can help.
+# miniport; without that device instance the adapter does not exist. This is the
+# step the 2026-09-15 failure needed: the package was missing from the driver
+# store, and disabling/enabling an adapter that does not exist cannot help.
 #
-# "Already satisfied" is read from `VBoxDrvInst list` -- the same evidence the
+# "Already satisfied" is read from `VBoxDrvInst list`, the same evidence the
 # report's layer 1 uses, so the repair and the diagnostic agree on what
 # "installed" means. Only a POSITIVE reading skips the step: an unreadable state
 # is not evidence of health, so the step runs and reinstalls. Reinstalling a
-# present package is harmless; skipping a needed one is the whole bug.
+# package that is already present costs nothing.
 function Repair-InstallNetAdp {
     param([string]$VBoxDir = "", [switch]$DryRun)
 
@@ -336,18 +331,18 @@ function Repair-InstallNetAdp {
 }
 
 # ===========================================================================
-# step 2 -- register the NDIS6 filter as a NetService component
+# step 2: register the NDIS6 filter as a NetService component
 # ===========================================================================
 
-# This is the step people get wrong. `VBoxDrvInst install --inf-file
+# This step is easy to get wrong. `VBoxDrvInst install --inf-file
 # ...\netlwf\VBoxNetLwf.inf` only PRE-INSTALLS the driver package. For an NDIS
 # filter that is not enough: no NetService component instance is created, so the
 # service stays Stopped and no VirtualBox component ever shows up in the
 # adapter's bindings. INetCfg (netcfg) is the interface that creates the
 # component, and it is the only command that works here.
 #
-# Note the two INF names differ by one letter -- netadp6 is the miniport,
-# netlwf is the filter -- and mixing them up installs the wrong driver.
+# The two INF names differ by one letter (netadp6 is the miniport, netlwf is the
+# filter), and mixing them up installs the wrong driver.
 #
 # "Already satisfied" is the existence of the VBoxNetLwf service, because
 # creating that service is precisely what netcfg does. Whether the filter is
@@ -408,14 +403,14 @@ function Repair-InstallNetLwf {
 }
 
 # ===========================================================================
-# step 3 -- bounce the adapter
+# step 3: bounce the adapter
 # ===========================================================================
 
 # Skipping this step is what produces the "I ran the repair and nothing
 # changed" report. After step 2 the binding can read Enabled=True while the
 # filter is still not in the data path, and startvm keeps failing with
 # VERR_INTNET_FLT_IF_NOT_FOUND. Disabling and re-enabling the adapter forces the
-# rebind; there is no way to get the same effect by inspecting anything.
+# rebind.
 #
 # -AdapterName is the WINDOWS connection name, not the VBox one. It is resolved
 # through InterfaceDescription because the connection name is localized and
@@ -424,10 +419,10 @@ function Repair-InstallNetLwf {
 # picking one, because bouncing the wrong adapter is a real change to a machine
 # whose only problem may be elsewhere.
 #
-# An adapter that arrives Disabled ends up Enabled. That is the intended
-# outcome for a repair step -- a host-only adapter that is down cannot be
-# carrying the filter either -- and WasStatus records it so the change is
-# visible rather than silent.
+# An adapter that arrives Disabled ends up Enabled; that is the intended outcome
+# for a repair step, since a host-only adapter that is down cannot be carrying
+# the filter either. WasStatus records it so the change is visible rather than
+# silent.
 function Repair-BounceAdapter {
     param([string]$AdapterName = "", [int]$SettleSeconds = 3, [switch]$DryRun)
 
@@ -501,19 +496,19 @@ function Repair-BounceAdapter {
 }
 
 # ===========================================================================
-# step 4 -- create the interface and configure it
+# step 4: create the interface and configure it
 # ===========================================================================
 
 # Creates the host-only interface if none exists, points it at eNSP's subnet,
 # and creates the VirtualBox DHCP server entry for it.
 #
-# The IP defaults are not invented: eNSP's own resources hard-code
-# dest:192.168.56.1, and the pool below is what the installer has always used
-# (and what a healthy machine reports). They are parameters so a machine that
-# genuinely needs a different subnet is not blocked.
+# The IP defaults come from eNSP: its own resources hard-code dest:192.168.56.1,
+# and the pool below is what the installer has always used (and what a healthy
+# machine reports). They are parameters so a machine that needs a different
+# subnet is not blocked.
 #
 # ---------------------------------------------------------------------------
-# DHCP IS CREATED DISABLED, ON PURPOSE -- DO NOT "FIX" THIS.
+# DHCP IS CREATED DISABLED ON PURPOSE. DO NOT "FIX" THIS.
 #
 # Design section 10.1 lists "should the host-only DHCP server be enabled at
 # all?" as an OPEN, UNVERIFIED question. Community guidance for VirtualBox 5.2
@@ -564,7 +559,6 @@ function Repair-CreateHostOnlyIf {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason $state.Error
     }
 
-    # Decide whether an interface has to be created, and which one to configure.
     $needCreate = $false
     $target = $null
     if ($InterfaceName) {
@@ -691,7 +685,7 @@ function Repair-CreateHostOnlyIf {
 }
 
 # ===========================================================================
-# DHCP enable -- separate on purpose
+# DHCP enable: separate on purpose
 # ===========================================================================
 
 # Design section 10.1 leaves "should the host-only DHCP server be enabled" open,
@@ -769,9 +763,9 @@ function Repair-EnableHostOnlyDhcp {
 # ===========================================================================
 
 # Damaged Windows performance counters make an eNSP device print '####' forever
-# and never reach a prompt, which is the same symptom the host-only chain above
-# produces from a completely different layer -- so it has to be repairable from
-# here, and no amount of driver or adapter work will fix a damaged counter store.
+# and never reach a prompt, the same symptom the host-only chain above produces
+# from a different layer, so it has to be repairable from here. Driver or
+# adapter work does not touch a damaged counter store.
 #
 # `lodctr /R` rebuilds the counter registration from the backup copies Windows
 # keeps alongside the library files, and it fails without administrator rights.
@@ -780,17 +774,16 @@ function Repair-EnableHostOnlyDhcp {
 # "Already satisfied" is read by RUNNING a counter (checks.ps1's
 # Test-PerfCountersFunctional), never by looking for the Perflib registry key:
 # that key is absent on current Windows on a perfectly healthy machine, so
-# reading it would call every machine damaged. A healthy reading skips the step
-# instead of rebuilding anyway -- rebuilding is not free, it rewrites the whole
-# counter store, and there is nothing to gain from doing it to working counters.
+# reading it would call every machine damaged. A healthy reading skips the step:
+# rebuilding rewrites the whole counter store, and there is nothing to gain from
+# doing it to working counters.
 #
 # A note on what a result means. lodctr /R is known to return exit code 0 while
-# having accomplished nothing, so the exit code alone is not treated as proof:
-# the output is captured and returned, and the counters are probed AGAIN after
-# the run. Only a functional reading afterwards is reported as a success; a
-# still-broken reading after a 0 exit is reported as a failure with the command's
-# own output attached, because that is what it is -- the desired state was not
-# reached, and a caller told otherwise would stop looking.
+# having accomplished nothing, so the exit code alone is not proof: the output is
+# captured and returned, and the counters are probed AGAIN after the run. Only a
+# functional reading afterwards is reported as a success. A still-broken reading
+# after a 0 exit is a failure with the command's own output attached, because the
+# desired state was not reached, and a caller told otherwise would stop looking.
 function Repair-RebuildPerfCounters {
     param([string]$LodctrExe = "", [switch]$DryRun)
 
@@ -853,9 +846,9 @@ function Repair-RebuildPerfCounters {
 #
 # The rule names the REAL executable, resolved through Find-EnspDir rather than
 # hard-coded. A rule pointing at a path that does not exist never matches
-# anything and still reads as "done" in every listing, which is worse than having
-# no rule at all -- so a missing executable is a precondition failure, not
-# something to work around by creating the rule anyway.
+# anything and still reads as "done" in every listing, so a missing executable is
+# treated as a precondition failure rather than something to work around by
+# creating the rule anyway.
 #
 # "Already satisfied" is read through the diagnostic's own pair
 # (Get-FirewallRuleTextForEnsp + Parse-FirewallRulesForEnsp), so the repair and
@@ -941,12 +934,11 @@ function Repair-AllowEnspFirewall {
     # evaluated whole for the same reason its enabled+allow case is: testing the
     # fields over the whole blob would let an unrelated rule satisfy them.
     #
-    # (?i) is load-bearing, not decoration. The static [regex] methods are
+    # The (?i) flag is required here. The static [regex] methods are
     # case-SENSITIVE, unlike the -match operator that the parser above uses, and
-    # the display name on a real machine is lowercase ("ensp_vboxserver") -- the
+    # the display name on a real machine is lowercase ("ensp_vboxserver"), the
     # same trap checks.ps1 documents for its own literal. Without it this scan
-    # finds nothing and the step happily creates the duplicate rule it exists to
-    # prevent.
+    # finds nothing and the step creates the duplicate rule it exists to prevent.
     $blocks = [regex]::Split(($fwText -join "`n"), '(\r?\n){2,}')
     foreach ($b in $blocks) {
         $m = [regex]::Match($b, '(?im)^DisplayName\s*:\s*(.*VBoxServer.*)$')
@@ -961,12 +953,12 @@ function Repair-AllowEnspFirewall {
         if (($enabled -ne "False") -and ($action -ne "Block")) { continue }
 
         # A rule that exists but is disabled or blocking. Correct THAT rule
-        # rather than adding a second one next to it -- but correct it, do not
-        # hand the caller a command and stop.
+        # rather than adding a second one next to it, and actually correct it
+        # instead of only handing the caller a command.
         #
         # This used to return Ok=$false with the remedy as text, on the reasoning
-        # that a repair should not rewrite a rule it did not create. The
-        # reasoning is sound and the outcome was not: the diagnostic lists
+        # that a repair should not rewrite a rule it did not create. That
+        # reasoning was sound, but the outcome was not: the diagnostic lists
         # "firewall not allowing eNSP" whenever no enabled+allow rule exists,
         # which covers BOTH "no rule at all" (this function fixes it) and "rule
         # present but disabled" (it refused). So the menu offered an item that
@@ -975,7 +967,7 @@ function Repair-AllowEnspFirewall {
         #
         # Enabling is also the LESS invasive of the two available actions: the
         # alternative here is creating a second rule with the same display name
-        # and leaving the first one dead beside it. Action is forced to Allow
+        # and leaving the first one disabled beside it. Action is forced to Allow
         # because a rule that reads "set to block" would otherwise be enabled
         # into exactly the wrong state; Profile is widened to all three for the
         # same reason the create path uses all three (see the comment there).
@@ -1042,16 +1034,14 @@ function Repair-AllowEnspFirewall {
 # These two repair eNSP's own lifecycle state rather than a component: a base
 # device VM that is missing from VirtualBox (or lost the snapshot eNSP clones
 # from), and the VirtualBox processes eNSP leaves behind when it closes. Both
-# end in the same '####'-forever device as the steps above, from a third layer,
-# which is why they are here.
+# end in the same '####'-forever device as the steps above, from a third layer.
 #
-# Both are calls into scripts that already own the logic -- register_vms.ps1 and
-# cleanup_orphans.ps1 -- and neither is dot-sourced. Both have top-level side
+# Both call scripts that already own the logic (register_vms.ps1 and
+# cleanup_orphans.ps1), and neither is dot-sourced. Both have top-level side
 # effects and both call exit; loading one to "look at it" would run a repair
 # while the caller is still planning one, and a stray exit would take the whole
-# repair menu down. One implementation also keeps this library and the .bat
-# files the user is told to run by hand in agreement, which is the only thing
-# that makes either of them trustworthy.
+# repair menu down. Calling them also keeps this library and the .bat files the
+# user is told to run by hand doing the same thing.
 
 # fix.ps1 is ASCII-only (see the header), but the summary lines those scripts
 # print are Chinese and their counters are what the verdicts below are read
@@ -1073,17 +1063,16 @@ function ConvertFrom-HexString {
 # The eNSP base device VMs (AR_Base and the four WLAN_*_Base) have to be
 # registered with the VirtualBox that eNSP talks to, and each needs its
 # <VM>_Link snapshot: eNSP clonevm's from that snapshot, and a base disk without
-# one fails with "does not have any snapshots" -- the device then reports error
-# 40 and never starts. register_vms.ps1 scans for both and fixes only what is
-# missing, without touching a registration that is already correct.
+# one fails with "does not have any snapshots", after which the device reports
+# error 40 and never starts. register_vms.ps1 scans for both and fixes only what
+# is missing, without touching a registration that is already correct.
 #
 # WHO RUNS THIS MATTERS, and elevated is the wrong instinct. The registration is
 # written into the CURRENT account's %USERPROFILE%\.VirtualBox\VirtualBox.xml,
 # so this has to run as the account that normally starts eNSP. Repairing from an
 # administrator account writes into that account's own VirtualBox.xml, and eNSP
-# -- still running as the user -- never sees the registration. The result is
-# indistinguishable from "the repair did nothing", which is the most expensive
-# way for this step to be wrong. register_vms.ps1 deliberately does not elevate
+# (still running as the user) never sees the registration, which looks exactly
+# like a repair that did nothing. register_vms.ps1 deliberately does not elevate
 # either, for the same reason.
 #
 # The paths are passed through only when the caller supplied them: the child's
@@ -1114,9 +1103,9 @@ function Repair-RegisterBaseVms {
     $text = (@($run.Output) -join "`n")
     $extra = @{ ExitCode = $run.ExitCode; Output = @($run.Output) }
 
-    # A non-zero exit is a precondition failure, not a partial repair: the child
-    # exits 1 only when it cannot locate eNSP or VBoxManage.exe, and the real run
-    # would fail on the same missing thing. The last few lines are carried in the
+    # The child exits 1 only when it cannot locate eNSP or VBoxManage.exe, and
+    # the real run would fail on the same missing thing, so a non-zero exit here
+    # means the repair never started. The last few lines are carried in the
     # reason because that is where the child says which one it could not find.
     if ((-not $run.Ok) -or ($run.ExitCode -ne 0)) {
         $tail = @($run.Output | Where-Object { "$_".Trim() } | Select-Object -Last 3)
@@ -1129,7 +1118,7 @@ function Repair-RegisterBaseVms {
     # progress lines mention registration too ("... re-registered -> ..."), and
     # without the delimiter one of those could be read as the summary. A -Check
     # run labels the first counter differently from a real run, so both spellings
-    # are listed -- it is the same counter either way.
+    # are listed; it is the same counter either way.
     $lblNew   = ConvertFrom-HexString "65B0 6CE8 518C"       # registered (real run)
     $lblPend  = ConvertFrom-HexString "5F85 6CE8 518C"       # to register (-Check run)
     $lblRereg = ConvertFrom-HexString "91CD 6CE8 518C"       # re-registered
@@ -1149,11 +1138,10 @@ function Repair-RegisterBaseVms {
     # "Nothing to do" is read from the child's counters, never guessed. All three
     # zero is the only state reported as Skipped; an unreadable summary is
     # reported as a change instead, because "nothing was needed" is a claim the
-    # output did not make, and a caller that believed it would stop looking at a
-    # machine where a registration really was written. Unreadable is reachable --
-    # the labels are Chinese and a console code page that cannot represent them
-    # delivers '?' -- so the direction is chosen deliberately: over-reporting a
-    # change only changes a sentence, while under-reporting one hides the repair.
+    # output did not make. Unreadable is reachable (the labels are Chinese, and a
+    # console code page that cannot represent them delivers '?'), so the
+    # direction is deliberate: a caller that believed a false "nothing needed"
+    # would stop looking at a machine where a registration really was written.
     if ($readable -and ($extra["Registered"] -eq 0) -and ($extra["Reregistered"] -eq 0) -and ($extra["Snapshots"] -eq 0)) {
         if ($DryRun) { Write-DryRunLine $step "already registered, with the link snapshots in place; nothing to do" }
         return New-RepairResult -Ok $true -Skipped $true -DryRun ([bool]$DryRun) -Commands $cmds -Extra $extra
@@ -1171,16 +1159,14 @@ function Repair-RegisterBaseVms {
 
 # Closing eNSP leaves VirtualBox background processes behind. The Linux guests
 # (the CE / CX / NE devices) finish a hard power-off slowly, and one of them can
-# crash on the way out behind a dialog nobody clicks -- each one holds 0.4-1.5 GB
+# crash on the way out behind a dialog nobody clicks. Each one holds 0.4-1.5 GB
 # for as long as it is left alone.
 #
-# cleanup_orphans.ps1 owns the identification and the kill. Its safety boundary
-# is what makes it callable from a repair menu: it acts only on VMs whose
-# configuration file lives under the eNSP install directory or under
+# cleanup_orphans.ps1 owns the identification and the kill. It acts only on VMs
+# whose configuration file lives under the eNSP install directory or under
 # %LOCALAPPDATA%\eNSP. A user's own VMs are skipped whether or not eNSP is
-# running, and a VM whose owner cannot be determined is skipped too -- the script
-# errs toward leaving a process alone, which is the only acceptable direction for
-# a step that ends in Stop-Process.
+# running, and a VM whose owner cannot be determined is skipped too; the script
+# errs toward leaving a process alone.
 #
 # -Force is passed because there is no console here to answer the script's
 # confirmation prompt: without it the child would sit waiting on a Read-Host that
@@ -1201,9 +1187,9 @@ function Repair-KillOrphans {
     $cmds = @(Format-CommandLine -Exe "powershell" -Arguments $psArgs)
 
     # Deliberately NOT invoked on a dry run. cleanup_orphans.ps1 has no plan-only
-    # switch -- every route through it ends in Stop-Process -- so calling it here
-    # would make the "plan" the very thing a plan exists to prevent. The command
-    # line is returned instead and the caller decides what to do with it.
+    # switch; every route through it ends in Stop-Process, so calling it here
+    # would kill processes while the caller is still planning. The command line
+    # is returned instead and the caller decides what to do with it.
     if ($DryRun) {
         Write-DryRunLine $step ("would run: " + $cmds[0])
         return New-RepairResult -Ok $true -DryRun $true -Commands $cmds
@@ -1220,7 +1206,7 @@ function Repair-KillOrphans {
     }
 
     # Exit 0 covers both "stopped N" and "there was nothing to stop", so the two
-    # are told apart by the final summary -- the only line the child prints that
+    # are told apart by the final summary, the only line the child prints that
     # carries a "<stopped> / <total>" pair. That pair is matched as the ASCII
     # skeleton rather than through the Chinese label in front of it, because the
     # digits and the slash survive every console code page while the label does
@@ -1247,12 +1233,12 @@ function Repair-KillOrphans {
 # prompt. checks.ps1's Test-VramTooSmall reports it; this puts the value back.
 #
 # Two traps, both already documented by the reader this shares with the
-# diagnostic, and both of them the writer's problem:
+# diagnostic:
 #
 #   1. A .vbox repeats the ENTIRE <Hardware> section inside every <Snapshot>,
 #      and the snapshot blocks come FIRST. A plain "replace the first VRAMSize"
-#      therefore edits the SNAPSHOT and leaves the live configuration -- the one
-#      VirtualBox actually boots from -- untouched. The edit is confined to the
+#      therefore edits the SNAPSHOT and leaves the live configuration (the one
+#      VirtualBox actually boots from) untouched. The edit is confined to the
 #      block Get-LiveHardwareBlock returns for exactly that reason: a snapshot is
 #      a saved state, and rewriting it would corrupt what eNSP clones from.
 #   2. Get-LiveHardwareBlock returns the block's LINES, not its offsets, so the
@@ -1262,10 +1248,9 @@ function Repair-KillOrphans {
 #      snapshot's block. No match means no edit: the file is left alone.
 #
 # The value is written back as UTF-8 without a BOM, which is the form VirtualBox
-# itself writes, and the read is pinned to UTF-8 for the same reason -- so that a
-# template carrying non-ASCII text (a description, a path) round-trips instead of
-# being decoded through the ANSI code page on the way in and re-encoded on the
-# way out.
+# itself writes, and the read is pinned to UTF-8 for the same reason: a template
+# carrying non-ASCII text (a description, a path) round-trips instead of being
+# decoded through the ANSI code page on the way in and re-encoded on the way out.
 function Repair-SetTemplateVram {
     param([string]$TemplatePath = "", [int]$VramSize = 16, [switch]$DryRun)
 
@@ -1284,7 +1269,7 @@ function Repair-SetTemplateVram {
 
     # Resolved to an absolute path ONCE, because the write below goes through
     # [System.IO.File], which resolves a relative path against the PROCESS
-    # directory -- and Set-Location does not move that. Without this, a relative
+    # directory, and Set-Location does not move that. Without this, a relative
     # -TemplatePath would be read from one place and written to another.
     try {
         $path = (Resolve-Path -LiteralPath $TemplatePath -ErrorAction Stop).Path
@@ -1316,8 +1301,8 @@ function Repair-SetTemplateVram {
 
     # There is no command line for "change one attribute in this file", so the
     # entry describes the edit precisely enough to be made by hand: the file, the
-    # block it belongs to, and both values. Naming the block is not decoration --
-    # without it the instruction reads as the snapshot's copy, which comes first.
+    # block it belongs to, and both values. Naming the block matters: without it
+    # the instruction reads as the snapshot's copy, which comes first.
     $cmds = @("edit " + $path + " : live <Hardware> Display VRAMSize " + $current + " -> " + $VramSize + " (leave every <Snapshot> copy alone)")
     $extra = @{ Path = $path; From = $current; To = $VramSize }
     $backup = $path + ".vrambak"
@@ -1379,8 +1364,8 @@ function Repair-SetTemplateVram {
 
     # The backup is taken before the first change and never overwritten. A second
     # run reads a value that is no longer the original, so re-copying would
-    # replace the one file that still holds it with a copy of the repair -- which
-    # is the only way back once the live value has been raised.
+    # replace the one file that still holds the original with a copy of the
+    # repair.
     if (-not (Test-Path -LiteralPath $backup)) {
         try {
             Copy-Item -LiteralPath $path -Destination $backup -ErrorAction Stop
