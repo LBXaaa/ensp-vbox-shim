@@ -171,7 +171,12 @@
 |------|------|---------|
 | 1 | `hostonlyif create` 报 `Could not find Host Interface Networking driver! Please reinstall` | 做完第 1 步后 |
 | 2 | VBoxSVC 日志 `HostWrap: ... could not be found` | 做完第 1 步后 |
-| 3 | eNSP `VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND` | **做完第 2 步后** |
+| 3 | eNSP `VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND` | **做完第 3 步后** |
+
+> **注意两件事不是同一步解决的**:接口名里的 `#2` 后缀是**第 2 步**之后就恢复干净的,
+> 但 `VERR_INTNET_FLT_IF_NOT_FOUND` **要到第 3 步**才会消失 —— 补完 `netlwf` 后绑定虽然已经
+> 显示 `Enabled=True`、名字也干净了,过滤驱动却还没有进入数据路径,`startvm` 照旧失败。
+> **第 3 步不能省**,省了它的症状与完全没修一模一样。
 
 **预防**:VirtualBox 走官方安装器安装,装完不要手工删驱动包;升级或重装 VirtualBox 之后,先随便建一台带 host-only 网卡的 VM 启动一次验证网络栈,再开 eNSP。
 
