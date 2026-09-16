@@ -19,6 +19,17 @@
 | `arbase_uart_ok.vbox` | 真机 `AR_Base.vbox` 的 `<Hardware>` 段 | COM2（slot 1）已启用且指向 `\\.\pipe\config` |
 | `arbase_uart_disabled.vbox` | 由上者派生 | 把 slot 1 改成 `enabled="false"`，模拟 UART2 未开 |
 | `arbase_with_snapshot.vbox` | 由上者派生 | 额外套了一个 `<Snapshots>` 段，其 `<Hardware>` 里的 slot 1 是**禁用**的 |
+| `vboxlog_backend_native.txt` | 真机 `VBox.log` 逐字摘录 | 走原生 VT-x 的后端判定行 |
+| `vboxlog_backend_nem.txt` | **按源码格式串构造** | NEM 回退 + Snail 模式 |
+| `vboxlog_intnet_error.txt` | VirtualBox ticket #18260 的用户日志原文 | host-only 失败块；**两行**带 `VERR_INTNET_FLT_IF_NOT_FOUND` |
+| `hardening_5657.txt` | **按源码格式串构造** | 加固拒绝一个 DLL 的完整形态 |
+| `hardening_clean.txt` | **按源码格式串构造** | 无错误锚点的正常加固日志 |
+
+> **构造 ≠ 编造。** 标「按源码格式串构造」的三份与两份 VBox.log 夹具，逐字取自
+> `github.com/VirtualBox/virtualbox` 里对应的 `RTPrintf` / `RTLogRelPrintf` 格式串
+> （核对于 2026-09-16），**不是**捕获所得。用它们是因为本机既没有加固失败的实例，
+> 也没有走 NEM 的实例；而这两条路径恰恰是最需要能判出来的。**新增夹具时若手边有真机
+> 样本，优先用真样本替换掉这几份。**
 
 ## 使用夹具时必须知道的几点
 
@@ -86,3 +97,21 @@
 `arbase_uart_*.vbox` 与 `*.xml` 由 PowerShell 5.1 的 `Set-Content -Encoding UTF8` 写出，
 **带 UTF-8 BOM**。`Get-Content` 读入时会剥掉它，解析器不受影响；但用别的工具按字节
 处理时要记得它的存在。
+
+### 8. 十进制 `rc=-NNNN` **只**在加固日志里
+
+这是写日志解析器时最容易踩的一个坑，夹具也照着它设计：
+
+- `VBoxHardening.log` 打的是十进制带负号：`Error -5657 in supR3HardenedWinReSpawn! (enmWhat=5)`
+- `VBox.log` 打的是符号名：`rc=VERR_INTNET_FLT_IF_NOT_FOUND`
+- `VBoxManage` 打的是 `code VERR_... (0x...)`
+
+所以**在 VBox.log 里找裸的 `-5657` 永远找不到**。`vboxlog_intnet_error.txt` 正是用来
+钉这一条的：把它喂给 `Parse-HardeningLog` 必须一无所获（`hardening: a VBox.log yields
+no hardening verdict`）。谁要是把解析器改成也去扫 VBox.log，那条断言就会失败。
+
+### 9. `vboxlog_intnet_error.txt` 里有**两行**命中，这是对的
+
+`VMSetError: ...` 与 `PDM: Failed to construct 'e1000'/1! VERR_INTNET_FLT_IF_NOT_FOUND`
+都带同一个错误码——后者是同一根因在设备侧的复述。`Find-VBoxLogMarkers` 是**查找器**，
+两行都返回；把结论合并成一条是报告的职责。夹具因此断言 `Count = 2`。

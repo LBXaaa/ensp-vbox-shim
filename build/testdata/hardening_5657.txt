@@ -1,0 +1,5 @@
+1f2c.1f30: supR3HardenedNativeProcessInit: Failed to open VBoxDrvStub
+1f2c.1f30: supR3HardenedWinVerifyProcess: Verified 0 of 1 modules
+1f2c.1f30: supR3HardenedMonitor_LdrLoadDll: rejecting 'C:\Windows\System32\FileSyncShell64.dll': rcNt=0xc0000190
+1f2c.1f30: Error -5657 in supR3HardenedWinReSpawn! (enmWhat=5)
+1f2c.1f30: VBoxDrvStub error: ntdll.dll: Not signed with the same certificate as VirtualBox.

@@ -1,0 +1,3 @@
+1f2c.1f30: supR3HardenedWinInitAppBin: exe path: C:\Program Files\Oracle\VirtualBox\VirtualBoxVM.exe
+1f2c.1f30: supR3HardenedWinInitAppBin: exe name: VirtualBoxVM
+1f2c.1f30: supR3HardenedWinVerifyProcess: Verified 132 of 132 modules

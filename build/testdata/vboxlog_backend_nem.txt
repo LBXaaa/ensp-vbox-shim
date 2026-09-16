@@ -1,0 +1,3 @@
+00:00:02.663406 HM: HMR3Init: Attempting fall back to NEM: VT-x is not available (VERR_VMX_NO_VMX)
+00:00:02.700115 NEM: NEMR3Init: Snail execution mode is active!
+00:00:02.700156 NEM: Note! VirtualBox is running without Hyper-V enabled.

@@ -1511,7 +1511,7 @@ try {
             Write-Note "     之后还要做一次适配器禁用/启用,否则驱动不会进入数据路径。"
             if ($drv.NetAdpPresent -and (-not $drv.NetLwfPresent)) {
                 Write-Note "     已知陷阱: 只补 netadp6 不补 netlwf 时,hostonlyif create 会成功,"
-                Write-Note "     但接口名变成 \"...Adapter #2\",而 eNSP 按精确名绑定 —— 症状与完全缺失一样。"
+                Write-Note "     但接口名变成 「...Adapter #2」,而 eNSP 按精确名绑定 —— 症状与完全缺失一样。"
             }
         }
     }
@@ -1568,7 +1568,7 @@ try {
     Write-Host "  -- 第 4 层:Windows 视角的网卡 (Get-NetAdapter) --"
     $adapters = @(Get-HostOnlyNetAdapterFacts)
     if ($adapters.Count -eq 0) {
-        Write-Note "  没找到 InterfaceDescription 含 \"VirtualBox Host-Only\" 的网卡。"
+        Write-Note "  没找到 InterfaceDescription 含 「VirtualBox Host-Only」 的网卡。"
     }
     foreach ($a in $adapters) {
         Write-Host ("  * " + $a.InterfaceDescription)
@@ -1627,8 +1627,8 @@ try {
                 if ($cmp.HasMismatch) {
                     Write-Host ("  [ !! ] 模板里有 " + $cmp.MissingInVBox.Count + " 个名字在实际接口中不存在:")
                     foreach ($m in $cmp.MissingInVBox) { Write-Host ("         " + $m) }
-                    Write-Note "  这是 \"#2\" 类问题的正确判据。修法是重新注册设备(会重写模板中的名字),"
-                    Write-Note "  而不是把 \"#2\" 本身当成故障 —— 名字一致时带后缀也能用。"
+                    Write-Note "  这是 「#2」 类问题的正确判据。修法是重新注册设备(会重写模板中的名字),"
+                    Write-Note "  而不是把 「#2」 本身当成故障 —— 名字一致时带后缀也能用。"
                 } else {
                     Write-Host "  [ OK ] 模板中的接口名与实际接口一致。"
                 }
@@ -2276,23 +2276,15 @@ try {
 Write-Section "[8] 日志尾部"
 $sectionsOk += "8"
 
-Write-Note "采集范围: 只取下列【当前】文件并截断尾部。同目录下数十个历史 .bak_*"
-Write-Note "一律不采 —— 全量打包会把报告撑成几十 MB 的噪音。"
-Write-Host ""
-Write-Note "后面七份里,有三份是故障定性的关键证据所在:"
-Write-Note "  * eNSP 的 vboxserver\log\VBoxManage.log —— VERR_INTNET_FLT_IF_NOT_FOUND 只在它这里出现;"
-Write-Note "  * VBox.log(最近一次启动)—— 走的是 HM 还是 NEM、网络 LUN 建没建起来,都在这里;"
-Write-Note "  * VBoxHardening.log —— 加固拒绝加载时才有,写的是【是哪个 DLL 被拒的】。"
-Write-Note "后两份取自最近被写过的那一次设备启动,因此它们反映的是【最近一次失败现场】。"
-
-# 日志源用「访问器函数」返回,而不是 $script: 作用域的数组变量。
-# 从函数内部读 $script:Name 会绑定到调用方的作用域、拿到 $null
-# (这正是 checks.ps1 顶部注释里记的那个坑),所以这里按参数取 EnspDir 现算。
 # 最近被写过的那份 VM 日志。
 #
-# VBox.log 与 VBoxHardening.log 记的是【某一次虚拟机启动】发生了什么:走了哪个
-# 执行后端、加固有没有拒绝、网络 LUN 有没有建起来。这类事实只在启动当时存在,
-# 机器静止时任何只读探测都看不到 —— 所以必须把日志本身带进报告。
+# 定义放在本节最前面,而不是紧挨着下面的日志源列表:本节开头的判读段要调用它,
+# 而 PowerShell 是顺序执行的 —— 函数定义在调用点之后,调用时就是 "not recognized"。
+# 这不是风格问题,踩过一次。
+#
+# 它找的是【某一次虚拟机启动】留下的日志:走了哪个执行后端、加固有没有拒绝、
+# 网络 LUN 有没有建起来。这类事实只在启动当时存在,机器静止时任何只读探测都
+# 看不到 —— 所以必须把日志本身带进报告。
 #
 # 不猜是哪台 VM:eNSP 每次拉设备都会新建克隆(在 %LOCALAPPDATA%\eNSP 下),
 # 基础盘又在安装目录下,两个地方都可能有。按最后写入时间取最新的一份,
@@ -2326,6 +2318,145 @@ function Find-NewestVmLog {
     return $best
 }
 
+Write-Note "采集范围: 只取下列【当前】文件并截断尾部。同目录下数十个历史 .bak_*"
+Write-Note "一律不采 —— 全量打包会把报告撑成几十 MB 的噪音。"
+Write-Host ""
+Write-Note "后面七份里,有三份是故障定性的关键证据所在:"
+Write-Note "  * eNSP 的 vboxserver\log\VBoxManage.log —— VERR_INTNET_FLT_IF_NOT_FOUND 只在它这里出现;"
+Write-Note "  * VBox.log(最近一次启动)—— 走的是 HM 还是 NEM、网络 LUN 建没建起来,都在这里;"
+Write-Note "  * VBoxHardening.log —— 加固拒绝加载时才有,写的是【是哪个 DLL 被拒的】。"
+Write-Note "后两份取自最近被写过的那一次设备启动,因此它们反映的是【最近一次失败现场】。"
+
+# --- 最近一次启动的判读 ------------------------------------------------------
+#
+# 原始日志贴在下面,但结论先给:这两份日志里真正决定性的就那么几行,让读者自己
+# 在几百行里找,等于把该做的事推回给读者 —— 而本报告存在的理由正是别让人靠翻日志。
+#
+# 格式都是照 VirtualBox 源码核过的(2026-09-16)。一条要点:十进制负号形式的 rc
+# **只出现在加固日志里**;VBox.log 打的是符号名(rc=VERR_...),VBoxManage 打的是
+# "code VERR_... (0x...)"。所以 VBox.log 里找不到裸的 -5657,按数字去找会一无所获。
+try {
+    Write-Host ""
+    Write-Host "  -- 最近一次启动的判读 --"
+
+    $vbHome3 = $env:VBOX_USER_HOME
+    if (-not $vbHome3) { $vbHome3 = Join-Path $env:USERPROFILE ".VirtualBox" }
+    $vboxLogPath = Find-NewestVmLog -FileName "VBox.log" -VBoxUserHome $vbHome3 -EnspDir $EnspDir
+    $hardLogPath = Find-NewestVmLog -FileName "VBoxHardening.log" -VBoxUserHome $vbHome3 -EnspDir $EnspDir
+
+    # ---- VBox.log ----
+    if (-not $vboxLogPath) {
+        Write-Note "  没有 VBox.log —— 本机还没启动过任何设备时属正常,设备一启动就会有。"
+    } else {
+        $vl = @(Get-Content -Path $vboxLogPath -ErrorAction Stop)
+        Write-Fact "VBox.log" ($vboxLogPath + "   (" + $vl.Count + " 行)")
+        Write-Host ""
+
+        $be = Parse-VBoxLogBackend -Lines $vl
+        if ($be.Backend -eq "native") {
+            Write-Fact "执行后端" "原生硬件虚拟化 (VT-x / AMD-V)"
+            Write-Note "     走的是硬件加速。"
+        } elseif ($be.Backend -eq "nem") {
+            Write-Fact "执行后端" "NEM / WHP (与 Hyper-V 共用虚拟化)"
+            if ($be.ForcedNEM) {
+                Write-Note "     依据: HM: Setting fHMEnabled to false because fUseNEMInstead is set."
+                Write-Note "     —— 这是【被显式要求】走 NEM 的,不是自动回退。"
+            } elseif ($be.FallbackLine) {
+                Write-Note ("     依据: " + $be.FallbackLine)
+            }
+            if ($be.NemLine) { Write-Note ("     " + $be.NemLine) }
+            Write-Note "     这不是故障:设备功能完全正常,代价只是慢(单台 3-5 分钟属正常),"
+            Write-Note "     也不需要「修」—— 见 README 里关于 Hyper-V 的那一节。"
+        } elseif ($be.Backend -eq "iem") {
+            Write-Fact "执行后端" "IEM (纯解释执行)"
+            Write-Host ("      [ !! ] " + $be.IemLine)
+            Write-Note "     硬件与 WHP 都用不上,guest 正被逐条解释执行 —— 会慢到不可用。"
+            Write-Note "     常见成因是嵌套虚拟化没打开:宿主没给这台客户机暴露 VT-x,"
+            Write-Note "     客户机内又没有可用的 WHP。"
+        } else {
+            Write-Fact "执行后端" "未能判定"
+            Write-Note "     两份判据行都没出现 —— 日志可能被截断,或这次启动没走到后端初始化。"
+            Write-Note "     注意不要拿 'HM: VT-x/AMD-V init method: Local' 当判据:"
+            Write-Note "     它说的是 HM 模块怎么初始化的,走 NEM 时也会出现。"
+        }
+
+        $markers = @(Find-VBoxLogMarkers -Lines $vl)
+        Write-Host ""
+        if ($markers.Count -eq 0) {
+            Write-Fact "关键标记" "无"
+        } else {
+            Write-Host ("  [ !! ] 关键标记: " + $markers.Count + " 处")
+            $markerNotes = @{
+                "intnet"          = "host-only 网络:过滤驱动没有进入数据路径,startvm 起不来。见第 3 节第 5 层与 docs 的根因 D1。"
+                "nemNotAvail"     = "NEM 不可用:嵌套环境下宿主没给这台机器暴露 VT-x,任何 VM 都起不来。"
+                "hardening"       = "加固拒绝加载了某个模块 —— 具体是哪个看下面的加固日志。"
+                "hardeningFatal"  = "加固致命错误,原因同上。"
+                "namedPipeSrv"    = "COM2 命名管道(服务端)创建失败。"
+                "namedPipeSrv2"   = "COM2 命名管道创建失败。"
+                "namedPipeCli"    = "COM2 命名管道(客户端)连接失败。"
+                "pdmConstruct"    = "设备构造失败;同一块里前面那行的 rc= 才是根因。"
+            }
+            # 同一个根因常常在多行上报出来(VMSetError 一行、PDM 构造失败一行),
+            # 行都列出来当证据,但【结论只说一次】—— 重复三遍同一句话会把报告读成噪音。
+            $notedIds = @{}
+            foreach ($m in $markers) {
+                Write-Host ("      " + $m.Line)
+                $note = $markerNotes[$m.Id]
+                if ($note -and (-not $notedIds.ContainsKey($m.Id))) {
+                    Write-Note ("        -> " + $note)
+                    $notedIds[$m.Id] = $true
+                }
+            }
+        }
+    }
+
+    # ---- VBoxHardening.log ----
+    Write-Host ""
+    if (-not $hardLogPath) {
+        Write-Note "  没有 VBoxHardening.log —— 本机从未启动过设备时属正常。"
+    } else {
+        $hl = @(Get-Content -Path $hardLogPath -ErrorAction Stop)
+        Write-Fact "VBoxHardening.log" ($hardLogPath + "   (" + $hl.Count + " 行)")
+        $hp = Parse-HardeningLog -Lines $hl
+
+        $hardenNotes = @{
+            -5657 = "被加载的模块没有用与 VirtualBox 相同的证书签名 —— 原版 VBox 遇到非 Oracle 签名的 DLL 就是这样。"
+            -5640 = "进程里出现了第二个线程,通常是第三方软件注入所致(安全软件 / DLP / 反作弊驱动)。"
+            -5607 = "镜像大小与预期不符。"
+        }
+
+        if (-not $hp.Failed) {
+            Write-Fact "加固判定" "未发现加固失败"
+            Write-Note "     加固日志每次启动都会生成,它没有「结尾行」—— 判定靠的是【找不到错误"
+            Write-Note "     锚点】,不是靠找到某个成功标记。"
+        } else {
+            Write-Host "  [ !! ] 加固判定: 失败"
+            foreach ($e in @($hp.Errors)) {
+                $sym = $(if ($e.Symbol) { $e.Symbol } else { "(未收录的错误码)" })
+                Write-Host ("      rc=" + $e.Code + "   " + $sym)
+                if ($e.Where) { Write-Host ("          位置: " + $e.Where + $(if ($e.Step) { "   步骤: " + $e.Step } else { "" })) }
+                $note = $hardenNotes[$e.Code]
+                if ($note) { Write-Note ("          -> " + $note) }
+            }
+            Write-Note "     加固是 VirtualBox 自身的行为,不是本垫片引入的;原版 VBox 同样会拒绝。"
+            Write-Note "     它无法由本工具修复 —— 要动的是【被拒的那个模块】(卸载它 / 换签名版),"
+            Write-Note "     或用 VirtualBox 认可的方式加载。"
+        }
+
+        if (@($hp.RejectedModules).Count -gt 0) {
+            Write-Host ""
+            Write-Host "      被拒的模块:"
+            foreach ($m in @($hp.RejectedModules)) { Write-Host ("        " + $m) }
+        }
+    }
+} catch {
+    Write-Fail "启动日志判读" $_.Exception.Message
+}
+
+# 日志源用「访问器函数」返回,而不是 $script: 作用域的数组变量。
+# 从函数内部读 $script:Name 会绑定到调用方的作用域、拿到 $null
+# (这正是 checks.ps1 顶部注释里记的那个坑),所以这里按参数取 EnspDir 现算。
+#
 # 每项带一个 Why:路径为空时用它解释原因。
 #
 # 原来只有一句「eNSP 目录未定位到」,那是当时唯一可能的原因;现在源变多了,
@@ -2346,7 +2477,10 @@ function Get-DiagLogSources {
         # 最近一次 VM 启动的两份日志。VBox.log 回答"走的 HM 还是 NEM、网络 LUN 建没建
         # 起来";VBoxHardening.log 只在加固拒绝时才有内容,回答"是哪个 DLL 被拒的"。
         @{ Label = "VBox.log(最近一次启动)";     Path = (Find-NewestVmLog -FileName "VBox.log" -VBoxUserHome $vbHome -EnspDir $EnspDir);           Tail = 150; Why = $noStart },
-        @{ Label = "VBoxHardening.log(最近一次)"; Path = (Find-NewestVmLog -FileName "VBoxHardening.log" -VBoxUserHome $vbHome -EnspDir $EnspDir); Tail = 80;  Why = "未找到该日志 —— 它只在【进程加固拒绝加载】时才生成,没有它通常是好事。" }
+        # 加固日志【每次启动都会生成】(MachineImpl::launchVMProcess 先删旧的再传
+        # --sup-hardening-log)。所以"文件不在"只说明这台机器还没启动过设备,
+        # 不代表加固没失败过 —— 判定要看内容里有没有错误锚点,不是看文件在不在。
+        @{ Label = "VBoxHardening.log(最近一次)"; Path = (Find-NewestVmLog -FileName "VBoxHardening.log" -VBoxUserHome $vbHome -EnspDir $EnspDir); Tail = 80;  Why = "未找到该日志 —— 本机还没启动过任何 eNSP 设备时属正常(该文件每次启动都会生成)。" }
     )
 }
 

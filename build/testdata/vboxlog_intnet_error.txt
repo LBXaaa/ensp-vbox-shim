@@ -1,0 +1,5 @@
+00:00:03.112203 IntNet#0: szNetwork={HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter #2}
+00:00:03.112240 VMSetError: /home/vbox/vbox-6.1/src/VBox/Devices/Network/DrvIntNet.cpp(1785) int drvIntNetConstruct; rc=VERR_INTNET_FLT_IF_NOT_FOUND
+00:00:03.112255 VMSetError: Failed to open/create the internal network 'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter #2'
+00:00:03.112290 VMSetError: Failed to attach the network LUN
+00:00:03.112320 PDM: Failed to construct 'e1000'/1! VERR_INTNET_FLT_IF_NOT_FOUND (-3600) - The networking interface to filter was not found.

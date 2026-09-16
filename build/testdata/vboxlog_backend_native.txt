@@ -1,0 +1,2 @@
+00:00:04.250751 HM: HMR3Init: VT-x w/ nested paging and unrestricted guest execution hw support
+00:00:04.597928 HM: VT-x/AMD-V init method: Local

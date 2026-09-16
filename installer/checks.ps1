@@ -1224,3 +1224,220 @@ function Get-VBoxProcessFacts {
         HeadlessCount   = @($items | Where-Object { $_.Name -eq "VBoxHeadless" }).Count
     }
 }
+
+# ===========================================================================
+# VirtualBox release log and hardening log
+# ===========================================================================
+#
+# Formats below were verified against VirtualBox source on 2026-09-16. The one
+# thing to know before touching any of this: the DECIMAL negative rc form
+# ("rc=-5657") exists only in VBoxHardening.log. VBox.log prints "%Rrc" and the
+# CLI prints "code <SYMBOL> (0x<HEX>)", so grepping VBox.log for a bare -5657
+# finds nothing, and a parser written against the wrong file looks correct while
+# never matching. Anything that legitimately lives in both places is matched on
+# the symbolic name instead.
+
+# Names for the hardening codes worth naming at all. Source: include/VBox/err.h,
+# where -5600..-5679 is the VERR_SUP_VP_* block. Only three are listed because
+# only three have a known cause -- an unrecognised code is reported as its bare
+# number rather than guessed at.
+function Get-HardeningCodeMeaning {
+    param([int]$Code)
+    switch ($Code) {
+        -5657 { return "VERR_SUP_VP_NOT_SIGNED_WITH_BUILD_CERT" }
+        -5640 { return "VERR_SUP_VP_THREAD_NOT_ALONE" }
+        -5607 { return "VERR_SUP_VP_BAD_IMAGE_SIZE" }
+        default { return "" }
+    }
+}
+
+# enmWhat is the SUPINITOP step that failed (include/VBox/sup.h):
+#   0 Invalid, 1 Integrity, 2 RootCheck, 3 Driver, 4 IPRT, 5 Misc
+function Get-HardeningStepName {
+    param([int]$What)
+    switch ($What) {
+        1 { return "Integrity" }
+        2 { return "RootCheck" }
+        3 { return "Driver" }
+        4 { return "IPRT" }
+        5 { return "Misc" }
+        default { return "" }
+    }
+}
+
+# VBoxHardening.log parser.
+#
+# Every line carries a "%x.%x: " prefix -- hex process id, dot, hex thread id,
+# e.g. "1f2c.1f30: supR3HardenedWinVerifyProcess: ...". The prefix is stripped
+# before matching so the patterns below stay independent of it.
+#
+# Failure anchor, written by SUPR3HardenedMain.cpp as
+# "Error %d in %s! (enmWhat=%d)":
+#
+#     Error -5657 in supR3HardenedWinReSpawn! (enmWhat=5)
+#
+# A second form, "Error (rc=-5657):", comes from supR3HardenedErrorV. Both are
+# matched. There is NO end-of-log marker: a failing run simply stops after the
+# error, and the file is capped at 16 MiB, so absence of an anchor -- not the
+# presence of an ending -- is what says the run was clean.
+#
+# A rejected module is named on its own line. The `rejecting '<path>'` shape is
+# the one that carries the file name; the slash-free pattern is used so that a
+# path containing quotes or spaces cannot truncate the capture early.
+function Parse-HardeningLog {
+    param([string[]]$Lines)
+    $errors = @()
+    $rejected = @()
+    $evidence = @()
+
+    foreach ($raw in @($Lines)) {
+        if (-not $raw) { continue }
+        $body = $raw.Trim()
+        if ($body -match '^[0-9a-fA-F]+\.[0-9a-fA-F]+:\s+(.*)$') { $body = $Matches[1] }
+
+        if ($body -match '^Error\s+\(rc=(-?\d+)\)') {
+            $code = [int]$Matches[1]
+            $errors += [pscustomobject]@{
+                Code   = $code
+                Symbol = (Get-HardeningCodeMeaning -Code $code)
+                Where  = ""
+                Step   = ""
+                Line   = $body
+            }
+            continue
+        }
+        if ($body -match '^Error\s+(-?\d+)\s+in\s+([A-Za-z0-9_]+)') {
+            # Both groups are copied out BEFORE the next -match runs. $Matches is
+            # a single automatic variable per scope: the enmWhat test below
+            # overwrites it, and its pattern has only one group, so reading
+            # $Matches[2] afterwards silently yields $null. Caught 2026-09-16 by
+            # the assertion on Where -- the code and the step both parsed fine,
+            # which is exactly why the empty one was easy to miss.
+            $code  = [int]$Matches[1]
+            $where = $Matches[2]
+            $step = ""
+            $what = -1
+            if ($body -match 'enmWhat=(\d+)') {
+                $what = [int]$Matches[1]
+                $step = Get-HardeningStepName -What $what
+            }
+            $errors += [pscustomobject]@{
+                Code   = $code
+                Symbol = (Get-HardeningCodeMeaning -Code $code)
+                Where  = $where
+                Step   = $(if ($step) { $step + " (" + $what + ")" } else { "" })
+                Line   = $body
+            }
+            continue
+        }
+        if ($body -match "rejecting\s+'([^']+)'") {
+            $rejected += $Matches[1]
+            $evidence += $body
+            continue
+        }
+        if ($body -match 'rejecting UNC name') {
+            $rejected += $body
+            $evidence += $body
+            continue
+        }
+        # supR3HardenedErrorV / supR3HardenedFatalMsgV carry the same failure in
+        # the release log's wording; keep them as evidence without parsing.
+        if (($body -like "supR3HardenedErrorV*") -or ($body -like "supR3HardenedFatalMsgV*")) {
+            $evidence += $body
+            continue
+        }
+    }
+
+    return [pscustomobject]@{
+        Failed          = ($errors.Count -gt 0)
+        Errors          = $errors
+        RejectedModules = @($rejected | Select-Object -Unique)
+        Evidence        = @($evidence | Select-Object -First 12)
+    }
+}
+
+# Which execution backend the VM actually used.
+#
+# The trap, and the reason this is a parser rather than three greps: the line
+# "HM: VT-x/AMD-V init method: Local" looks decisive and is not -- it describes
+# how the HM module initialised, not which backend ran the guest. It appears on
+# NEM runs too. Only the lines below distinguish.
+#
+# Order of the tests matters. "HM: HMR3Init: Attempting fall back to NEM" also
+# starts with "HM: HMR3Init:", so it has to be tested before the native pattern
+# or a NEM run would be classified as native.
+function Parse-VBoxLogBackend {
+    param([string[]]$Lines)
+    $native = ""
+    $fallback = ""
+    $nem = ""
+    $iem = ""
+    $forced = $false
+
+    foreach ($raw in @($Lines)) {
+        if (-not $raw) { continue }
+        $line = $raw.Trim()
+        if ($line -like "*HM: HMR3Init: Attempting fall back to NEM*") { $fallback = $line; continue }
+        if ($line -like "*HM: Setting fHMEnabled to false because fUseNEMInstead is set*") { $forced = $true; continue }
+        if ($line -like "*HM: HMR3Init: Falling back on IEM*") { $iem = $line; continue }
+        if ($line -like "*NEM: NEMR3Init: Snail execution mode is active*") { $nem = $line; continue }
+        if ($line -like "*NEM: NEMR3Init: Turtle execution mode is active*") { $nem = $line; continue }
+        if ($line -like "*NEM: NEMR3Init: Not available*") { $nem = $line; continue }
+        if ($line -like "*NEM: NEMR3Init: Disabled*") { $nem = $line; continue }
+        if ($line -like "*HM: HMR3Init: VT-x*") { $native = $line; continue }
+        if ($line -like "*HM: HMR3Init: AMD-V*") { $native = $line; continue }
+    }
+
+    # IEM is the last resort -- both hardware and WHP were unavailable, the
+    # guest is being interpreted, and every device will be unusably slow.
+    $backend = "unknown"
+    if ($iem) { $backend = "iem" }
+    elseif ($nem -or $fallback) { $backend = "nem" }
+    elseif ($native) { $backend = "native" }
+
+    return [pscustomobject]@{
+        Backend      = $backend
+        NativeLine   = $native
+        FallbackLine = $fallback
+        NemLine      = $nem
+        IemLine      = $iem
+        ForcedNEM    = $forced
+    }
+}
+
+# Literal strings VirtualBox writes into VBox.log that carry meaning for eNSP.
+#
+# Plain substrings, not regexes, because every one of these is copied verbatim
+# from the source and a regex would only add ways to be wrong. Notes live in
+# diag.ps1 -- this file is ASCII-only and the report is not.
+#
+# Deliberately absent: "Failed to create pipe". That string does not exist
+# anywhere in the VirtualBox tree; the named-pipe driver writes
+# "CreateNamedPipe failed" / "failed to create named pipe" instead. The
+# "Failed to create pipe" wording observed in connection with eNSP comes from
+# eNSP itself, so it cannot be found here and must not be claimed to be.
+function Find-VBoxLogMarkers {
+    param([string[]]$Lines)
+    $pats = @(
+        @{ Id = "intnet";        Text = "VERR_INTNET_FLT_IF_NOT_FOUND" }
+        @{ Id = "nemNotAvail";   Text = "VERR_NEM_NOT_AVAILABLE" }
+        @{ Id = "hardening";     Text = "supR3HardenedErrorV" }
+        @{ Id = "hardeningFatal";Text = "supR3HardenedFatalMsgV" }
+        @{ Id = "namedPipeSrv";  Text = "CreateNamedPipe failed" }
+        @{ Id = "namedPipeSrv2"; Text = "failed to create named pipe" }
+        @{ Id = "namedPipeCli";  Text = "failed to connect to named pipe" }
+        @{ Id = "pdmConstruct";  Text = "PDM: Failed to construct" }
+    )
+    $out = @()
+    foreach ($raw in @($Lines)) {
+        if (-not $raw) { continue }
+        $line = $raw.Trim()
+        foreach ($p in $pats) {
+            if ($line -like ("*" + $p.Text + "*")) {
+                $out += [pscustomobject]@{ Id = $p.Id; Line = $line }
+                break
+            }
+        }
+    }
+    return $out
+}

@@ -408,4 +408,163 @@ $pOther = ClassifyPacketDllProduct -Product "Some Vendor Capture" -Present $true
 Assert-False $pOther.IsWinPcap "packet dll: unknown product is not WinPcap"
 Assert-False $pOther.IsNpcap   "packet dll: unknown product is not Npcap"
 
+Write-Host "=== Task 10: VBox.log / VBoxHardening.log parsers ==="
+
+$beNative = Parse-VBoxLogBackend -Lines (Get-Content (Get-TestDataPath "vboxlog_backend_native.txt"))
+Assert-Equal $beNative.Backend "native" "backend: the real capture reads as native"
+Assert-Match $beNative.NativeLine 'VT-x w/ nested paging' "backend: the native line is kept"
+
+$beNem = Parse-VBoxLogBackend -Lines (Get-Content (Get-TestDataPath "vboxlog_backend_nem.txt"))
+Assert-Equal $beNem.Backend "nem" "backend: a fallback reads as nem"
+Assert-Match $beNem.FallbackLine 'Attempting fall back to NEM' "backend: the fallback line is kept"
+Assert-Match $beNem.NemLine 'Snail execution mode' "backend: the NEM line is kept"
+Assert-False $beNem.ForcedNEM "backend: an automatic fallback is not a forced NEM"
+# This is the trap the parser exists for. The fallback line begins with
+# "HM: HMR3Init:" exactly like the native one, so a parser that tests the
+# native pattern first classifies every NEM run as native -- and NEM runs are
+# the normal case on any machine with Hyper-V enabled.
+Assert-Equal $beNem.NativeLine "" "backend: a NEM run records no native line"
+
+# "HM: VT-x/AMD-V init method: Local" describes module init, not the backend,
+# and appears on NEM runs too. It must never produce a verdict on its own.
+$beTrap = Parse-VBoxLogBackend -Lines @('00:00:01.000000 HM: VT-x/AMD-V init method: Local')
+Assert-Equal $beTrap.Backend "unknown" "backend: the init-method line is not a verdict"
+
+$beForced = Parse-VBoxLogBackend -Lines @(
+    '00:00:01.100000 HM: Setting fHMEnabled to false because fUseNEMInstead is set.',
+    '00:00:01.200000 NEM: NEMR3Init: Snail execution mode is active!')
+Assert-True  $beForced.ForcedNEM "backend: a forced NEM is flagged as such"
+Assert-Equal $beForced.Backend "nem" "backend: a forced NEM still reads as nem"
+
+# IEM is the last resort and outranks the others in the verdict.
+$beIem = Parse-VBoxLogBackend -Lines @(
+    '00:00:01.100000 HM: HMR3Init: VT-x w/ nested paging',
+    '00:00:01.200000 HM: HMR3Init: Falling back on IEM: No HM, no NEM.')
+Assert-Equal $beIem.Backend "iem" "backend: IEM wins over a native line earlier in the log"
+
+# TWO lines in that block carry VERR_INTNET_FLT_IF_NOT_FOUND -- the VMSetError
+# one and the PDM "Failed to construct 'e1000'" one, which reports the same
+# failure from the device side. Both are returned: this function is a finder
+# and must not drop evidence to make the report tidier. Collapsing them into
+# one conclusion is the report's job, not the parser's.
+$mk = @(Find-VBoxLogMarkers -Lines (Get-Content (Get-TestDataPath "vboxlog_intnet_error.txt")))
+Assert-Equal $mk.Count 2 "markers: both lines carrying the code are returned"
+Assert-Equal $mk[0].Id "intnet" "markers: classified as intnet"
+Assert-Match $mk[0].Line 'VERR_INTNET_FLT_IF_NOT_FOUND' "markers: the raw line is kept"
+Assert-Equal $mk[1].Id "intnet" "markers: the PDM line reads as the same root cause"
+Assert-True ($mk[0].Line -ne $mk[1].Line) "markers: the two lines are distinct evidence"
+Assert-Equal @(Find-VBoxLogMarkers -Lines @('00:00:01.000000 nothing to see here')).Count 0 `
+             "markers: a clean line matches nothing"
+
+$hp = Parse-HardeningLog -Lines (Get-Content (Get-TestDataPath "hardening_5657.txt"))
+Assert-True  $hp.Failed "hardening: failure detected"
+Assert-Equal @($hp.Errors).Count 1 "hardening: one error"
+Assert-Equal @($hp.Errors)[0].Code -5657 "hardening: the code is read"
+Assert-Equal @($hp.Errors)[0].Symbol "VERR_SUP_VP_NOT_SIGNED_WITH_BUILD_CERT" "hardening: the code is named"
+Assert-Equal @($hp.Errors)[0].Where "supR3HardenedWinReSpawn" "hardening: the failing function is read"
+Assert-Match @($hp.Errors)[0].Step 'Misc' "hardening: enmWhat=5 reads as Misc"
+Assert-Equal @($hp.RejectedModules).Count 1 "hardening: one rejected module"
+Assert-Match @($hp.RejectedModules)[0] 'FileSyncShell64\.dll$' "hardening: the rejected module is named"
+
+$hc = Parse-HardeningLog -Lines (Get-Content (Get-TestDataPath "hardening_clean.txt"))
+Assert-False $hc.Failed "hardening: a clean log reports no failure"
+Assert-Equal @($hc.RejectedModules).Count 0 "hardening: a clean log names no module"
+
+# The decimal negative rc form exists ONLY in VBoxHardening.log. VBox.log
+# prints symbolic names, so this parser must find nothing in a release log --
+# and that assertion is what stops anyone later "helpfully" pointing it at
+# VBox.log to look for -NNNN, where it would silently never match.
+$hpVbox = Parse-HardeningLog -Lines (Get-Content (Get-TestDataPath "vboxlog_intnet_error.txt"))
+Assert-False $hpVbox.Failed "hardening: a VBox.log yields no hardening verdict"
+Assert-True  (Parse-HardeningLog -Lines @('1f2c.1f30: Error (rc=-5640):')).Failed `
+             "hardening: the 'Error (rc=N)' form is detected"
+Assert-Equal @((Parse-HardeningLog -Lines @('1f2c.1f30: Error (rc=-5640):')).Errors)[0].Code -5640 `
+             "hardening: code from the rc= form"
+Assert-Equal @((Parse-HardeningLog -Lines @('1f2c.1f30: Error (rc=-5640):')).Errors)[0].Symbol `
+             "VERR_SUP_VP_THREAD_NOT_ALONE" "hardening: the rc= form is named"
+
+# An unrecognised code is reported as a bare number. Naming it would be
+# inventing a meaning, which is worse than admitting the code is unknown.
+$hpUnk = Parse-HardeningLog -Lines @('1f2c.1f30: Error -9999 in supR3HardenedWinReSpawn! (enmWhat=3)')
+Assert-True  $hpUnk.Failed "hardening: an unknown code still counts as a failure"
+Assert-Equal @($hpUnk.Errors)[0].Symbol "" "hardening: an unknown code gets no invented name"
+Assert-Match @($hpUnk.Errors)[0].Step 'Driver' "hardening: enmWhat=3 reads as Driver"
+
+# The "%x.%x: " pid.thread prefix is optional for the parser.
+Assert-True (Parse-HardeningLog -Lines @('Error -5657 in supR3HardenedWinReSpawn! (enmWhat=5)')).Failed `
+            "hardening: matches with no pid.thread prefix"
+
+Write-Host "=== Task 11: diag.ps1 report-verb call shape ==="
+
+# A trap that produced three silent bugs in one session and that no syntax check
+# can see. Putting an ASCII double quote inside a double-quoted Chinese string
+# does not break the parse -- PowerShell happily reads
+#
+#     Write-Note "  ... with "a quoted bit" here."
+#
+# as THREE arguments. Write-Note takes one, so the first becomes the message and
+# the other two disappear into $args. The result is half a sentence on screen
+# and exit code 0.
+#
+# The parser cannot flag it (the syntax is valid), so this walks the real AST of
+# diag.ps1 and counts each report verb's arguments against what the function
+# actually accepts. A split string shows up as an argument count nothing else
+# produces. The only edit needed to keep this passing is to reword the message
+# or use the full-width bracket characters, which is the intended habit anyway.
+$repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
+$diagPath = Join-Path $repoRoot "installer\diag.ps1"
+
+# Verb -> the argument counts that are legitimate. Write-Fact takes a label and
+# a value, plus an optional column width, which is why it has two.
+$allowed = @{
+    "Write-Note"    = @(1)
+    "Write-Section" = @(1)
+    "Write-Fact"    = @(2, 3)
+    "Write-Fail"    = @(2)
+}
+$shapeErrors = @()
+if (Test-Path $diagPath) {
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($diagPath, [ref]$null, [ref]$null)
+    $cmds = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)
+    foreach ($c in $cmds) {
+        $name = $c.GetCommandName()
+        if (-not $name -or -not $allowed.ContainsKey($name)) { continue }
+        $n = $c.CommandElements.Count - 1
+        if ($allowed[$name] -notcontains $n) {
+            # Message kept in English on purpose. This file must stay ASCII:
+            # PowerShell 5.1 decodes a BOM-less file as ANSI, and a multi-byte
+            # Chinese character can then decode into a stray 0x22 that
+            # terminates the literal early. That is the very rule this project
+            # documents for .ps1 files, and breaking it here produced a parse
+            # error whose reported line number pointed somewhere else entirely.
+            $shapeErrors += ($name + " line " + $c.Extent.StartLineNumber +
+                             ": got " + $n + " arguments")
+        }
+    }
+} else {
+    $shapeErrors += "diag.ps1 not found at " + $diagPath
+}
+Assert-True (Test-Path $diagPath) "report verbs: diag.ps1 is reachable from the tests"
+if ($shapeErrors.Count -gt 0) { $shapeErrors | ForEach-Object { Write-Host ("        " + $_) -ForegroundColor Red } }
+Assert-Equal $shapeErrors.Count 0 "report verbs: every call passes the argument count the verb accepts"
+
+# The argument walk above has a blind spot, and this second check exists because
+# of it. When the stray quote is followed by a '#', as in  ...\"#2\"...  the rest
+# of the line becomes a COMMENT: the call parses as a tidy one-argument form and
+# the walk passes it. Measured on the first run of this task -- it caught two of
+# the four broken lines and missed the other two, which were exactly that shape.
+#
+# This check has no such gap. A backslash is NOT PowerShell's escape character
+# (the backtick is), so a backslash sitting immediately before a double quote
+# inside a double-quoted string always means the quote terminates the string
+# early. Zero occurrences is the only passing count.
+#
+# If a legitimate need for those two characters ever appears -- a literal path
+# ending in a backslash, say -- reword the message rather than relaxing this.
+# Weakening the guard would restore exactly the silent truncation it was added
+# to prevent.
+$bsQuote = [string][char]0x5C + [string][char]0x22
+$bsQuoteCount = ([regex]::Matches((Get-Content -Path $diagPath -Raw), [regex]::Escape($bsQuote))).Count
+Assert-Equal $bsQuoteCount 0 "report verbs: no backslash-escaped quote survives in diag.ps1"
+
 Complete-TestRun
