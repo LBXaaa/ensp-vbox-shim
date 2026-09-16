@@ -5,7 +5,7 @@
       <Hardware>
               <Memory RAMSize="256"/>
               <HID Pointing="USBTablet"/>
-              <Display VRAMSize="8"/>
+              <Display VRAMSize="16"/>
               <RemoteDisplay enabled="true"/>
               <Firmware/>
               <BIOS>
@@ -55,7 +55,7 @@
     <Hardware>
           <Memory RAMSize="256"/>
           <HID Pointing="USBTablet"/>
-          <Display VRAMSize="16"/>
+          <Display VRAMSize="8"/>
           <RemoteDisplay enabled="true"/>
           <Firmware/>
           <BIOS>

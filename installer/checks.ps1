@@ -551,9 +551,15 @@ function Test-EnspVersionAgainstDevices {
 # fires only when the value has been actively lowered -- it is a guard against
 # a bad edit, not against a factory state. Report the value regardless; the
 # number is what makes the "only AR is broken" case diagnosable.
+#
+# Reads the LIVE hardware block only. Scanning the raw line list would return
+# the snapshot's VRAMSize, because <Snapshot> comes first in the file -- the
+# same trap Parse-UartPorts documents, and it was live here too: both parsers
+# were reading the snapshot and agreeing with reality only because the two
+# values happened to be identical on every template measured.
 function Get-VramSizeFromTemplate {
     param([string[]]$Lines)
-    foreach ($l in $Lines) {
+    foreach ($l in (Get-LiveHardwareBlock -Lines $Lines)) {
         if ($l -match 'VRAMSize\s*=\s*"(\d+)"') { return [int]$Matches[1] }
     }
     return $null
@@ -870,6 +876,61 @@ function Resolve-BaseVmRegistration {
     return $out
 }
 
+# --- the live <Hardware> block ---------------------------------------------
+#
+# A .vbox repeats the ENTIRE hardware section inside every <Snapshot>, and the
+# snapshot blocks come FIRST. Measured on a real AR_Base.vbox (2026-09-16):
+# the <Snapshot> element sits at line 24 and the live <Hardware> only at line
+# 75, so "take the first <Hardware>" silently returns the SNAPSHOT's hardware.
+#
+# That mistake is invisible while the two happen to agree -- which they did on
+# every template measured here, because the snapshot was taken moments after
+# the live config was written. It stops being invisible the moment someone
+# changes a setting after snapshotting: the report would then describe a saved
+# state as if it were the current one, and the VRAM/UART checks would both be
+# reading the past.
+#
+# Nesting is walked TAG BY TAG, not line by line, and that is not fussiness --
+# a line-at-a-time counter gets <Snapshot uuid="{a}"><Hardware>...</Hardware>
+# </Snapshot> wrong, because the line closes and reopens the depth in one go and
+# the <Hardware> in the middle is then read as live. A fixture written that way
+# caught it. Scanning tags left to right inside each line gets both layouts
+# right and costs nothing.
+#
+# Both spellings of the container are accepted. VirtualBox 7.2 writes
+# <Snapshot> directly under <Machine> -- verified on a real AR_Base.vbox, there
+# is no wrapper element -- while other versions put them in <Snapshots>. The
+# tag pattern covers either:
+#
+#   <Snapshots?[\s>]   <Snapshot ...>   <Snapshot>   <Snapshots>
+#   </Snapshots?>      </Snapshot>      </Snapshots>
+#
+# <Hardware> is matched separately and only counts when the depth is zero, so
+# every snapshot's copy is skipped regardless of how they are laid out.
+function Get-LiveHardwareBlock {
+    param([string[]]$Lines)
+    $depth = 0
+    $collecting = $false
+    $out = @()
+    foreach ($line in @($Lines)) {
+        foreach ($m in [regex]::Matches($line, '<(/?)(Snapshots?|Hardware)[\s>]')) {
+            $closing = ($m.Groups[1].Value -eq '/')
+            if ($m.Groups[2].Value -eq 'Hardware') {
+                if ((-not $closing) -and (-not $collecting) -and ($depth -eq 0)) { $collecting = $true }
+            } elseif ($closing) {
+                if ($depth -gt 0) { $depth-- }
+            } else {
+                $depth++
+            }
+        }
+        if ($collecting) {
+            $out += $line
+            if ($line -match '</Hardware>') { break }
+        }
+    }
+    return $out
+}
+
 # --- AR template UART / COM2 pipe ------------------------------------------
 #
 # A device template carries its serial ports inside <Hardware><UART>:
@@ -886,15 +947,11 @@ function Resolve-BaseVmRegistration {
 # Attribute parsing stops at the first '>' and never at '/', because the pipe
 # path itself contains slashes ("\\.\pipe\config") -- a [^/>]* class would cut
 # the match short mid-value and lose every attribute after "path".
-#
-# Only the FIRST <Hardware> block is read. A .vbox that has snapshots repeats
-# the entire hardware section inside each <Snapshot>, and reading those would
-# report a saved state's port as if it were the live configuration.
 function Parse-UartPorts {
     param([string[]]$Lines)
-    $text = ($Lines -join "`n")
+    $text = (Get-LiveHardwareBlock -Lines $Lines) -join "`n"
     $hw = ""
-    if ($text -match '(?s)<Hardware>(.*?)</Hardware>') { $hw = $Matches[1] }
+    if ($text -match '(?s)<Hardware>(.*)</Hardware>') { $hw = $Matches[1] }
     $ports = @()
     foreach ($m in [regex]::Matches($hw, '<Port\s+([^>]*?)\s*/?>')) {
         $attrs = $m.Groups[1].Value

@@ -1,6 +1,58 @@
-<?xml version="1.0"?>
-<VirtualBox>
-  <Hardware>
+﻿<?xml version="1.0"?>
+<VirtualBox xmlns="http://www.virtualbox.org/" version="1.19-windows">
+  <Machine uuid="{5aa4275f-3791-41f1-aa74-ffc1e93b01fb}" name="AR_Base" OSType="Linux" currentSnapshot="{acff2bbe-2205-4014-ae4b-c0c5cf5a7e1c}" aborted="true">
+    <Snapshot uuid="{acff2bbe-2205-4014-ae4b-c0c5cf5a7e1c}" name="AR_Base_Link" timeStamp="2026-09-16T09:30:32Z">
+      <Hardware>
+              <Memory RAMSize="256"/>
+              <HID Pointing="USBTablet"/>
+              <Display VRAMSize="8"/>
+              <RemoteDisplay enabled="true"/>
+              <Firmware/>
+              <BIOS>
+                <SmbiosUuidLittleEndian enabled="true"/>
+                <AutoSerialNumGen enabled="true"/>
+              </BIOS>
+              <USB>
+                <Controllers>
+                  <Controller name="OHCI" type="OHCI"/>
+                </Controllers>
+              </USB>
+              <Network>
+                <Adapter slot="0" enabled="true" MACAddress="080027DACD10">
+                  <DisabledModes>
+                    <NAT localhost-reachable="true"/>
+                    <InternalNetwork name="intnet"/>
+                    <NATNetwork name="NatNetwork"/>
+                  </DisabledModes>
+                  <HostOnlyInterface name="VirtualBox Host-Only Ethernet Adapter"/>
+                </Adapter>
+              </Network>
+              <UART>
+                <Port slot="1" enabled="false" IOBase="0x2f8" IRQ="3" server="true" path="\\.\pipe\config" hostMode="HostPipe"/>
+              </UART>
+              <AudioAdapter codec="AD1980" driver="DirectSound" enabled="true" enabledIn="true" enabledOut="true"/>
+              <Clipboard/>
+              <GuestProperties>
+                <GuestProperty name="/VirtualBox/HostInfo/GUI/LanguageID" value="zh_CN" timestamp="1515482072229993400" flags=""/>
+              </GuestProperties>
+              <StorageControllers>
+                <StorageController name="IDE" type="PIIX4" PortCount="2" useHostIOCache="true" Bootable="true">
+                  <AttachedDevice type="HardDisk" hotpluggable="false" port="0" device="0">
+                    <Image uuid="{37e2e21a-4f50-42d8-b2b0-7835ca2d72d1}"/>
+                  </AttachedDevice>
+                  <AttachedDevice passthrough="false" type="DVD" hotpluggable="false" port="1" device="0"/>
+                </StorageController>
+              </StorageControllers>
+              <RTC localOrUTC="UTC"/>
+              <CPU>
+                <HardwareVirtExLargePages enabled="true"/>
+                <PAE enabled="false"/>
+                <LongMode enabled="false"/>
+                <X2APIC enabled="true"/>
+              </CPU>
+            </Hardware>
+    </Snapshot>
+    <Hardware>
           <Memory RAMSize="256"/>
           <HID Pointing="USBTablet"/>
           <Display VRAMSize="16"/>
@@ -36,7 +88,7 @@
           <StorageControllers>
             <StorageController name="IDE" type="PIIX4" PortCount="2" useHostIOCache="true" Bootable="true">
               <AttachedDevice type="HardDisk" hotpluggable="false" port="0" device="0">
-                <Image uuid="{37e2e21a-4f50-42d8-b2b0-7835ca2d72d1}"/>
+                <Image uuid="{acb996de-6a07-4832-9933-0a21b3b4d249}"/>
               </AttachedDevice>
               <AttachedDevice passthrough="false" type="DVD" hotpluggable="false" port="1" device="0"/>
             </StorageController>
@@ -49,4 +101,5 @@
             <X2APIC enabled="true"/>
           </CPU>
         </Hardware>
+  </Machine>
 </VirtualBox>

@@ -16,9 +16,9 @@
 | `vbox_machine_registry.xml` | `%USERPROFILE%\.VirtualBox\VirtualBox.xml` 的 `<MachineRegistry>` 段 | 注册路径的权威来源；注意 `src` 的大小写与反斜杠写法 |
 | `vbox_snapshots_with_link.txt` | `VBoxManage snapshot AR_Base list --machinereadable` | 含 `AR_Base_Link`，即链接克隆所需的那一个快照 |
 | `vbox_showvminfo_state.txt` | `VBoxManage showvminfo AR_Base --machinereadable` | 只截取了 `name=` / `VMState=` 几行；**`VMState="aborted"`** 是真实抓到的状态 |
-| `arbase_uart_ok.vbox` | 真机 `AR_Base.vbox` 的 `<Hardware>` 段 | COM2（slot 1）已启用且指向 `\\.\pipe\config` |
-| `arbase_uart_disabled.vbox` | 由上者派生 | 把 slot 1 改成 `enabled="false"`，模拟 UART2 未开 |
-| `arbase_with_snapshot.vbox` | 由上者派生 | 额外套了一个 `<Snapshots>` 段，其 `<Hardware>` 里的 slot 1 是**禁用**的 |
+| `arbase_uart_ok.vbox` | 真机 `AR_Base.vbox` 的两段 `<Hardware>` | 按真实顺序组装：**快照段在前、实况段在后**，两段的值**故意相反** |
+| `arbase_uart_disabled.vbox` | 由上者派生 | 实况段的 slot 1 改成 `enabled="false"`，模拟 UART2 未开 |
+| `arbase_vram_small.vbox` | 由上者派生 | 实况段 `VRAMSize` 改小成 8，快照段仍是 16 |
 | `vboxlog_backend_native.txt` | 真机 `VBox.log` 逐字摘录 | 走原生 VT-x 的后端判定行 |
 | `vboxlog_backend_nem.txt` | **按源码格式串构造** | NEM 回退 + Snail 模式 |
 | `vboxlog_intnet_error.txt` | VirtualBox ticket #18260 的用户日志原文 | host-only 失败块；**两行**带 `VERR_INTNET_FLT_IF_NOT_FOUND` |
@@ -77,14 +77,37 @@
 `netadapter_normal.txt` 的 `Name` 字段是抓取时的系统语言（中文）。这是刻意的——
 它正是「**不可按连接名匹配，只能用 `InterfaceDescription` 关联**」这条设计决策的证据。
 
-### 5. `arbase_with_snapshot.vbox` 钉的是「只读第一个 `<Hardware>`」
+### 5. `.vbox` 里**快照段在前、实况段在后**——这是本组夹具存在的全部理由
 
-真实 `.vbox` 在**每个 `<Snapshot>` 里重复整段 `<Hardware>`**（真机 `AR_Base.vbox` 就是
-如此：文件里有两处 `<Port slot=`，一处是实况、一处是快照存档）。`arbase_with_snapshot.vbox`
-把这两处**做成互相矛盾**——实况 slot 1 启用、快照 slot 1 禁用——于是：
+真实 `.vbox` 在**每个 `<Snapshot>` 里重复整段 `<Hardware>`**，而且**顺序是反的**。
+真机 `AR_Base.vbox`（2026-09-16 实测）：
 
-- 解析器只读第一个 `<Hardware>` → 报告「管道可用」（正确）
-- 若哪天有人把解析器改成读所有 `<Hardware>` → 立刻报出多余端口，断言随之失败
+```
+行 24   <Snapshot uuid="{acff2bbe-…}" name="AR_Base_Link" …>   ← 快照
+行 25     <Hardware>
+行 73     </Hardware>
+行 74   </Snapshot>
+行 75   <Hardware>                                              ← 实况
+行 123  </Hardware>
+```
+
+**所以「取第一个 `<Hardware>`」拿到的是快照。** 这个错误在两道解析器里都真实存在过
+（`Parse-UartPorts` 与 `Get-VramSizeFromTemplate`），而且**骗过了测试**——因为本机所有
+模板两段的值恰好相同，读错哪一段结论都一样。
+
+因此这三份夹具把两段的值**做成相反**，读错立刻现形：
+
+| 夹具 | 快照段 | 实况段 | 断言要求 |
+|---|---|---|---|
+| `arbase_uart_ok` | UART 关、VRAM 8 | UART 开、VRAM 16 | 必须报 UART 可用、VRAM 16 |
+| `arbase_uart_disabled` | UART 关、VRAM 8 | UART **关** | 必须报 UART 不可用 |
+| `arbase_vram_small` | VRAM **16** | VRAM **8** | 必须报 VRAM 8 且判为过小 |
+
+最后一行是反向的：读错就会拿到 16，把一个真坏了的模板报成正常。
+
+`Get-LiveHardwareBlock` 逐**标签**扫描而不是逐行计数——单行写成
+`<Snapshot …><Hardware>…</Hardware></Snapshot>` 时，逐行计数会让这一行自己把深度关掉又
+打开，中间那个 `<Hardware>` 就被当成实况。这一条也是被夹具抓出来的。
 
 ### 6. `vbox_showvminfo_state.txt` 抓到的 `aborted` 不是制作的
 

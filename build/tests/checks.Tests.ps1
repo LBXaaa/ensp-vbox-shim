@@ -174,14 +174,16 @@ Assert-True  $v.Cx200Removed  "1.2.00.500 removed CX200"
 $v2 = Test-EnspVersionAgainstDevices -EnspVersion "1.3.00.100" -HasCeDevice $true -HasCx200 $false
 Assert-False $v2.CeNeedsNewer "1.3.00.100 is fine for CE"
 
-# VRAMSize in the AR template.
-Assert-Equal (Get-VramSizeFromTemplate -Lines @("<Display VRAMSize=`"9`"/>")) 9 "vram parsed"
+# VRAMSize in the AR template. The lines are wrapped in <Hardware> because that
+# is where the element actually lives -- the parser reads the live hardware
+# block, so a bare <Display> line is not a shape any real template produces.
+Assert-Equal (Get-VramSizeFromTemplate -Lines @("<Hardware>", "<Display VRAMSize=`"9`"/>", "</Hardware>")) 9 "vram parsed"
 Assert-True  (Test-VramTooSmall -VramSize 1) "1MB flagged"
 Assert-False (Test-VramTooSmall -VramSize 9) "9MB fine"
 
 # A template with no VRAMSize element yields $null, which is "could not read",
 # not "too small". Reporting it as a defect would be inventing one.
-Assert-Equal (Get-VramSizeFromTemplate -Lines @("<Display/>")) $null "absent vram element parses to null"
+Assert-Equal (Get-VramSizeFromTemplate -Lines @("<Hardware>", "<Display/>", "</Hardware>")) $null "absent vram element parses to null"
 Assert-False (Test-VramTooSmall -VramSize $null) "null vram is not flagged"
 Assert-False (Test-VramTooSmall -VramSize "") "empty vram is not flagged"
 Assert-True  (Test-VramTooSmall -VramSize "8") "string 8 is still flagged"
@@ -345,12 +347,50 @@ Assert-True  (Test-UartPipePresent -Ports $uOk) "uart ok: pipe present"
 $uDis = Parse-UartPorts -Lines (Get-Content (Get-TestDataPath "arbase_uart_disabled.vbox"))
 Assert-False (Test-UartPipePresent -Ports $uDis) "uart disabled: no pipe"
 
-# A .vbox with snapshots repeats <Hardware> inside each <Snapshot>. Reading
-# those would report the saved state's disabled port as the live one.
-$uSnap = @(Parse-UartPorts -Lines (Get-Content (Get-TestDataPath "arbase_with_snapshot.vbox")))
-Assert-Equal $uSnap.Count 1 "uart snapshot: only the live hardware block is read"
-Assert-True  (Test-UartPipePresent -Ports $uSnap) "uart snapshot: the live port wins"
+# Every template repeats <Hardware> inside each <Snapshot>, and the snapshot
+# comes FIRST in the file. The fixtures therefore carry OPPOSITE values in the
+# two blocks, so reading the wrong one cannot pass by coincidence -- which is
+# exactly how this bug survived its first round: all three real templates had
+# identical values in both blocks, and "take the first <Hardware>" looked right.
+$uOkAll = @(Parse-UartPorts -Lines (Get-Content (Get-TestDataPath "arbase_uart_ok.vbox")))
+Assert-Equal $uOkAll.Count 1 "uart: the snapshot's port is not counted twice"
+Assert-True  (Test-UartPipePresent -Ports $uOkAll) `
+             "uart: the live block wins over the snapshot's disabled port"
 Assert-False (Test-UartPipePresent -Ports @()) "uart: no ports => no pipe"
+
+# Same trap for VRAMSize, and the fixture flips the values the other way: the
+# snapshot holds the healthy 16 and the live block the lowered 8. A parser that
+# read the snapshot would report "fine" on a template that is actively broken.
+$snapVram = Get-VramSizeFromTemplate -Lines (Get-Content (Get-TestDataPath "arbase_vram_small.vbox"))
+Assert-Equal $snapVram 8 "vram: the live block is read, not the snapshot's 16"
+Assert-True  (Test-VramTooSmall -VramSize $snapVram) "vram: the lowered live value is flagged"
+
+# The scanner must not be confused by <Snapshots> (a different tag) or by a
+# nested <Snapshot> tree, where naive non-greedy matching removes too little.
+$nested = @(
+    '<Machine>',
+    '  <Snapshot uuid="{a}" name="outer">',
+    '    <Hardware><Display VRAMSize="4"/></Hardware>',
+    '    <Snapshots>',
+    '      <Snapshot uuid="{b}" name="inner">',
+    '        <Hardware><Display VRAMSize="2"/></Hardware>',
+    '      </Snapshot>',
+    '    </Snapshots>',
+    '  </Snapshot>',
+    '  <Hardware><Display VRAMSize="16"/></Hardware>',
+    '</Machine>')
+Assert-Equal (Get-VramSizeFromTemplate -Lines $nested) 16 "vram: a nested snapshot tree is skipped"
+
+# <Snapshot[\s>] must not fire on <Snapshots>; if it did, the depth would never
+# return to zero and the live block would go unread.
+$snapshotsTag = @(
+    '<Machine>',
+    '  <Snapshots>',
+    '    <Snapshot uuid="{a}"><Hardware><Display VRAMSize="4"/></Hardware></Snapshot>',
+    '  </Snapshots>',
+    '  <Hardware><Display VRAMSize="16"/></Hardware>',
+    '</Machine>')
+Assert-Equal (Get-VramSizeFromTemplate -Lines $snapshotsTag) 16 "vram: a <Snapshots> wrapper is handled too"
 
 # Built from char codes because this file must stay ASCII-only.
 $cjk = [string]([char]0x5F20) + [string]([char]0x4E09)
