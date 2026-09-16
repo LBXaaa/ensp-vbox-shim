@@ -16,7 +16,7 @@ rem only inside install_all.ps1 when it relaunches install.ps1 as an elevated
 rem child. The VM-registration step then runs under THIS non-elevated user
 rem token, so the VMs register into the correct %USERPROFILE%.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_all.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_all.ps1" %*
 
 echo.
 pause
