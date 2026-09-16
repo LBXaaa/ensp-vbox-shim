@@ -487,6 +487,155 @@ function Get-RepairFindings {
         }
     } catch { }
 
+    # --- host-only 绑定失效(D1)----------------------------------------------
+    #
+    # 触发判据是【日志里的 VERR_INTNET_FLT_IF_NOT_FOUND】,不是绑定状态。
+    #
+    # 设计 §6.1 写明了 D1 的特征恰恰是「适配器存在且 Up、绑定项 Enabled=True」——
+    # 失效的只是它背后的数据路径,绑定状态读出来是好的。所以拿绑定状态去判 D1
+    # 永远判不出来,真正的证据只在日志里。这一条只有在日志解析接进来之后才成立,
+    # 在此之前 fix.ps1 里那个 Repair-BounceAdapter 根本没人调用。
+    #
+    # 绑定确实显示为未启用的情形也一并收进来:那是另一条坏法,修法完全相同,
+    # 分成两项只会让用户在两个几乎一样的条目之间做无意义的选择。
+    try {
+        $d1Why = @()
+        $vbHomeD = $env:VBOX_USER_HOME
+        if (-not $vbHomeD) { $vbHomeD = Join-Path $env:USERPROFILE ".VirtualBox" }
+        $d1Logs = @()
+        $d1VboxLog = Find-NewestVmLog -FileName "VBox.log" -VBoxUserHome $vbHomeD -EnspDir $EnspDir
+        if ($d1VboxLog) { $d1Logs += $d1VboxLog }
+        if ($EnspDir) {
+            $d1MgmtLog = Join-Path $EnspDir "vboxserver\log\VBoxManage.log"
+            if (Test-Path $d1MgmtLog) { $d1Logs += $d1MgmtLog }
+        }
+        foreach ($lp in $d1Logs) {
+            $mk = @(Find-VBoxLogMarkers -Lines @(Get-Content -Path $lp -ErrorAction SilentlyContinue) |
+                    Where-Object { $_.Id -eq "intnet" })
+            if ($mk.Count -gt 0) {
+                $d1Why += ("最近一次启动的日志(" + (Split-Path $lp -Leaf) + ")里出现 VERR_INTNET_FLT_IF_NOT_FOUND")
+                break
+            }
+        }
+        foreach ($bnd in @(Get-HostOnlyBindingFacts)) {
+            if ((-not $bnd.Bound) -or (-not $bnd.Enabled)) {
+                $d1Why += ("适配器 " + $bnd.InterfaceName + " 上的 oracle_VBoxNetLwf 未绑定或未启用")
+            }
+        }
+
+        if ($d1Why.Count -gt 0) {
+            $items += [pscustomobject]@{
+                Id       = "hostonly-bind"
+                Tier     = "confirm"
+                TierLabel = "<有损,执行前单独确认>"
+                Title    = "host-only 网络绑定失效"
+                Symptom  = "设备起不来,或起来后连不通宿主(startvm 报 VERR_INTNET_FLT_IF_NOT_FOUND)"
+                Evidence = ($d1Why -join "; ")
+                Impact   = @(
+                    "修复动作是【禁用再启用一次 host-only 网卡】,让过滤驱动重新进入数据路径 ——"
+                    "本机网络会短暂中断(数秒)。"
+                    "正在运行的设备、Tailscale / WireGuard 之类的常连隧道、"
+                    "Hyper-V 虚拟交换机都会闪断。"
+                    "这一项【不重装驱动包、也不重建接口】,只做重绑;驱动缺失的情形在上一项。"
+                )
+                Steps    = @( [pscustomobject]@{ Fn = "Repair-BounceAdapter"; Args = @{} } )
+                Manual   = @()
+            }
+        }
+    } catch { }
+
+    # --- 基础 VM 注册 / _Link 快照 -------------------------------------------
+    #
+    # 判据与报告第 6 节共用 Get-BaseVmFactSheet 的同一份事实,不会出现
+    # 「报告说要修、菜单说没问题」这种两处结论打架的情况。
+    try {
+        if ($EnspDir) {
+            $vmSheet = Get-BaseVmFactSheet -EnspDir $EnspDir -VBoxManage $vboxManage
+            $vmBad = @($vmSheet.Facts | Where-Object {
+                $_.DirPresent -and ((-not $_.Registered) -or (-not $_.PathValid) -or (-not $_.LinkSnapshot))
+            })
+            if ($vmBad.Count -gt 0) {
+                $items += [pscustomobject]@{
+                    Id        = "basemvms"
+                    Tier      = "confirm"
+                    TierLabel = "<须用启动 eNSP 的账户>"
+                    Title     = "基础设备 VM 未注册 / 缺 _Link 快照"
+                    Symptom   = "设备一拉就报 40,而垫片日志里看不出任何异常"
+                    Evidence  = ("待处理: " + (@($vmBad | ForEach-Object { $_.Name }) -join ", "))
+                    Impact    = @(
+                        "按需重注册,并给缺快照的基础盘补建 <VM>_Link —— 就是 注册设备.bat 做的事。"
+                        "注销不带 --delete,磁盘文件与已有快照都不动;补快照只补【缺失】的那些。"
+                        "补快照要求 VM 没有内存镜像(poweroff / aborted 满足,running 不满足)。"
+                        "【必须用平时启动 eNSP 的那个账户运行】—— 注册写的是当前账户的"
+                        "%USERPROFILE%\.VirtualBox\VirtualBox.xml,换了账户会写进另一个人的配置,eNSP 看不到。"
+                    )
+                    Steps     = @( [pscustomobject]@{ Fn = "Repair-RegisterBaseVms"; Args = @{ VBoxDir = $vboxDirFound; EnspDir = $EnspDir } } )
+                    Manual    = @()
+                }
+            }
+        }
+    } catch { }
+
+    # --- eNSP 关闭后残留的 VirtualBox 进程 -----------------------------------
+    #
+    # 只在【eNSP 已关】且【确有属于 eNSP 的 VM 还在跑】时才提供。用户自己从
+    # VirtualBox GUI 起的 VM 不算 —— 那条线由 Get-EnspOrphanFacts 划,与
+    # cleanup_orphans.ps1 是同一条。
+    try {
+        $orphan = Get-EnspOrphanFacts -EnspDir $EnspDir -VBoxManage $vboxManage
+        $enspOwnedRunning = @($orphan.Owned | Where-Object { $_.EnspOwned })
+        if ((-not $orphan.Proc.EnspRunning) -and ($enspOwnedRunning.Count -gt 0)) {
+            $items += [pscustomobject]@{
+                Id       = "orphans"
+                Tier     = "confirm"
+                TierLabel = "<有损,执行前单独确认>"
+                Title    = "eNSP 关闭后残留的 VirtualBox 进程"
+                Symptom  = "内存不释放;设备图标显示异常退出,可能弹出应用程序错误框"
+                Evidence = ("eNSP 未运行,但仍有 " + $orphan.Proc.HeadlessCount + " 个 VBoxHeadless;" +
+                            "其中属于 eNSP 的 VM: " + (@($enspOwnedRunning | ForEach-Object { $_.Name }) -join ", "))
+                Impact   = @(
+                    "会强制结束这些进程。CE / CX / NE 的客户机是 Linux,硬断电收尾本来就慢,"
+                    "强杀时它们未保存的状态会丢 —— 那些设备此时本来也已经不可用了。"
+                    "【不属于 eNSP 的 VM 一律不动】,清单以本项列出的为准。"
+                    "不着急的话也可以什么都不做:它们退完后内存会正常归还,不是泄漏。"
+                )
+                Steps    = @( [pscustomobject]@{ Fn = "Repair-KillOrphans"; Args = @{} } )
+                Manual   = @()
+            }
+        }
+    } catch { }
+
+    # --- AR 模板显存被改小 ---------------------------------------------------
+    #
+    # 与报告第 6 节读的是同一个函数、同一段(实况 <Hardware>)。挂 confirm 档
+    # 是因为它会写 eNSP 安装目录下的文件,标签据此写成"会改写模板"而不是"有损"。
+    try {
+        if ($EnspDir) {
+            $arTpl = Join-Path (Join-Path $EnspDir "vboxserver\AR_Base") "AR_Base.vbox"
+            if (Test-Path $arTpl) {
+                $arVram = Get-VramSizeFromTemplate -Lines @(Get-Content -Path $arTpl -ErrorAction SilentlyContinue)
+                if (Test-VramTooSmall -VramSize $arVram) {
+                    $items += [pscustomobject]@{
+                        Id        = "vram"
+                        Tier      = "confirm"
+                        TierLabel = "<会改写 eNSP 模板>"
+                        Title     = "AR 模板显存被改小"
+                        Symptom   = "只有 AR 起不来,交换机和防火墙都正常"
+                        Evidence  = ("AR_Base.vbox 的 Display VRAMSize = " + $arVram + " MB,低于 9")
+                        Impact    = @(
+                            "把 " + $arTpl + " 里的 VRAMSize 改回 16(eNSP 出厂的实测值)。"
+                            "改之前先备份为 AR_Base.vbox.vrambak;该备份已存在时不覆盖,"
+                            "以免把更早的那一份冲掉。"
+                            "只改【实况】那一段,快照里的副本一个字都不动。"
+                        )
+                        Steps     = @( [pscustomobject]@{ Fn = "Repair-SetTemplateVram"; Args = @{ TemplatePath = $arTpl; VramSize = 16 } } )
+                        Manual    = @()
+                    }
+                }
+            }
+        }
+    } catch { }
+
     return $items
 }
 
@@ -574,8 +723,15 @@ function Get-RepairMenuRows {
 
     for ($i = 0; $i -lt $Fixable.Count; $i++) {
         $it = $Fixable[$i]
+        # 档位标签默认由档位推出来,但允许条目自带一个更准确的说法。
+        # Tier 决定的是【机制】(要不要第二次确认),标签说明的是【代价】——
+        # 两者在新增的几项上不再重合:VM 注册要动的是"用哪个账户跑",
+        # 改模板要动的是"会写 eNSP 的文件",都不是"有损"。继续套用
+        # 「有损」会让人为一件不疼的事多担一次心,而让人误判代价与让人误判
+        # 风险一样糟。
         $tierText = "<无损>"
         if ($it.Tier -eq "confirm") { $tierText = "<有损,执行前单独确认>" }
+        if ($it.TierLabel) { $tierText = $it.TierLabel }
 
         $head = ("  [" + ($i + 1) + "] " + $it.Title)
         $rows += New-MenuRow -Kind "item" -Index $i -Text (Join-MenuColumns -Left $head -Right $tierText -Width $inner)
@@ -797,7 +953,11 @@ function Read-RepairConfirm {
     )
 
     Write-Host ""
-    Write-Note "!! 这一项属于「有损但必需」—— 执行前请先看清影响:"
+    # 这里以前写死「属于有损但必需」。档位标签与档位解耦之后那句话就不准了 ——
+    # 重注册基础 VM、改模板显存都要单独确认,却都不是"有损"。把条目自己的标签
+    # 嵌进来,让这一次确认与菜单上看到的那一行说的是同一件事。
+    $tierHint = $(if ($Item.TierLabel) { $Item.TierLabel } else { "<有损,执行前单独确认>" })
+    Write-Note ("!! 这一项需要单独确认 " + $tierHint + " —— 执行前请先看清影响:")
     foreach ($line in $Item.Impact) { Write-Note ("   " + $line) }
     Write-Host ""
 
@@ -1038,6 +1198,33 @@ function Show-RepairMenu {
             Write-Note "       鼠标不可用,菜单只能用键盘操作 —— 这里按「逐行输入编号」接收选择。"
             Write-Note "       读到输入结束即退出菜单,不会在这里等。"
         }
+
+        # 逐行路径【必须把条目自己打出来】。
+        #
+        # TUI 那条路由渲染层画行;这里以前只说了「发现 N 个」就直奔提示符 ——
+        # 用户看得到编号、看不到编号对应什么,只能靠猜。菜单不列空操作是设计,
+        # 但列了又不显示等于没列,而且这一条恰恰是自动化与远程会话唯一会走的路。
+        #
+        # 复用同一份行模型,不另写一套渲染:两套迟早会说不一样的话。只取
+        # item / note 两类 —— 那条「方向键 / 鼠标」的操作提示在这一路不成立。
+        Write-Host ""
+        try {
+            $fbWidth = 74
+            try {
+                $cw = [Console]::WindowWidth
+                if ($cw -gt 0) { $fbWidth = [Math]::Max(50, [Math]::Min(100, $cw - 4)) }
+            } catch { }
+            foreach ($row in @(Get-RepairMenuRows -Fixable $fixable -Width $fbWidth -Mouse $false)) {
+                $k = [string]$row.Kind
+                if (($k -eq "item") -or ($k -eq "note")) { Write-Host ("  " + $row.Text) }
+            }
+        } catch {
+            # 渲染本身出错也不能让菜单卡死:退回只列标题,至少编号还能用。
+            for ($fi = 0; $fi -lt $fixable.Count; $fi++) {
+                Write-Host ("  [" + ($fi + 1) + "] " + $fixable[$fi].Title)
+            }
+        }
+        Write-Host ""
     } else {
         Write-Note "       方向键移动,Enter 执行,数字键直选,A 全选,Esc 退出。"
     }
@@ -1890,6 +2077,80 @@ try {
     Write-Fail "host-only 网卡属性" $_.Exception.Message
 }
 
+# ---------------------------------------------------------------------------
+# 基础 VM 注册与快照的事实表
+#
+# 第 6 节要打印它,修复菜单要用它挑出该修的项 —— 两处共用一份,而不是各探一遍。
+# 探一次要跑 6 次 VBoxManage(1 次 list vms,加每台已注册 VM 各一次 snapshot),
+# 菜单在报告落盘之后才跑,那时再重探纯属浪费,而且两份结论还可能不一致。
+#
+# 缓存放脚本作用域。diag.ps1 是用 -File 跑的、不是被 dot-source 的,所以
+# $script: 在这里就是文件级作用域,没有 checks.ps1 顶部记的那个坑。
+#
+# 探测失败与"没读到"分开回传,由调用方决定怎么说:菜单那一侧只关心事实,
+# 报告那一侧必须把"没查到"如实写出来,不能让读者以为查过了。
+$script:BaseVmSheet = $null
+
+function Get-BaseVmFactSheet {
+    param([string]$EnspDir, [string]$VBoxManage)
+    if ($null -ne $script:BaseVmSheet) { return $script:BaseVmSheet }
+
+    $sheet = [pscustomobject]@{
+        Facts       = @()
+        ProbeErrors = @()
+        XmlPath     = ""
+        XmlPresent  = $false
+    }
+    if (-not $EnspDir) { $script:BaseVmSheet = $sheet; return $sheet }
+
+    $baseDirs = @(Get-BaseVmDirs -EnspDir $EnspDir)
+
+    $regVms = @{}
+    if ($VBoxManage -and (Test-Path $VBoxManage)) {
+        $vmsProbe = Invoke-Probe -Exe $VBoxManage -Arguments @("list", "vms")
+        if ($vmsProbe.Ok) { $regVms = Parse-VBoxListVms -Lines $vmsProbe.Lines }
+        else { $sheet.ProbeErrors += ("VBoxManage list vms: " + $vmsProbe.Error) }
+    }
+
+    # 注册路径取自 VirtualBox.xml 的 MachineRegistry:一次文件读换来全部已注册
+    # 路径,省掉每台一次 showvminfo。
+    $regSrc = @{}
+    $vbHome = $env:VBOX_USER_HOME
+    if (-not $vbHome) { $vbHome = Join-Path $env:USERPROFILE ".VirtualBox" }
+    $vbXml = Join-Path $vbHome "VirtualBox.xml"
+    $sheet.XmlPath = $vbXml
+    $sheet.XmlPresent = Test-Path $vbXml
+    if ($sheet.XmlPresent) {
+        try {
+            $regSrc = Parse-VBoxMachineRegistry -Lines @(Get-Content -Path $vbXml -ErrorAction Stop)
+        } catch {
+            $sheet.ProbeErrors += ("VirtualBox.xml: " + $_.Exception.Message)
+        }
+    }
+
+    $vmStates = @{}
+    $vmSnapshots = @{}
+    foreach ($b in $baseDirs) {
+        if (-not $b.DirPresent) { continue }
+        if (-not $regVms.ContainsKey($b.Name)) { continue }
+        $snProbe = Invoke-Probe -Exe $VBoxManage -Arguments @("snapshot", $b.Name, "list", "--machinereadable")
+        $snaps = @()
+        # VM 无快照时该命令返回非 0 且什么都不输出 —— 那是正常答案,不是故障。
+        if ($snProbe.Ok) { $snaps = @(Parse-VBoxSnapshotList -Lines $snProbe.Lines) }
+        $vmSnapshots[$b.Name] = $snaps
+        if (-not (Test-LinkSnapshotPresent -SnapshotNames $snaps -VmName $b.Name)) {
+            $stProbe = Invoke-Probe -Exe $VBoxManage -Arguments @("showvminfo", $b.Name, "--machinereadable")
+            if ($stProbe.Ok) { $vmStates[$b.Name] = Parse-VmState -Lines $stProbe.Lines }
+        }
+    }
+
+    $sheet.Facts = @(Resolve-BaseVmRegistration -BaseVmDirs $baseDirs `
+                     -RegisteredVms $regVms -RegistrySrc $regSrc `
+                     -VmStates $vmStates -VmSnapshots $vmSnapshots)
+    $script:BaseVmSheet = $sheet
+    return $sheet
+}
+
 # ===========================================================================
 # 第 6 节  设备就绪:注册、快照与模板
 # ===========================================================================
@@ -1914,51 +2175,13 @@ try {
     if (-not $EnspDir) {
         Write-Note "[跳过] 未定位到 eNSP 目录,无法核对注册与快照。请用 -EnspDir 指定。"
     } else {
-        $baseDirs = @(Get-BaseVmDirs -EnspDir $EnspDir)
-
-        $regVms = @{}
-        if ($vboxManageExe -and (Test-Path $vboxManageExe)) {
-            $vmsProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("list", "vms")
-            if ($vmsProbe.Ok) { $regVms = Parse-VBoxListVms -Lines $vmsProbe.Lines }
-            else { Write-Fail "VBoxManage list vms" $vmsProbe.Error }
-        }
-
-        # 注册路径取自 VirtualBox.xml 的 MachineRegistry:一次文件读换来全部
-        # 已注册路径,省掉每台一次 showvminfo。
-        $regSrc = @{}
-        $vbHome = $env:VBOX_USER_HOME
-        if (-not $vbHome) { $vbHome = Join-Path $env:USERPROFILE ".VirtualBox" }
-        $vbXml = Join-Path $vbHome "VirtualBox.xml"
-        if (Test-Path $vbXml) {
-            try {
-                $regSrc = Parse-VBoxMachineRegistry -Lines @(Get-Content -Path $vbXml -ErrorAction Stop)
-            } catch {
-                Write-Fail "VirtualBox.xml" $_.Exception.Message
-            }
-        } else {
-            Write-Note ("  [ !! ] 找不到 " + $vbXml)
+        $sheet = Get-BaseVmFactSheet -EnspDir $EnspDir -VBoxManage $vboxManageExe
+        foreach ($pe in @($sheet.ProbeErrors)) { Write-Fail "基础 VM 探测" $pe }
+        if (-not $sheet.XmlPresent) {
+            Write-Note ("  [ !! ] 找不到 " + $sheet.XmlPath)
             Write-Note "     这个文件按账户存放,须用【平时启动 eNSP 的那个账户】跑本诊断。"
         }
-
-        $vmStates = @{}
-        $vmSnapshots = @{}
-        foreach ($b in $baseDirs) {
-            if (-not $b.DirPresent) { continue }
-            if (-not $regVms.ContainsKey($b.Name)) { continue }
-            $snProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("snapshot", $b.Name, "list", "--machinereadable")
-            $snaps = @()
-            # VM 无快照时该命令返回非 0 并什么都不输出 —— 那是正常答案,不是故障。
-            if ($snProbe.Ok) { $snaps = @(Parse-VBoxSnapshotList -Lines $snProbe.Lines) }
-            $vmSnapshots[$b.Name] = $snaps
-            if (-not (Test-LinkSnapshotPresent -SnapshotNames $snaps -VmName $b.Name)) {
-                $stProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("showvminfo", $b.Name, "--machinereadable")
-                if ($stProbe.Ok) { $vmStates[$b.Name] = Parse-VmState -Lines $stProbe.Lines }
-            }
-        }
-
-        $vmFacts = @(Resolve-BaseVmRegistration -BaseVmDirs $baseDirs `
-                     -RegisteredVms $regVms -RegistrySrc $regSrc `
-                     -VmStates $vmStates -VmSnapshots $vmSnapshots)
+        $vmFacts = @($sheet.Facts)
 
         foreach ($vm in $vmFacts) {
             if (-not $vm.DirPresent) {
@@ -2201,6 +2424,50 @@ try {
     Write-Fail "vboxserver 写权限" $_.Exception.Message
 }
 
+# ---------------------------------------------------------------------------
+# 残留进程的事实
+#
+# 第 7 节要打印它,修复菜单要用它决定"要不要提供清残留这一项" —— 共用一份。
+# 归属按 VM 配置文件的路径判定,与 cleanup_orphans.ps1 划的是同一条线:
+# eNSP 已关时任何 VBoxHeadless 都算残留,但用户自己从 VirtualBox GUI 起的
+# VM 不算,绝不能碰。
+$script:OrphanSheet = $null
+
+function Get-EnspOrphanFacts {
+    param([string]$EnspDir, [string]$VBoxManage)
+    if ($null -ne $script:OrphanSheet) { return $script:OrphanSheet }
+
+    $sheet = [pscustomobject]@{
+        Proc         = Get-VBoxProcessFacts
+        Owned        = @()
+        RunningCount = 0
+        ProbeError   = ""
+    }
+
+    if ($VBoxManage -and (Test-Path $VBoxManage)) {
+        $runProbe = Invoke-Probe -Exe $VBoxManage -Arguments @("list", "runningvms")
+        if ($runProbe.Ok) {
+            $runningMap = Parse-VBoxListVms -Lines $runProbe.Lines
+            $vbHome = $env:VBOX_USER_HOME
+            if (-not $vbHome) { $vbHome = Join-Path $env:USERPROFILE ".VirtualBox" }
+            $regSrc = @{}
+            $xml = Join-Path $vbHome "VirtualBox.xml"
+            if (Test-Path $xml) {
+                try { $regSrc = Parse-VBoxMachineRegistry -Lines @(Get-Content -Path $xml -ErrorAction Stop) } catch { }
+            }
+            $sheet.Owned = @(Resolve-RunningVmOwnership `
+                             -RunningVmNames @(Get-RunningVmNames -RegisteredVms $runningMap) `
+                             -RegisteredVms $runningMap -RegistrySrc $regSrc `
+                             -EnspDir $EnspDir -LocalAppData $env:LOCALAPPDATA)
+            $sheet.RunningCount = $runningMap.Count
+        } else {
+            $sheet.ProbeError = $runProbe.Error
+        }
+    }
+    $script:OrphanSheet = $sheet
+    return $sheet
+}
+
 # ===========================================================================
 # 第 7 节  残留进程
 # ===========================================================================
@@ -2217,7 +2484,8 @@ $sectionsOk += "7"
 try {
     Write-Host ""
     Write-Host "  -- VirtualBox 进程 --"
-    $proc = Get-VBoxProcessFacts
+    $orphanSheet = Get-EnspOrphanFacts -EnspDir $EnspDir -VBoxManage $vboxManageExe
+    $proc = $orphanSheet.Proc
     Write-Fact "eNSP 主程序" $(if ($proc.EnspRunning) { "运行中" } else { "未运行" })
     Write-Fact "eNSP_VBoxServer" $(if ($proc.ServerRunning) { "运行中" } else { "未运行" })
     if ($proc.HeadlessCount -eq 0) {
@@ -2229,22 +2497,10 @@ try {
         }
     }
 
-    $runProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("list", "runningvms")
-    if (-not $runProbe.Ok) {
-        Write-Fail "VBoxManage list runningvms" $runProbe.Error
+    if ($orphanSheet.ProbeError) {
+        Write-Fail "VBoxManage list runningvms" $orphanSheet.ProbeError
     } else {
-        $runningMap = Parse-VBoxListVms -Lines $runProbe.Lines
-        $vbHome2 = $env:VBOX_USER_HOME
-        if (-not $vbHome2) { $vbHome2 = Join-Path $env:USERPROFILE ".VirtualBox" }
-        $regSrc2 = @{}
-        $xml2 = Join-Path $vbHome2 "VirtualBox.xml"
-        if (Test-Path $xml2) {
-            try { $regSrc2 = Parse-VBoxMachineRegistry -Lines @(Get-Content -Path $xml2 -ErrorAction Stop) } catch { }
-        }
-        $localApp = $env:LOCALAPPDATA
-        $owned = @(Resolve-RunningVmOwnership -RunningVmNames @(Get-RunningVmNames -RegisteredVms $runningMap) `
-                   -RegisteredVms $runningMap -RegistrySrc $regSrc2 `
-                   -EnspDir $EnspDir -LocalAppData $localApp)
+        $owned = @($orphanSheet.Owned)
 
         if ($owned.Count -eq 0) {
             Write-Fact "正在运行的 VM" "无"

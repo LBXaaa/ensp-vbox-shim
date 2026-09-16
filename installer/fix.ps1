@@ -998,3 +998,374 @@ function Repair-AllowEnspFirewall {
     return New-RepairResult -Ok $true -Changed $true -Commands $cmds `
         -Extra @{ DisplayName = "eNSP_VBoxServer"; Program = $exe; Profile = ($profiles -join ",") }
 }
+
+# ===========================================================================
+# base device VM registration and orphan processes
+# ===========================================================================
+#
+# These two repair eNSP's own lifecycle state rather than a component: a base
+# device VM that is missing from VirtualBox (or lost the snapshot eNSP clones
+# from), and the VirtualBox processes eNSP leaves behind when it closes. Both
+# end in the same '####'-forever device as the steps above, from a third layer,
+# which is why they are here.
+#
+# Both are calls into scripts that already own the logic -- register_vms.ps1 and
+# cleanup_orphans.ps1 -- and neither is dot-sourced. Both have top-level side
+# effects and both call exit; loading one to "look at it" would run a repair
+# while the caller is still planning one, and a stray exit would take the whole
+# repair menu down. One implementation also keeps this library and the .bat
+# files the user is told to run by hand in agreement, which is the only thing
+# that makes either of them trustworthy.
+
+# fix.ps1 is ASCII-only (see the header), but the summary lines those scripts
+# print are Chinese and their counters are what the verdicts below are read
+# from. Building the labels from code points keeps this file ASCII AND the match
+# exact: a literal here would be decoded through the ANSI code page on a machine
+# whose console code page is not the one the file was written in, and the
+# comparison would silently stop matching. The argument is hex code units, space
+# separated and most significant first, so "65B0 6CE8 518C" is U+65B0 U+6CE8
+# U+518C.
+function ConvertFrom-HexString {
+    param([string]$Hex)
+    $s = ""
+    foreach ($t in @($Hex -split '\s+')) {
+        if ($t) { $s = $s + [char][Convert]::ToInt32($t, 16) }
+    }
+    return $s
+}
+
+# The eNSP base device VMs (AR_Base and the four WLAN_*_Base) have to be
+# registered with the VirtualBox that eNSP talks to, and each needs its
+# <VM>_Link snapshot: eNSP clonevm's from that snapshot, and a base disk without
+# one fails with "does not have any snapshots" -- the device then reports error
+# 40 and never starts. register_vms.ps1 scans for both and fixes only what is
+# missing, without touching a registration that is already correct.
+#
+# WHO RUNS THIS MATTERS, and elevated is the wrong instinct. The registration is
+# written into the CURRENT account's %USERPROFILE%\.VirtualBox\VirtualBox.xml,
+# so this has to run as the account that normally starts eNSP. Repairing from an
+# administrator account writes into that account's own VirtualBox.xml, and eNSP
+# -- still running as the user -- never sees the registration. The result is
+# indistinguishable from "the repair did nothing", which is the most expensive
+# way for this step to be wrong. register_vms.ps1 deliberately does not elevate
+# either, for the same reason.
+#
+# The paths are passed through only when the caller supplied them: the child's
+# own detection looks in the uninstall registry keys, which this function does
+# not, and replacing that with a guess would be worse than letting it search.
+function Repair-RegisterBaseVms {
+    param([string]$VBoxDir = "", [string]$EnspDir = "", [switch]$DryRun)
+
+    $step = "base VM registration"
+
+    $child = ""
+    if ($fixScriptDir) { $child = Join-Path $fixScriptDir "register_vms.ps1" }
+    if ((-not $child) -or (-not (Test-Path -LiteralPath $child))) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "register_vms.ps1 is missing next to fix.ps1; the install bundle is incomplete"
+    }
+
+    # -Check is the child's own plan-only switch: it scans and reports the same
+    # counters without registering anything, so a dry run still costs one call
+    # and still changes nothing.
+    $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $child)
+    if ($DryRun) { $psArgs += "-Check" }
+    if ($EnspDir) { $psArgs += @("-EnspDir", $EnspDir) }
+    if ($VBoxDir) { $psArgs += @("-VBoxDir", $VBoxDir) }
+    $cmds = @(Format-CommandLine -Exe "powershell" -Arguments $psArgs)
+
+    $run = Invoke-Native -Exe "powershell" -Arguments $psArgs
+    $text = (@($run.Output) -join "`n")
+    $extra = @{ ExitCode = $run.ExitCode; Output = @($run.Output) }
+
+    # A non-zero exit is a precondition failure, not a partial repair: the child
+    # exits 1 only when it cannot locate eNSP or VBoxManage.exe, and the real run
+    # would fail on the same missing thing. The last few lines are carried in the
+    # reason because that is where the child says which one it could not find.
+    if ((-not $run.Ok) -or ($run.ExitCode -ne 0)) {
+        $tail = @($run.Output | Where-Object { "$_".Trim() } | Select-Object -Last 3)
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Commands $cmds -Extra $extra `
+            -Reason ("register_vms.ps1 exited " + $run.ExitCode + ": " + ($tail -join " | "))
+    }
+
+    # The child prints one summary line of six counters. Each count is followed
+    # by a comma, and the label is matched WITH that comma on purpose: the per-VM
+    # progress lines mention registration too ("... re-registered -> ..."), and
+    # without the delimiter one of those could be read as the summary. A -Check
+    # run labels the first counter differently from a real run, so both spellings
+    # are listed -- it is the same counter either way.
+    $lblNew   = ConvertFrom-HexString "65B0 6CE8 518C"       # registered (real run)
+    $lblPend  = ConvertFrom-HexString "5F85 6CE8 518C"       # to register (-Check run)
+    $lblRereg = ConvertFrom-HexString "91CD 6CE8 518C"       # re-registered
+    $lblSnap  = ConvertFrom-HexString "8865 5EFA 5FEB 7167"  # link snapshots created
+
+    $mReg   = [regex]::Match($text, ("(?:" + $lblNew + "|" + $lblPend + ")\s*([0-9]+)\s*,"))
+    $mRereg = [regex]::Match($text, ($lblRereg + "\s*([0-9]+)\s*,"))
+    $mSnap  = [regex]::Match($text, ($lblSnap + "\s*([0-9]+)\s*,"))
+    $readable = ($mReg.Success -and $mRereg.Success -and $mSnap.Success)
+    $extra["CountsRead"] = $readable
+    if ($readable) {
+        $extra["Registered"]   = [int]$mReg.Groups[1].Value
+        $extra["Reregistered"] = [int]$mRereg.Groups[1].Value
+        $extra["Snapshots"]    = [int]$mSnap.Groups[1].Value
+    }
+
+    # "Nothing to do" is read from the child's counters, never guessed. All three
+    # zero is the only state reported as Skipped; an unreadable summary is
+    # reported as a change instead, because "nothing was needed" is a claim the
+    # output did not make, and a caller that believed it would stop looking at a
+    # machine where a registration really was written. Unreadable is reachable --
+    # the labels are Chinese and a console code page that cannot represent them
+    # delivers '?' -- so the direction is chosen deliberately: over-reporting a
+    # change only changes a sentence, while under-reporting one hides the repair.
+    if ($readable -and ($extra["Registered"] -eq 0) -and ($extra["Reregistered"] -eq 0) -and ($extra["Snapshots"] -eq 0)) {
+        if ($DryRun) { Write-DryRunLine $step "already registered, with the link snapshots in place; nothing to do" }
+        return New-RepairResult -Ok $true -Skipped $true -DryRun ([bool]$DryRun) -Commands $cmds -Extra $extra
+    }
+
+    # A dry run still returns Changed = false. The counters say what the real run
+    # WOULD do; this one ran -Check, so nothing was modified, and Changed means a
+    # modification actually happened.
+    if ($DryRun) {
+        Write-DryRunLine $step ("would run: " + $cmds[0])
+        return New-RepairResult -Ok $true -DryRun $true -Commands $cmds -Extra $extra
+    }
+    return New-RepairResult -Ok $true -Changed $true -Commands $cmds -Extra $extra
+}
+
+# Closing eNSP leaves VirtualBox background processes behind. The Linux guests
+# (the CE / CX / NE devices) finish a hard power-off slowly, and one of them can
+# crash on the way out behind a dialog nobody clicks -- each one holds 0.4-1.5 GB
+# for as long as it is left alone.
+#
+# cleanup_orphans.ps1 owns the identification and the kill. Its safety boundary
+# is what makes it callable from a repair menu: it acts only on VMs whose
+# configuration file lives under the eNSP install directory or under
+# %LOCALAPPDATA%\eNSP. A user's own VMs are skipped whether or not eNSP is
+# running, and a VM whose owner cannot be determined is skipped too -- the script
+# errs toward leaving a process alone, which is the only acceptable direction for
+# a step that ends in Stop-Process.
+#
+# -Force is passed because there is no console here to answer the script's
+# confirmation prompt: without it the child would sit waiting on a Read-Host that
+# a non-interactive parent can never satisfy.
+function Repair-KillOrphans {
+    param([switch]$DryRun)
+
+    $step = "orphan VBox processes"
+
+    $child = ""
+    if ($fixScriptDir) { $child = Join-Path $fixScriptDir "cleanup_orphans.ps1" }
+    if ((-not $child) -or (-not (Test-Path -LiteralPath $child))) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "cleanup_orphans.ps1 is missing next to fix.ps1; the install bundle is incomplete"
+    }
+
+    $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $child, "-Force")
+    $cmds = @(Format-CommandLine -Exe "powershell" -Arguments $psArgs)
+
+    # Deliberately NOT invoked on a dry run. cleanup_orphans.ps1 has no plan-only
+    # switch -- every route through it ends in Stop-Process -- so calling it here
+    # would make the "plan" the very thing a plan exists to prevent. The command
+    # line is returned instead and the caller decides what to do with it.
+    if ($DryRun) {
+        Write-DryRunLine $step ("would run: " + $cmds[0])
+        return New-RepairResult -Ok $true -DryRun $true -Commands $cmds
+    }
+
+    $run = Invoke-Native -Exe "powershell" -Arguments $psArgs
+    $text = (@($run.Output) -join "`n")
+    $extra = @{ ExitCode = $run.ExitCode; Output = @($run.Output) }
+
+    if ((-not $run.Ok) -or ($run.ExitCode -ne 0)) {
+        $tail = @($run.Output | Where-Object { "$_".Trim() } | Select-Object -Last 3)
+        return New-RepairResult -Ok $false -Commands $cmds -Extra $extra `
+            -Reason ("cleanup_orphans.ps1 exited " + $run.ExitCode + ": " + ($tail -join " | "))
+    }
+
+    # Exit 0 covers both "stopped N" and "there was nothing to stop", so the two
+    # are told apart by the final summary -- the only line the child prints that
+    # carries a "<stopped> / <total>" pair. That pair is matched as the ASCII
+    # skeleton rather than through the Chinese label in front of it, because the
+    # digits and the slash survive every console code page while the label does
+    # not. When no such line is present at all the child took one of its early
+    # exits ("no VBoxHeadless process", "nothing left to clean"), which says the
+    # same thing.
+    $m = [regex]::Match($text, '([0-9]+)\s*/\s*([0-9]+)')
+    $killed = $null
+    if ($m.Success) { $killed = [int]$m.Groups[1].Value }
+    if ($null -ne $killed) { $extra["Killed"] = $killed }
+
+    if (($null -eq $killed) -or ($killed -eq 0)) {
+        return New-RepairResult -Ok $true -Skipped $true -Commands $cmds -Extra $extra
+    }
+    return New-RepairResult -Ok $true -Changed $true -Commands $cmds -Extra $extra
+}
+
+# ===========================================================================
+# device template VRAM
+# ===========================================================================
+
+# A template whose Display VRAMSize has been lowered boots its guest with too
+# little video memory: the device prints '####' forever and never reaches a
+# prompt. checks.ps1's Test-VramTooSmall reports it; this puts the value back.
+#
+# Two traps, both already documented by the reader this shares with the
+# diagnostic, and both of them the writer's problem:
+#
+#   1. A .vbox repeats the ENTIRE <Hardware> section inside every <Snapshot>,
+#      and the snapshot blocks come FIRST. A plain "replace the first VRAMSize"
+#      therefore edits the SNAPSHOT and leaves the live configuration -- the one
+#      VirtualBox actually boots from -- untouched. The edit is confined to the
+#      block Get-LiveHardwareBlock returns for exactly that reason: a snapshot is
+#      a saved state, and rewriting it would corrupt what eNSP clones from.
+#   2. Get-LiveHardwareBlock returns the block's LINES, not its offsets, so the
+#      block is located by scanning BACKWARDS for a run of lines equal to it.
+#      Backwards because the live <Hardware> is the last one in the file, and by
+#      full equality because the closing </Hardware> tag alone also matches every
+#      snapshot's block. No match means no edit: the file is left alone.
+#
+# The value is written back as UTF-8 without a BOM, which is the form VirtualBox
+# itself writes, and the read is pinned to UTF-8 for the same reason -- so that a
+# template carrying non-ASCII text (a description, a path) round-trips instead of
+# being decoded through the ANSI code page on the way in and re-encoded on the
+# way out.
+function Repair-SetTemplateVram {
+    param([string]$TemplatePath = "", [int]$VramSize = 16, [switch]$DryRun)
+
+    $step = "template VRAM"
+
+    if (-not $TemplatePath) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason "no template given; pass -TemplatePath"
+    }
+    if (-not (Test-Path -LiteralPath $TemplatePath -PathType Leaf)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason ("template not found: " + $TemplatePath)
+    }
+    if (-not (Test-ChecksAvailable)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "checks.ps1 is not loaded, so the current value cannot be read"
+    }
+
+    # Resolved to an absolute path ONCE, because the write below goes through
+    # [System.IO.File], which resolves a relative path against the PROCESS
+    # directory -- and Set-Location does not move that. Without this, a relative
+    # -TemplatePath would be read from one place and written to another.
+    try {
+        $path = (Resolve-Path -LiteralPath $TemplatePath -ErrorAction Stop).Path
+    } catch {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason ("cannot resolve the template path: " + $_.Exception.Message)
+    }
+
+    $lines = @()
+    try {
+        $lines = @(Get-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop)
+    } catch {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason ("cannot read the template: " + $_.Exception.Message)
+    }
+    if ($lines.Count -eq 0) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason ("the template is empty: " + $path)
+    }
+
+    $current = Get-VramSizeFromTemplate -Lines $lines
+    if ($null -eq $current) {
+        # A value that could not be read is not one to overwrite. The parser
+        # returns $null for a template with no VRAMSize element at all, and
+        # inserting one where the schema does not currently have it is a
+        # different repair from raising a number that is already there.
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason ("cannot read the live Display VRAMSize from " + $path + "; leaving the file untouched")
+    }
+
+    # There is no command line for "change one attribute in this file", so the
+    # entry describes the edit precisely enough to be made by hand: the file, the
+    # block it belongs to, and both values. Naming the block is not decoration --
+    # without it the instruction reads as the snapshot's copy, which comes first.
+    $cmds = @("edit " + $path + " : live <Hardware> Display VRAMSize " + $current + " -> " + $VramSize + " (leave every <Snapshot> copy alone)")
+    $extra = @{ Path = $path; From = $current; To = $VramSize }
+    $backup = $path + ".vrambak"
+    $extra["Backup"] = $backup
+    $extra["BackupCreated"] = $false
+
+    if ($current -ge $VramSize) {
+        # No command is returned for a step that has nothing to do: a caller
+        # collects Commands into the plan it shows the user, and listing an edit
+        # that will not happen reads as work still to be done.
+        if ($DryRun) { Write-DryRunLine $step ("Display VRAMSize is already " + $current + "; nothing to do") }
+        return New-RepairResult -Ok $true -Skipped $true -DryRun ([bool]$DryRun) -Extra $extra
+    }
+
+    $live = @(Get-LiveHardwareBlock -Lines $lines)
+    $last = $live.Count - 1
+    $start = -1
+    if ($last -ge 0) {
+        for ($i = $lines.Count - 1; $i -ge $last; $i--) {
+            if ("$($lines[$i])" -cne "$($live[$last])") { continue }
+            $s = $i - $last
+            if ($s -lt 0) { continue }
+            $same = $true
+            for ($k = 0; $k -le $last; $k++) {
+                if ("$($lines[$s + $k])" -cne "$($live[$k])") { $same = $false; break }
+            }
+            if ($same) { $start = $s; break }
+        }
+    }
+    if ($start -lt 0) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Commands $cmds -Extra $extra `
+            -Reason ("the live <Hardware> block could not be located in " + $path + "; leaving it untouched")
+    }
+
+    # Only the FIRST VRAMSize in the block is rewritten, mirroring the reader:
+    # Get-VramSizeFromTemplate returns the first one it finds, so writing any
+    # other would leave the number the diagnostic reports exactly as it was.
+    $old = 'VRAMSize="' + $current + '"'
+    $new = 'VRAMSize="' + $VramSize + '"'
+    $updated = @()
+    $done = $false
+    foreach ($l in $live) {
+        if ((-not $done) -and ("$l".Contains($old))) {
+            $updated += "$l".Replace($old, $new)
+            $done = $true
+        } else {
+            $updated += $l
+        }
+    }
+    if (-not $done) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Commands $cmds -Extra $extra `
+            -Reason ("the live block does not spell " + $old + "; leaving the file untouched")
+    }
+
+    if ($DryRun) {
+        Write-DryRunLine $step ("would set Display VRAMSize " + $current + " -> " + $VramSize + " in " + $path)
+        return New-RepairResult -Ok $true -DryRun $true -Commands $cmds -Extra $extra
+    }
+
+    # The backup is taken before the first change and never overwritten. A second
+    # run reads a value that is no longer the original, so re-copying would
+    # replace the one file that still holds it with a copy of the repair -- which
+    # is the only way back once the live value has been raised.
+    if (-not (Test-Path -LiteralPath $backup)) {
+        try {
+            Copy-Item -LiteralPath $path -Destination $backup -ErrorAction Stop
+            $extra["BackupCreated"] = $true
+        } catch {
+            return New-RepairResult -Ok $false -Commands $cmds -Extra $extra `
+                -Reason ("cannot write the backup " + $backup + ": " + $_.Exception.Message)
+        }
+    }
+
+    $out = @()
+    if ($start -gt 0) { $out += @($lines[0..($start - 1)]) }
+    $out += $updated
+    if (($start + $last + 1) -le ($lines.Count - 1)) { $out += @($lines[($start + $last + 1)..($lines.Count - 1)]) }
+
+    try {
+        [System.IO.File]::WriteAllLines($path, $out, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        return New-RepairResult -Ok $false -Commands $cmds -Extra $extra `
+            -Reason ("cannot write the template: " + $_.Exception.Message + " (the original is at " + $backup + ")")
+    }
+
+    return New-RepairResult -Ok $true -Changed $true -Commands $cmds -Extra $extra
+}

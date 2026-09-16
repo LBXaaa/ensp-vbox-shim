@@ -607,4 +607,34 @@ $bsQuote = [string][char]0x5C + [string][char]0x22
 $bsQuoteCount = ([regex]::Matches((Get-Content -Path $diagPath -Raw), [regex]::Escape($bsQuote))).Count
 Assert-Equal $bsQuoteCount 0 "report verbs: no backslash-escaped quote survives in diag.ps1"
 
+Write-Host "=== Task 12: the menu's repair primitives exist ==="
+
+# The menu refers to repair primitives by NAME, as a string inside Steps. A typo
+# or a renamed function therefore fails at the worst possible moment: when a
+# user picks that item on a machine that is already broken, and the only thing
+# they see is "[跳过] 修复原语缺失". Neither file's syntax check can catch it --
+# both parse perfectly, and the string is just data.
+#
+# This walks diag.ps1 for Fn = "..." and requires each name to be defined in
+# fix.ps1. It is the guard that would have caught Repair-BounceAdapter sitting
+# unused for a whole release while the diagnostic had a finding it applied to.
+$fixPath = Join-Path $repoRoot "installer\fix.ps1"
+$stepFns = @()
+if ((Test-Path $diagPath) -and (Test-Path $fixPath)) {
+    $stepFns = @([regex]::Matches((Get-Content -Path $diagPath -Raw), 'Fn\s*=\s*"([A-Za-z][\w-]*)"') |
+                 ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+}
+Assert-True ($stepFns.Count -gt 0) "repair steps: diag.ps1 names at least one repair primitive"
+
+$fixText = ""
+if (Test-Path $fixPath) { $fixText = Get-Content -Path $fixPath -Raw }
+$missingFns = @()
+foreach ($fn in $stepFns) {
+    if ($fixText -notmatch ('(?m)^function\s+' + [regex]::Escape($fn) + '\b')) { $missingFns += $fn }
+}
+if ($missingFns.Count -gt 0) {
+    $missingFns | ForEach-Object { Write-Host ("        not defined in fix.ps1: " + $_) -ForegroundColor Red }
+}
+Assert-Equal $missingFns.Count 0 "repair steps: every Fn named by the menu exists in fix.ps1"
+
 Complete-TestRun
