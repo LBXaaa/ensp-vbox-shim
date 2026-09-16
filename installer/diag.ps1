@@ -962,38 +962,63 @@ function Read-RepairConfirm {
     Write-Host ""
 
     if (-not $Tui) {
-        # 降级路径沿用原来的问法(输入 YES),不为了统一而引入第二种约定。
-        Write-Host -NoNewline "  确认执行?输入 YES 继续,其他任何输入都跳过这一项: "
+        # 降级路径:重定向进来的输入没有「按键」这回事,只有一整行。
+        # 空行 = 允许,其余一律跳过 —— 仍然是「默认落在跳过上」,但不必再让
+        # 人对着一个自动化场景敲 YES。
+        Write-Host -NoNewline "  确认执行?直接回车执行,输入别的跳过这一项: "
         $ans = Read-MenuLine -Redirected $InputRedirected -TimeoutMs $InputTimeoutMs -Reader $StdinReader
         if ($null -eq $ans -or $InputRedirected) { Write-Host "" }
         if ($null -eq $ans) {
             Write-Note "输入结束,跳过这一项。"
             return $false
         }
-        if ($ans.Trim() -ne "YES") {
-            Write-Note "未确认(输入不是 YES),已跳过这一项。"
+        if ($ans.Trim() -ne "") {
+            Write-Note "未确认(输入了内容),已跳过这一项。"
             return $false
         }
         return $true
     }
 
-    Write-Host -NoNewline "  确认执行?[Y] 执行 / 其他任意键跳过: "
-    $ev = $null
-    try { $ev = Read-TuiEvent } catch { $ev = @{ Kind = "eof" } }
-    Write-Host ""
-    # 决定已经拿到,把队列里剩下的按键丢掉:否则下一次选择会被上一次
-    # 多按的键替用户作答。
+    # 交互控制台:Enter 执行,Esc 跳过,其余按键一律无效。
+    #
+    # 「其余按键无效」是刻意与「其余按键跳过」区分的:跳过的意思是"我看过了,
+    # 不要",而无效只是"按错了"。把按错当成拒绝,人就得重新选一次编号才能重来;
+    # 而且手滑出两者之外任意一键(比如方向键、鼠标)都会静默取消,看起来像程序
+    # 没反应。这里循环到拿到 Enter 或 Esc 为止。
+    #
+    # 提示之前先清空输入队列 —— 由 Y 改成 Enter 之后,这一步从"锦上添花"变成了
+    # 必需:选择那一项也是按 Enter。用户如果连按两下,第二个 Enter 会留在队列里,
+    # 不清掉就会被当作对本提示的回答,等于一击确认。清掉之后,这里只认【提示出现
+    # 之后】新按下的键。
     [void](Clear-TuiInput)
+    Write-Host -NoNewline "  确认执行?[Enter] 执行 / [Esc] 跳过: "
 
-    if ((-not $ev) -or ([string]$ev.Kind -eq "eof")) {
-        Write-Note "输入结束,跳过这一项。"
-        return $false
+    while ($true) {
+        $ev = $null
+        try { $ev = Read-TuiEvent } catch { $ev = @{ Kind = "eof" } }
+
+        if ((-not $ev) -or ([string]$ev.Kind -eq "eof")) {
+            Write-Host ""
+            [void](Clear-TuiInput)
+            Write-Note "输入结束,跳过这一项。"
+            return $false
+        }
+        if ([string]$ev.Kind -ne "key") { continue }
+
+        $key = [string]$ev.Key
+        if ($key -eq "Enter") {
+            Write-Host ""
+            [void](Clear-TuiInput)
+            return $true
+        }
+        if ($key -eq "Esc") {
+            Write-Host ""
+            [void](Clear-TuiInput)
+            Write-Note "已取消,跳过这一项。"
+            return $false
+        }
+        # 其余按键:无效,继续等。
     }
-    if (([string]$ev.Kind -eq "key") -and (([string]$ev.Char -eq "Y") -or ([string]$ev.Char -eq "y"))) {
-        return $true
-    }
-    Write-Note "未确认(没有按 Y),已跳过这一项。"
-    return $false
 }
 
 # ---------------------------------------------------------------------------
@@ -1134,7 +1159,11 @@ function Show-RepairMenu {
         [object[]]$Items = @(),
         [bool]$InputRedirected = $false,
         [int]$InputTimeoutMs = 15000,
-        [object]$StdinReader = $null
+        [object]$StdinReader = $null,
+        # 由调用方提供的「重新探测」:每执行完一批修复就调一次,拿回最新的发现项。
+        # 菜单自己不知道该怎么探测,也不该知道 —— 那条路径要清缓存、要重跑
+        # VBoxManage,属于诊断层的事。
+        [scriptblock]$RefreshFindings = $null
     )
 
     $fixable = @($Items | Where-Object { ($_.Tier -eq "lossless") -or ($_.Tier -eq "confirm") })
@@ -1165,8 +1194,8 @@ function Show-RepairMenu {
     if ($fixable.Count -eq 0) {
         Write-Host ""
         Write-Note "没有发现可由本工具自动修复的问题。"
-        Write-Note "三项可修项(host-only 驱动 / 性能计数器 / 防火墙放行)本次都已满足,"
-        Write-Note "或者根本没被判定为问题 —— 菜单不列空操作,本次也不改动任何系统设置。"
+        Write-Note "本次可修的几项要么已经满足,要么根本没被判定为问题 ——"
+        Write-Note "菜单不列空操作,本次也不改动任何系统设置。"
         return
     }
 
@@ -1266,8 +1295,34 @@ function Show-RepairMenu {
             Invoke-RepairSelection -Fixable $fixable -Indices @($choice.Indices) -Tui $tuiOk `
                 -InputRedirected $InputRedirected -InputTimeoutMs $InputTimeoutMs -StdinReader $StdinReader
 
+            # 修完【必须重新探测】。
+            #
+            # 不重探的后果不是"列表有点旧",而是菜单会继续把刚修好的东西挂在上面
+            # ——用户按提示修完、回头看还是那几条,能得出的结论只有"修了没用"。
+            # 而"看起来修了没用"正是本项目花了最多笔墨去避免的一种误导(见 fix.ps1
+            # 头部关于步骤顺序的那段)。列表是本次探测的结论,不是一份历史记录。
+            if ($RefreshFindings) {
+                Write-Host ""
+                $refreshed = $false
+                try {
+                    $fresh = @(& $RefreshFindings)
+                    $fixable = @($fresh | Where-Object { ($_.Tier -eq "lossless") -or ($_.Tier -eq "confirm") })
+                    $manual  = @($fresh | Where-Object { $_.Tier -eq "manual" })
+                    $refreshed = $true
+                } catch {
+                    Write-Note ("重新探测失败,下面仍显示修复前的列表: " + $_.Exception.Message)
+                }
+                if ($refreshed) {
+                    if ($fixable.Count -eq 0) {
+                        Write-Note "已重新探测:本次能修的问题都已处理完,没有剩下的了。"
+                        return
+                    }
+                    Write-Note ("已重新探测:还有 " + $fixable.Count + " 个问题在下面。")
+                }
+            }
+
             Write-Host ""
-            Write-Note "可继续选择其它编号,或按 Esc / 0 退出。修完重跑一次环境检查即可核对结果。"
+            Write-Note "可继续选择其它编号,或按 Esc / 0 退出。"
         }
     } finally {
         # 模式还原只有这一条路是可靠的:正常退出、中途抛错、用户 Ctrl+C 都走它。
@@ -1357,7 +1412,15 @@ function Invoke-RepairMenuEntry {
 
         # 修复步骤连同各自的参数都挂在 finding 上(见 Get-RepairFindings),
         # 所以菜单不需要 VBoxDir / EnspDir。
-        Show-RepairMenu -Items $items -InputRedirected $redirected -InputTimeoutMs 15000 -StdinReader $stdinReader
+        #
+        # 但这个重探回调需要:它得能自己再跑一遍完整探测。注意顺序 ——
+        # 先清缓存再探,否则拿回的还是修复前那份(见 Reset-DiagFactCaches)。
+        $refreshBlock = {
+            Reset-DiagFactCaches
+            @(Get-RepairFindings -VBoxDir $VBoxDir -EnspDir $EnspDir)
+        }
+        Show-RepairMenu -Items $items -InputRedirected $redirected -InputTimeoutMs 15000 `
+            -StdinReader $stdinReader -RefreshFindings $refreshBlock
     } catch {
         Write-Host ""
         Write-Host ("[提示] 修复菜单自身出错,已中止交互(报告与已完成的改动都不受影响): " + $_.Exception.Message)
@@ -2466,6 +2529,17 @@ function Get-EnspOrphanFacts {
     }
     $script:OrphanSheet = $sheet
     return $sheet
+}
+
+# 清掉上面两份事实表的缓存。
+#
+# 这个函数存在的唯一理由是修复菜单:报告是一次性产出,缓存对它只有好处;
+# 而菜单要在一批修复【之后】重新探测,缓存此时正好挡在最前面 —— 不清掉的话
+# 重探拿回来的还是修复前那份,菜单会继续列已经修好的项。加缓存和加重探是两件
+# 互相拉扯的事,必须显式地在这里对上,不能靠"反正每次都会重跑"的错觉。
+function Reset-DiagFactCaches {
+    $script:BaseVmSheet = $null
+    $script:OrphanSheet = $null
 }
 
 # ===========================================================================

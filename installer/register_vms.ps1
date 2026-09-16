@@ -133,21 +133,45 @@ function Norm([string]$p){
     return $s.TrimEnd('\').ToLower()
 }
 
+# 这两个查询都会在【VM 未注册】时失败 —— 而"VM 未注册"恰恰是本脚本存在的理由,
+# -Check 模式更是专门用来报这个的。所以它们必须容忍失败:
+#
+# 原生 exe 往 stderr 写东西时,$ErrorActionPreference=Stop 会把它包成
+# NativeCommandError 抛出并【中断整个脚本】,2>$null 也拦不住。实测:
+# 对未注册的 VM 跑 -Check,脚本死在 showvminfo 上,连"未注册 -> 将注册"
+# 那行提示都没来得及打出来。
+#
+# 这与下面 Ensure-LinkSnapshot 里对 snapshot take 的处理是同一个坑,那里早有注释。
+# 之前只在 take 那一处打了补丁,漏了这两处 —— 于是 -Check 在最需要它的场景下
+# 必然崩,而普通(非 -Check)模式不会:那条路上 registervm 已经先跑过了。
+#
+# 局部降级为 Continue,并各自 try 兜底;失败返回 ""/$false,由调用方决定怎么说。
+
 # VM 当前电源状态(powermachinereadable 的 VMState),取不到返回 ""
 function Get-VMState($vbm,[string]$vm){
-    foreach($line in (& $vbm showvminfo "$vm" --machinereadable 2>$null)){
-        if($line -match '^VMState="([^"]+)"'){ return $Matches[1] }
-    }
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        foreach($line in (& $vbm showvminfo "$vm" --machinereadable 2>$null)){
+            if($line -match '^VMState="([^"]+)"'){ return $Matches[1] }
+        }
+    } catch { }
+    finally { $ErrorActionPreference = $old }
     return ""
 }
 
 # 该 VM 是否已存在指定名字的快照
 function Has-Snapshot($vbm,[string]$vm,[string]$snapName){
-    $out = & $vbm snapshot "$vm" list --machinereadable 2>$null
-    if($LASTEXITCODE -ne 0){ return $false }   # "does not have any snapshots" -> 非0
-    foreach($line in $out){
-        if($line -match '^SnapshotName(-[0-9]+)?="([^"]+)"' -and $Matches[2] -eq $snapName){ return $true }
-    }
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $out = & $vbm snapshot "$vm" list --machinereadable 2>$null
+        if($LASTEXITCODE -ne 0){ return $false }   # "does not have any snapshots" -> 非0
+        foreach($line in $out){
+            if($line -match '^SnapshotName(-[0-9]+)?="([^"]+)"' -and $Matches[2] -eq $snapName){ return $true }
+        }
+    } catch { }
+    finally { $ErrorActionPreference = $old }
     return $false
 }
 
