@@ -605,11 +605,16 @@ function Write-EnvReport {
 # 因此这里只做信息提示(启动会慢),不当故障、不劝用户关 Hyper-V。
 function Write-EnvReportHyperV {
     try {
-        $hvPresent = $false
-        $f = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Hypervisor -ErrorAction SilentlyContinue
-        if ($f -and $f.State -eq "Enabled") { $hvPresent = $true }
+        # 判据是「hypervisor 现在是否真的在跑」,不是「Hyper-V 功能装没装」。
+        # 前者才是决定 VBox 拿不拿得到原生 VT-x 的事实,而且 Win32_ComputerSystem
+        # 的 HypervisorPresent 免提权、不经过 DISM —— 本机的 DISM 会挂死
+        # (TrustedInstaller 卡住,Get-WindowsOptionalFeature 十分钟不返回),
+        # 原来那两次调用会让整个 -Check 永远跑不完。
+        $cs = $null
+        try { $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop } catch { }
+        $hvPresent = [bool]($cs -and $cs.HypervisorPresent)
         $hvLaunch = (bcdedit /enum "{current}" 2>$null | Select-String -Pattern "hypervisorlaunchtype")
-        Write-Info ("Hyper-V特性 : {0}" -f $(if ($hvPresent) {"已启用"} else {"未启用"}))
+        Write-Info ("Hyper-V特性 : {0}" -f $(if ($hvPresent) {"已启用(hypervisor 正在运行)"} else {"未启用(未检测到运行中的 hypervisor)"}))
         if ($hvLaunch) { Write-Info ("启动类型    : {0}" -f ($hvLaunch -replace '\s+',' ').Trim()) }
         if ($hvPresent -or ($hvLaunch -match "Auto")) {
             Write-Info "Hyper-V 在跑,VBox 7.x 走 WHP 后端运行(VBox 5 与 Hyper-V 冲突,7.x 靠 WHP 共存)。"
@@ -620,10 +625,15 @@ function Write-EnvReportHyperV {
         if ($hvci -and $hvci.Enabled -eq 1) {
             Write-Info "内存完整性(HVCI)已开,同样拉起 hypervisor → 走 WHP 后端(慢,非故障)。"
         }
-        # WSL2 / 虚拟机平台
-        $vmp = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -ErrorAction SilentlyContinue
-        if ($vmp -and $vmp.State -eq "Enabled") {
-            Write-Info "虚拟机平台  : 已启用(WSL2/WSA/沙盒会用,同样经 WHP 后端,正常)"
+        # WSL2 / 虚拟机平台 —— 原来问的是 DISM 的功能状态,同样会挂死,已去掉。
+        # 这里退一步,只报「Hyper-V 虚拟交换机在不在」:它是那些组件装载后会留下的
+        # 系统事实,Get-NetAdapter 免提权、不经过 DISM。它并不等于「虚拟机平台功能
+        # 已启用」(WSL2 的 vEthernet 未必出现在这张表里),所以只声明探测到的东西,
+        # 探测不到就不打印,不写「未启用」这种会误导的结论。
+        $vsw = @()
+        try { $vsw = @(Get-NetAdapter -ErrorAction Stop | Where-Object { $_.InterfaceDescription -like "*Hyper-V Virtual Ethernet Adapter*" }) } catch { }
+        if ($vsw.Count -gt 0) {
+            Write-Info ("虚拟化组件  : 检测到 {0} 个 Hyper-V 虚拟交换机(WSL2/WSA/沙盒会用,同样经 WHP 后端,正常)" -f $vsw.Count)
         }
     } catch { Write-Warn "Hyper-V : 检测失败 ($($_.Exception.Message))" }
 }
@@ -648,12 +658,15 @@ function Write-EnvReportNested {
             Write-Info "客户机为 Win11(build $build)→ VBox 自动回退 NEM 后端,无此根因,无需处理。"
             return
         }
-        $whp = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -ErrorAction SilentlyContinue
-        $whpOn = ($whp -and $whp.State -eq "Enabled")
-        if ($whpOn) {
-            Write-Info ("客户机为 Win10(build {0}),但 WHP 已启用 → VBox 走 NEM 后端,正常。" -f $build)
+        # 判据同样是「客户机里有没有 hypervisor 在跑」,而不是「WHP 功能装没装」。
+        # 有 hypervisor 占着 VT-x,VBox 就拿不到原生 VT-x,只能走回退后端(NEM/WHP),
+        # 上面那个 panic 根因也就不成立 —— 这正是原判据想表达的意思,只是换成了直接
+        # 测量。$cs 在本函数开头已取,复用即可:不额外跑一次 CIM,更不碰 DISM。
+        $hvOn = [bool]$cs.HypervisorPresent
+        if ($hvOn) {
+            Write-Info ("客户机为 Win10(build {0}),但客户机内已有 hypervisor 在跑 → VBox 拿不到原生 VT-x,走回退后端,正常。" -f $build)
         } else {
-            Write-Warn ("客户机为 Win10(build {0})且 WHP 未启用 —— 嵌套下 VBox 会走原生 VT-x," -f $build)
+            Write-Warn ("客户机为 Win10(build {0})且客户机内没有 hypervisor 在跑 —— 嵌套下 VBox 会走原生 VT-x," -f $build)
             Write-Warn "  AR 可能卡满屏 #### / 内核 panic(error 40)。修复(客户机内,需管理员,装完【必须重启】):"
             Write-Warn "  Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All"
             Write-Warn "  (若宿主是 Hyper-V,还需先在宿主对本 VM: Set-VMProcessor -ExposeVirtualizationExtensions `$true)"
