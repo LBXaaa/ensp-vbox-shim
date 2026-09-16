@@ -99,6 +99,25 @@ $fwLower = @(
 )
 Assert-True (Parse-FirewallRulesForEnsp -Lines $fwLower).HasAllowRule "lowercase rule name matches"
 
+# The profile the matching rule covers must survive into the result. Without it
+# the check can only say "an allow rule exists", which is green even when that
+# rule covers Public only and the machine is domain-joined.
+$fwProfiled = @(
+    "DisplayName  : eNSP_VBoxServer",
+    "Enabled      : True",
+    "Direction    : Inbound",
+    "Action       : Allow",
+    "Profile      : Public"
+)
+$fwP = Parse-FirewallRulesForEnsp -Lines $fwProfiled
+Assert-True  $fwP.HasAllowRule "profiled block still satisfies the allow-rule test"
+Assert-Match $fwP.Profile "Public" "profile of the matching rule is reported"
+
+# A block with no Profile line (older text, or a fixture that predates the
+# field) must read as unknown rather than as a crash or as "covers nothing".
+Assert-Equal (Parse-FirewallRulesForEnsp -Lines $fwLines).Profile "" "missing profile line reads as unknown"
+Assert-Equal $fwNone.Profile "" "no allow rule => profile empty"
+
 Write-Host "=== Task 5: backend split ==="
 
 $dirs = @{
@@ -125,6 +144,28 @@ Assert-True  $c.Conflict    "conflict flagged"
 $c1 = Compare-SubnetOwners -Interfaces @(@{ Name = "Ethernet 11"; IPv4 = "192.168.56.1" }) -Prefix "192.168.56."
 Assert-False $c1.Conflict "single owner is fine"
 
+# Raw Get-NetIPAddress shape: InterfaceAlias / IPAddress, plus a .Name property
+# that is mojibake. The alias must win over Name, and the address must be found
+# -- feeding this shape in unchanged used to report zero owners on a machine
+# that really did have an adapter on the subnet.
+$rawIfaces = @(
+    [pscustomobject]@{ InterfaceAlias = "Ethernet 11"; IPAddress = "192.168.56.1"; Name = "!!mojibake!!" }
+)
+$cr = Compare-SubnetOwners -Interfaces $rawIfaces -Prefix "192.168.56."
+Assert-Equal $cr.OwnerCount 1 "raw shape: owner is found"
+Assert-Equal $cr.Owners[0] "Ethernet 11" "raw shape: alias wins over mojibake Name"
+Assert-False $cr.Conflict "raw shape: single owner is fine"
+
+# Same shape, with an out-of-subnet adapter that must not be counted.
+$rawTwo = @(
+    [pscustomobject]@{ InterfaceAlias = "Ethernet 11"; IPAddress = "192.168.56.1"; Name = "!!mojibake!!" },
+    [pscustomobject]@{ InterfaceAlias = "VMnet1"; IPAddress = "192.168.56.1"; Name = "!!mojibake!!" },
+    [pscustomobject]@{ InterfaceAlias = "Wi-Fi"; IPAddress = "10.0.0.5"; Name = "!!mojibake!!" }
+)
+$cr2 = Compare-SubnetOwners -Interfaces $rawTwo -Prefix "192.168.56."
+Assert-Equal $cr2.OwnerCount 2 "raw shape: out-of-subnet adapter excluded"
+Assert-True  $cr2.Conflict "raw shape: conflict flagged"
+
 # eNSP version vs. the devices actually installed.
 $v = Test-EnspVersionAgainstDevices -EnspVersion "1.2.00.500" -HasCeDevice $true -HasCx200 $true
 Assert-True  $v.CeNeedsNewer  "1.2.00.500 is too old for CE"
@@ -137,6 +178,14 @@ Assert-False $v2.CeNeedsNewer "1.3.00.100 is fine for CE"
 Assert-Equal (Get-VramSizeFromTemplate -Lines @("<Display VRAMSize=`"9`"/>")) 9 "vram parsed"
 Assert-True  (Test-VramTooSmall -VramSize 1) "1MB flagged"
 Assert-False (Test-VramTooSmall -VramSize 9) "9MB fine"
+
+# A template with no VRAMSize element yields $null, which is "could not read",
+# not "too small". Reporting it as a defect would be inventing one.
+Assert-Equal (Get-VramSizeFromTemplate -Lines @("<Display/>")) $null "absent vram element parses to null"
+Assert-False (Test-VramTooSmall -VramSize $null) "null vram is not flagged"
+Assert-False (Test-VramTooSmall -VramSize "") "empty vram is not flagged"
+Assert-True  (Test-VramTooSmall -VramSize "8") "string 8 is still flagged"
+Assert-False (Test-VramTooSmall -VramSize "10") "string 10 is not flagged (numeric, not textual compare)"
 
 # WinPcap vs Npcap must be distinguished, not merely "installed".
 $p = ClassifyPacketDriver -WinPcapVersion "4.1.3" -NpcapPresent $true

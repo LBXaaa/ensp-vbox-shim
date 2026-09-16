@@ -212,6 +212,18 @@ function Test-PerfCountersFunctional {
 # The literal below matches a lowercase rule name (observed as
 # "ensp_vboxserver") only because -match is case-insensitive by default.
 # Do not switch to -cmatch without normalising case first.
+#
+# HasAllowRule alone is not enough to call the requirement met. A rule is only
+# effective on the profiles it covers, and Huawei's FAQ asks for Domain /
+# Private / Public. A Public-only rule on a domain-joined machine is enabled,
+# allows, and still does not apply -- so the matching block's Profile is
+# returned alongside the verdict and the caller decides whether the covered
+# set is good enough. This parser cannot decide it: which profile is ACTIVE
+# depends on the machine, not on the rule text.
+#
+# Profile is "" when the text carried no Profile line at all (older callers,
+# or a fixture that predates this field); that means "unknown", NOT "covers
+# nothing".
 function Parse-FirewallRulesForEnsp {
     param([string[]]$Lines)
     $text = ($Lines -join "`n")
@@ -220,10 +232,12 @@ function Parse-FirewallRulesForEnsp {
         if ($b -match '(?m)^DisplayName\s*:\s*.*eNSP_VBoxServer' -and
             $b -match '(?m)^Enabled\s*:\s*True' -and
             $b -match '(?m)^Action\s*:\s*Allow') {
-            return [pscustomobject]@{ HasAllowRule = $true }
+            $profile = ""
+            if ($b -match '(?m)^Profile\s*:\s*(.+?)\s*$') { $profile = $Matches[1] }
+            return [pscustomobject]@{ HasAllowRule = $true; Profile = $profile }
         }
     }
-    return [pscustomobject]@{ HasAllowRule = $false }
+    return [pscustomobject]@{ HasAllowRule = $false; Profile = "" }
 }
 
 # --- eNSP server ports -----------------------------------------------------
@@ -279,12 +293,63 @@ function Get-DeviceBackendProbe {
 # A VPN or VMware VMnet adapter holding an address in the same subnet breaks
 # device connectivity: traffic to 192.168.56.1 gets routed into the wrong
 # adapter. eNSP's own resources hard-code dest:192.168.56.1.
+
+# Reads one named field out of an interface record regardless of how that
+# record is shaped, trying the names in order and returning "" when none of
+# them carries a value.
+#
+# Two record shapes have to be served, and neither is exotic:
+#   - [pscustomobject] { Name, IPv4 }        -- hand-built, or projected
+#   - raw Get-NetIPAddress                   -- { InterfaceAlias, IPAddress }
+# Presence is tested with PSObject.Properties rather than `-ne $null` so that a
+# property that exists but holds $null takes the same path as one that is
+# absent, which is what lets the caller simply move on to the next name.
+#
+# Hashtables are a third shape and need their own probe: a Hashtable does NOT
+# surface its keys through PSObject.Properties (it reports the Hashtable type's
+# own members instead), so a Properties-only read would silently see every
+# hashtable record as empty. Callers do pass hashtable literals, so the
+# dictionary is checked separately.
+function Get-InterfaceField {
+    param([object]$Interface, [string[]]$Names)
+    if ($null -eq $Interface) { return "" }
+    foreach ($n in $Names) {
+        $prop = $Interface.PSObject.Properties[$n]
+        if ($null -ne $prop) { return [string]$prop.Value }
+        if (($Interface -is [System.Collections.IDictionary]) -and $Interface.Contains($n)) {
+            return [string]$Interface[$n]
+        }
+    }
+    return ""
+}
+
+# Accepted record shapes, and why the name has to be resolved so carefully:
+#   address: IPv4 if present, else IPAddress
+#   name   : InterfaceAlias if present, else Name
+#
+# The name order is the counter-intuitive half. A raw Get-NetIPAddress object
+# DOES carry a .Name property, so "prefer Name" looks safe and is not: on a
+# non-English Windows .Name is mojibake (observed on this machine as
+# ';C<8;@B8?@8;55><55;55;' rather than the adapter alias), while the real
+# connection name is in .InterfaceAlias. Preferring Name would therefore print
+# unreadable text in a report that is supposed to be read by a human.
+# InterfaceAlias must win whenever the object has it.
+#
+# Getting the address wrong is worse than a cosmetic bug: feeding raw
+# Get-NetIPAddress output to a parser that only understood { Name, IPv4 }
+# produced OwnerCount = 0 on a machine where an adapter genuinely held
+# 192.168.56.1 -- a false all-clear on a conflict check, which is worse than
+# having no check at all.
 function Compare-SubnetOwners {
     param([object[]]$Interfaces, [string]$Prefix)
-    $owners = @($Interfaces | Where-Object { $_.IPv4 -like ($Prefix + "*") })
+    $owners = @($Interfaces | Where-Object {
+        (Get-InterfaceField -Interface $_ -Names @("IPv4", "IPAddress")) -like ($Prefix + "*")
+    })
     return [pscustomobject]@{
         OwnerCount = $owners.Count
-        Owners     = @($owners | ForEach-Object { $_.Name })
+        Owners     = @($owners | ForEach-Object {
+            Get-InterfaceField -Interface $_ -Names @("InterfaceAlias", "Name")
+        })
         Conflict   = ($owners.Count -gt 1)
     }
 }
@@ -328,9 +393,21 @@ function Get-VramSizeFromTemplate {
     return $null
 }
 
+# The parameter is deliberately UNTYPED. With `param([int]$VramSize)` the
+# binder coerces $null to 0 before the body ever runs, and 0 < 9, so a template
+# that has no VRAMSize element at all -- Get-VramSizeFromTemplate returns $null
+# for exactly that case -- was reported as "too small". "Could not determine"
+# is not the same finding as "too small": a probe must not invent a defect out
+# of a missing value, so an unreadable size is reported as NOT too small and the
+# caller decides what to say about the $null. The cast is moved into the body,
+# where it happens only after the guard, and is written explicitly because
+# `[int]$V -lt 9` is not the same expression as `([int]$V) -lt 9` -- and without
+# the cast a string operand would compare as text ("10" -lt 9 is True).
 function Test-VramTooSmall {
-    param([int]$VramSize)
-    return ($VramSize -lt 9)
+    param($VramSize)
+    if ($null -eq $VramSize) { return $false }
+    if ("$VramSize" -eq "")  { return $false }
+    return (([int]$VramSize) -lt 9)
 }
 
 # --- packet capture driver -------------------------------------------------
@@ -353,6 +430,11 @@ function ClassifyPacketDriver {
 # Taking Format-List output directly would make the "Enabled" field's spelling
 # depend on the OS display language; synthesising it from the enum keeps it
 # stable. The tested parser then consumes this text.
+#
+# Profile is emitted because a rule that does not cover the active profile is
+# not an effective allow rule. Without it the parser could only ever say "an
+# enabled allow rule exists" -- true, and useless on a domain-joined machine
+# whose rule covers Public only.
 function Get-FirewallRuleTextForEnsp {
     $lines = @()
     try {
@@ -364,6 +446,7 @@ function Get-FirewallRuleTextForEnsp {
             $lines += "Enabled      : " + $r.Enabled.ToString()
             $lines += "Direction    : " + $r.Direction.ToString()
             $lines += "Action       : " + $r.Action.ToString()
+            $lines += "Profile      : " + $r.Profile.ToString()
             $lines += ""
         }
     } catch { }

@@ -563,7 +563,10 @@ try {
     $fwText = @(Get-FirewallRuleTextForEnsp)
     $fw = Parse-FirewallRulesForEnsp -Lines $fwText
 
-    Write-Fact "eNSP 放行规则" $(if ($fw.HasAllowRule) { "存在(已启用 + 允许)" } else { "未找到" })
+    # 规则覆盖哪些配置文件也要报出来。「已启用 + 允许」但只覆盖 Public 的规则,
+    # 在加域机器上并不生效 —— 只报 HasAllowRule 会是假绿。
+    $fwProfileText = $(if ($fw.Profile) { $fw.Profile } else { "(未读取到)" })
+    Write-Fact "eNSP 放行规则" $(if ($fw.HasAllowRule) { "存在(已启用 + 允许), 覆盖配置文件: " + $fwProfileText } else { "未找到" })
 
     if ($fw.HasAllowRule) {
         Write-Note "  规则 eNSP_VBoxServer 存在,且处于「已启用 + 允许」状态。"
