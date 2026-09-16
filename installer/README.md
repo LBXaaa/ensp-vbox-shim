@@ -238,7 +238,9 @@ VBox 自己的安装器会把这个 CLSID 改回 Oracle 原生的 proxy/stub。�
 
 **设备启动报 error 40 / 起不来** —— 先看安装日志(`%ProgramData%\ensp-vbox-shim\install.log`)开头的**环境检测**段,或重跑一次 `-Check`。installer 覆盖的几层成因都在那里:`VBox\x86\` 缺 x86 VCRT(`0x800700C1`)、`vboxserver\` 写权限不足(`VERR_FILE_NOT_FOUND`)、版本伪装未写入。注意:**开着 Hyper-V/WSL/WSA 不是 error-40 的成因**——VBox 7.x 会走 WHP 后端正常运行,只是启动慢(见上一条),不要为此去关 Hyper-V。
 
-**升级 VirtualBox 之后报 error 40,且垫片日志全绿** —— 多半是 VirtualBox 的 **host-only 网络过滤驱动绑定失效**。看 eNSP 自己的命令日志 `eNSP\vboxserver\log\VBoxManage.log`,若出现
+**升级 VirtualBox 之后报 error 40,且垫片日志全绿** —— 多半出在 VirtualBox 的 **host-only 网络**。它有两类**独立**故障,现象相近但**修法不通用**(D1 的修法对 D2 无效),先按下面分清是哪一类。
+
+**D1:host-only 过滤驱动绑定失效(适配器还在)** —— 看 eNSP 自己的命令日志 `eNSP\vboxserver\log\VBoxManage.log`,若出现
 
 ```
 Failed to open/create the internal network
@@ -246,14 +248,35 @@ Failed to open/create the internal network
 Failed to attach the network LUN (VERR_INTNET_FLT_IF_NOT_FOUND)
 ```
 
-即可确诊。**这与垫片无关**——垫片的 `findMachine` / `clonevm` / `modifyvm` 全部成功,失败发生在随后的 `startvm`,VBox 因为建不出 host-only 网络而拒绝启动虚拟机。
+即为 D1。此时**网络连接里能看到 VirtualBox Host-Only Ethernet Adapter 这块适配器**(状态 Up),`VBoxDrvInst.exe list` 也能列出 `VBoxNetAdp6` / `VBoxNetLwf`,只是绑定的效果没了。**这与垫片无关**——垫片的 `findMachine` / `clonevm` / `modifyvm` 全部成功,失败发生在随后的 `startvm`,VBox 因为建不出 host-only 网络而拒绝启动虚拟机。
 
 修法(两步):
 
 1. 控制面板 → 网络连接 → 右键 **VirtualBox Host-Only Ethernet Adapter** → **禁用**,等几秒 → 再**启用**;
 2. 任务管理器里结束 **`VBoxSVC.exe`** 和 **`VBoxSDS.exe`**(会自动重启),然后**完全关闭并重开 eNSP**。
 
-若无效,再确认适配器属性里 **VirtualBox NDIS6 Bridged Networking Driver** 是勾选状态。**预防**:升级 VirtualBox 后,先建一台带 host-only 网卡的虚拟机启动一次验证网络栈,再开 eNSP。完整诊断记录见仓库 [`docs/troubleshooting-error40.md`](../docs/troubleshooting-error40.md) 根因 D。
+若无效,再确认适配器属性里 **VirtualBox NDIS6 Bridged Networking Driver** 是勾选状态。
+
+**D2:host-only 网络驱动包从未注册(适配器根本不存在)** —— 网络连接里**找不到** VirtualBox Host-Only Ethernet Adapter;`VBoxDrvInst.exe list` **一个 VBox 驱动包都没有**;`VBoxManage hostonlyif create` 报
+
+```
+Could not find Host Interface Networking driver! Please reinstall
+```
+
+**D1 那套「禁用→启用」在这里没有任何作用**——没有适配器可禁用,也没有绑定可刷新,必须先把驱动包装上。顺序是硬依赖:
+
+```
+VBoxDrvInst.exe install --inf-file "<VBoxDir>\drivers\network\netadp6\VBoxNetAdp6.inf"
+netcfg.exe -v -l "<VBoxDir>\drivers\network\netlwf\VBoxNetLwf.inf" -c s -i oracle_VBoxNetLwf
+```
+
+第 2 条只能用 `netcfg.exe`,换成 `VBoxDrvInst.exe` 不行——对 NDIS 过滤驱动,`VBoxDrvInst install` 只把驱动包预装进驱动库,不会创建 NetService 组件。两条都装完后**禁用→启用**一次适配器,再 `VBoxManage hostonlyif create`,配合 `ipconfig` 配地址、重建 dhcpserver。
+
+> **注意一个不报错的坑**:只装第 1 条(`netadp6`)不装第 2 条(`netlwf`)时,`hostonlyif create` **会成功**,但网卡被建成 **`VirtualBox Host-Only Ethernet Adapter #2`**。eNSP 的设备模板按**精确名字**绑定,认不出带 `#2` 的名字,症状与「驱动一个都没装」**一模一样**,看起来就像"修了没用"。补上 `netlwf` 后 `#2` 后缀会自行消失。
+
+报错消失顺序可当进度标尺:`hostonlyif create` 的 `Could not find Host Interface Networking driver!` 与 VBoxSVC 日志的 `HostWrap: ... could not be found` 在装完 `netadp6` 后消失,`VERR_INTNET_FLT_IF_NOT_FOUND` 要装完 `netlwf` 才消失。
+
+**预防**:升级或重装 VirtualBox 后,先建一台带 host-only 网卡的虚拟机启动一次验证网络栈,再开 eNSP;安装包不完整(手工解包 / 绿色部署)是 D2 的常见来源,走官方安装器可避免。完整诊断记录见仓库 [`docs/troubleshooting-error40.md`](../docs/troubleshooting-error40.md) 根因 D1 / D2。
 
 **在 Windows Sandbox / WDAG 里报 error 40** —— **不受支持,无法修复**。Windows Sandbox 通过 VSMB 共享挂载系统盘(`\Device\vmsmb\...`),而 VirtualBox 的进程加固要求 `kernel32.dll`/`ntdll.dll` 从普通磁盘卷(`\Device\HarddiskVolume`)加载,二者冲突,VM 进程在启动阶段就被加固终止(加固日志 `VBoxHardening.log` 里是 `rc=-5632` / `rc=-610`)。这是 Windows Sandbox 与 VirtualBox 的固有冲突,**非本垫片可修复**——原版 VBox 在沙箱内同样起不来。请改用普通虚拟机或物理机。
 

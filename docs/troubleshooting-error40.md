@@ -79,13 +79,15 @@
 
 ---
 
-## 根因 D:host-only 网络过滤驱动绑定失效(升级 VirtualBox 后常见)
+## 根因 D1:host-only 网络过滤驱动绑定失效(升级 VirtualBox 后常见)
+
+> host-only 网络坏掉有两类**独立**成因,本节是 **D1**(适配器还在、只是绑定失效),下节是 **D2**(驱动包从未注册、适配器根本不存在)。判别只需一句:**网络连接里看得到那块适配器就是 D1,看不到就是 D2**。**D1 的修法对 D2 无效**——D2 没有适配器可禁用、可启用,也没有绑定可刷新。
 
 **现象**:AR 一拉就报 40,进程看**一切正常**——垫片照常工作、eNSP 不崩、也不卡进度条,只是设备起不来。
 
 **根因**:VirtualBox 的 host-only 网络不是一块普通网卡,而是靠 **NDIS 过滤驱动**(7.x 里叫 `VirtualBox NDIS6 Bridged Networking Driver` / `oracle_VBoxNetLwf`)**绑定在虚拟适配器上**实现的。升级 VirtualBox、Windows 功能更新、或网卡被禁用/重命名之后,这个绑定会失效。此后 `startvm` 会在创建网络 LUN 时失败,**VBox 直接拒绝启动虚拟机** → eNSP 报 40。
 
-**辨别(三步,都不需要读懂垫片)**:
+**辨别(四步,都不需要读懂垫片)**:
 
 1. 看 eNSP 自己的命令日志 `eNSP\vboxserver\log\VBoxManage.log`,出现:
    ```
@@ -93,9 +95,10 @@
    'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter' (VERR_INTNET_FLT_IF_NOT_FOUND)
    VBoxManage.exe: error: Failed to attach the network LUN (VERR_INTNET_FLT_IF_NOT_FOUND)
    ```
-   看到 `VERR_INTNET_FLT_IF_NOT_FOUND` 即可确诊。
+   看到 `VERR_INTNET_FLT_IF_NOT_FOUND` 即可确诊是 **host-only 网络故障**;至于是 D1 还是 D2,接着看第 4 步。
 2. **垫片日志(`%ProgramData%\ensp-vbox-shim\vbox52_proxy.log`)里没有任何错误** —— `findMachine`、`clonevm`、`modifyvm` 全部成功,失败发生在随后的 `startvm`。这是与根因 A/B 最好区分的特征。
 3. **不用 eNSP 就能复现**:给任意一台 VM 接上 host-only 网卡再 `VBoxManage startvm`,报同一个错。据此可确认与 eNSP、与垫片都无关。
+4. **适配器与驱动包都在**:网络连接里能看到 **VirtualBox Host-Only Ethernet Adapter**(状态 Up),`VBoxDrvInst.exe list` 里**能列出** `VBoxNetAdp6` 与 `VBoxNetLwf`。若这块适配器根本不存在、`VBoxDrvInst.exe list` 一个 VBox 驱动包都没有,那是 **D2**,见下节。
 
 **修复**(两步,均可在本机直接做):
 
@@ -108,10 +111,71 @@
 > 若第 1 步无效,再检查适配器的绑定:适配器属性里
 > **VirtualBox NDIS6 Bridged Networking Driver** 必须是**勾选**状态。
 > 若该适配器在设备管理器里有**多个同名副本**,先全部卸载再修一次 VirtualBox。
+> —— 但这一切的**前提是那块适配器存在**。网络连接里找不到 **VirtualBox Host-Only Ethernet Adapter**、
+> 或 `VBoxDrvInst.exe list` 里没有任何 VBox 驱动包时,本节的修法一概无效,直接看下节 **D2**。
 
 **预防**:升级 VirtualBox 之后,先随便建一台带 host-only 网卡的 VM 启动一次验证网络栈,再开 eNSP。这一步比事后排查 error 40 便宜得多。
 
 **诊断记录(2026-09-14,Windows 11 + VBox 7.2.16)**:`install.log` 六步全绿、垫片日志 `findMachine`/`clonevm`/`modifyvm` 全成功、`startvm` 后 9.3 秒 eNSP 放弃并 `controlvm poweroff`;`VBoxManage.log` 里正是上述两条 `VERR_INTNET_FLT_IF_NOT_FOUND`。适配器本身存在且 Up、绑定项 Enabled=True、驱动服务正常——仅是绑定状态失效。执行上述两步修复后,同一台 VM 同一网卡配置 `startvm` 立刻成功。
+
+---
+
+## 根因 D2:host-only 网络驱动包从未注册(installer 不完整 / 手工装 VirtualBox 后常见)
+
+**现象**:与 D1 一样是 AR 一拉就报 40、垫片日志全绿、进程看着一切正常;区别在**网络连接里根本没有 VirtualBox Host-Only Ethernet Adapter 这块适配器**。
+
+**根因**:host-only 网络靠两个驱动包支撑——**虚拟适配器驱动 `VBoxNetAdp6`** 与 **NDIS 过滤驱动 `VBoxNetLwf`**。二者由 VirtualBox 安装器注册进驱动库;安装中途失败、或 VirtualBox 是用解包/绿色方式部署的,可能**两个都没注册**。此时适配器根本创建不出来,而 eNSP 的设备模板按名字绑定这块网卡,`startvm` 自然起不来 → eNSP 报 40。**这不是绑定失效,而是驱动压根不存在**。
+
+> **D1 的修法在这里没有任何作用。** 没有适配器可禁用、可启用,也没有绑定可刷新——D2 必需重装驱动包。
+
+**辨别(三步)**:
+
+1. `VBoxDrvInst.exe list`(**在 VirtualBox 安装目录下**执行)里**一个 VBox 驱动包都没有** —— 正常应能列出 `VBoxNetAdp6.NTAMD64` 与 `VBoxNetLwf.NTAMD64`。这一条就足以把 D2 与 D1 分开:D1 里这两个包都在。
+2. `VBoxManage hostonlyif create` 直接失败:
+   ```
+   Could not find Host Interface Networking driver! Please reinstall
+   ```
+3. VBoxSVC 日志 `%USERPROFILE%\.VirtualBox\VBoxSVC.log` 里有:
+   ```
+   The host network interface named 'VirtualBox Host-Only Ethernet Adapter' could not be found
+   ```
+   同一处还会出现 `HostWrap: ... could not be found`。
+
+**修复(四步,顺序是硬依赖,不能调换)**:
+
+1. 注册虚拟适配器驱动(`netadp6` 就是那块网卡本身):
+   ```
+   VBoxDrvInst.exe install --inf-file "<VBoxDir>\drivers\network\netadp6\VBoxNetAdp6.inf"
+   ```
+2. 注册 NDIS 过滤驱动。这一步**必须用 `netcfg.exe`,不能换成 `VBoxDrvInst.exe`** —— `VBoxDrvInst install` 只把驱动包预装进驱动库,对 NDIS 过滤驱动来说不够:不会创建 NetService 组件实例,服务停在 Stopped,适配器的绑定里也就不会出现 VirtualBox 组件。只有 `netcfg` 能把这个组件建出来。
+   ```
+   netcfg.exe -v -l "<VBoxDir>\drivers\network\netlwf\VBoxNetLwf.inf" -c s -i oracle_VBoxNetLwf
+   ```
+   > `netadp6` 与 `netlwf` 只差一个字母,一个是网卡、一个是过滤驱动,弄混会装错驱动。
+3. **禁用 → 再启用**适配器,让过滤驱动重新进入数据路径。命令行等价:
+   `Disable-NetAdapter -Name "VirtualBox Host-Only Ethernet Adapter" -Confirm:$false`,等几秒后 `Enable-NetAdapter -Name "VirtualBox Host-Only Ethernet Adapter" -Confirm:$false`。
+4. 建接口、配地址、建 DHCP:
+   ```
+   VBoxManage hostonlyif create
+   ```
+   再用 `ipconfig` 确认新接口已拿到地址,并按需重建 dhcpserver。
+
+> **陷阱:只做第 1 步不会报错,但会更难查。** 只装 `netadp6`、不装 `netlwf` 时,`hostonlyif create`
+> **会成功**,只是网卡被建成 **`VirtualBox Host-Only Ethernet Adapter #2`**。eNSP 的设备模板按**精确名字**
+> 绑定,认不出带 `#2` 的名字,于是症状与「驱动一个都没装」**一模一样**——看上去就像"修了没用"。
+> 补上第 2 步的 `netlwf` 之后,`#2` 后缀会自行消失、名字恢复干净。
+
+**进度标尺**:下面三条报错随修复推进逐个消失,可据此确认走到了哪一步。
+
+| 顺序 | 报错 | 消失时机 |
+|------|------|---------|
+| 1 | `hostonlyif create` 报 `Could not find Host Interface Networking driver! Please reinstall` | 做完第 1 步后 |
+| 2 | VBoxSVC 日志 `HostWrap: ... could not be found` | 做完第 1 步后 |
+| 3 | eNSP `VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND` | **做完第 2 步后** |
+
+**预防**:VirtualBox 走官方安装器安装,装完不要手工删驱动包;升级或重装 VirtualBox 之后,先随便建一台带 host-only 网卡的 VM 启动一次验证网络栈,再开 eNSP。
+
+**诊断记录(2026-09-15,Windows 11 + VBox 7.2.16)**:一台 VirtualBox 安装不完整的机器上,`VBoxDrvInst.exe list` 一个 VBox 驱动包都没有、网络连接里没有 host-only 适配器、`hostonlyif create` 报 `Could not find Host Interface Networking driver! Please reinstall`。按上述顺序先装 `netadp6`、再注册 `netlwf`,随后重建接口:`hostonlyif create` 成功,接口名恢复为干净的 `VirtualBox Host-Only Ethernet Adapter`(不带 `#2`),设备启动恢复正常。
 
 ---
 
@@ -122,4 +186,5 @@
 | 干净机首拉 AR 即 40,`0x800700C1` | 缺 x86 VCRT / 加固 | 根因 A |
 | 卸载重装后 40,注册项失效/无快照 | 基础 VM 注册/快照 | 根因 B,跑 `注册设备.bat` |
 | 嵌套环境 AR 进度条卡满屏 `####`,headless 空转满核,内核 `c013e501` panic | VBox 走原生 VT-x,二级嵌套下崩 | 根因 C,启用 WHP 让 VBox 走 NEM |
-| 升级 VBox 后 40,垫片日志全绿,`VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND` | host-only 过滤驱动绑定失效 | 根因 D,禁用→启用 host-only 网卡 + 重启 VBoxSVC |
+| 升级 VBox 后 40,垫片日志全绿,`VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND`,**适配器存在**且 `VBoxDrvInst.exe list` 有 `VBoxNetAdp6`/`VBoxNetLwf` | host-only 过滤驱动绑定失效 | 根因 D1,禁用→启用 host-only 网卡 + 重启 VBoxSVC |
+| 40,`hostonlyif create` 报 `Could not find Host Interface Networking driver!`,`VBoxDrvInst.exe list` 一个 VBox 驱动包都没有,**适配器不存在** | host-only 网络驱动包从未注册 | 根因 D2,装 `netadp6` + 注册 `netlwf` 后重建接口 |
