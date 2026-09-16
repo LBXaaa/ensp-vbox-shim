@@ -120,58 +120,11 @@ function Invoke-Probe {
 # ---------------------------------------------------------------------------
 # 路径定位(只读)
 #
-# install.ps1 里有同名函数,但那份带 exit、且文件本身有顶层副作用,不可 dot-source。
-# 这里只做只读定位,找不到就返回空串,交给各节降级。
-# TODO(Task 9): 按计划把查找函数下沉到 checks.ps1,届时本处改为调用。
+# Find-EnspDir / Find-VBoxDir 由 checks.ps1 提供(见上方 dot-source)—— 与 install.ps1
+# 共用同一份实现。它们不打印、不 exit,找不到返回 $null,由下面的各节自行降级。
+# 这也是本文件绝不能 dot-source install.ps1 的原因:那个文件有顶层副作用,
+# 一旦被 source 就会真的跑一遍安装。
 # ---------------------------------------------------------------------------
-function Resolve-EnspDirReadOnly {
-    param([string]$Override)
-    if ($Override) { return $Override.TrimEnd('\') }
-
-    $roots = @(
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
-    )
-    foreach ($root in $roots) {
-        try {
-            if (-not (Test-Path $root)) { continue }
-            $hit = Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-                $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-                if ($p.DisplayName -like "*eNSP*" -and $p.InstallLocation) { $p.InstallLocation }
-            } | Where-Object { $_ -and (Test-Path (Join-Path $_ "tools")) } | Select-Object -First 1
-            if ($hit) { return $hit.TrimEnd('\') }
-        } catch { }
-    }
-
-    try {
-        $defaults = @(
-            (Join-Path ${env:ProgramFiles(x86)} "Huawei\eNSP"),
-            (Join-Path $env:ProgramFiles        "Huawei\eNSP")
-        )
-        foreach ($d in $defaults) {
-            if ($d -and (Test-Path (Join-Path $d "tools"))) { return $d.TrimEnd('\') }
-        }
-    } catch { }
-    return ""
-}
-
-function Resolve-VBoxDirReadOnly {
-    param([string]$Override)
-    if ($Override) { return $Override.TrimEnd('\') }
-
-    foreach ($k in @("HKLM:\SOFTWARE\Oracle\VirtualBox", "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox")) {
-        try {
-            if (-not (Test-Path $k)) { continue }
-            $d = (Get-ItemProperty $k -ErrorAction SilentlyContinue).InstallDir
-            if ($d -and (Test-Path $d)) { return $d.TrimEnd('\') }
-        } catch { }
-    }
-    try {
-        $def = Join-Path $env:ProgramFiles "Oracle\VirtualBox"
-        if (Test-Path $def) { return $def.TrimEnd('\') }
-    } catch { }
-    return ""
-}
 
 # ---------------------------------------------------------------------------
 # 报告落盘
@@ -201,8 +154,8 @@ Write-Host "  本报告为只读采集,不修改任何系统设置。"
 Write-Host "  可直接附进 issue;除系统用户名外不含个人信息。"
 Write-Host ("=" * 64)
 
-$EnspDir = Resolve-EnspDirReadOnly -Override $EnspDir
-$VBoxDir = Resolve-VBoxDirReadOnly -Override $VBoxDir
+$EnspDir = Find-EnspDir -Override $EnspDir
+$VBoxDir = Find-VBoxDir -Override $VBoxDir
 
 # VBox 的两个可执行文件在这里统一解析:第 1 节要跑 VBoxManage 取真实版本,
 # 第 3 节要跑 VBoxManage 与 VBoxDrvInst。解析一次,两节共用。
@@ -324,7 +277,9 @@ Write-Section "[2] 分流:设备后端"
 $sectionsOk += "2"
 
 # 探测表在本文件里自己拼。不用 checks.ps1 的 Get-DeviceBackendProbe:
-# 那个函数依赖 Find-EnspDir,而查找函数尚未下沉到 checks.ps1。
+# 那个函数只回三个布尔值的汇总,而本节要逐个文件打印「有/无」。
+# (查找函数已下沉到 checks.ps1,如今它不传 -EnspDir 也能自己定位;
+#  只需要汇总结论的场合可以直接用它。)
 $probe = @{ HasSwitchExe = $false; HasArBase = $false; HasVfwUsg = $false }
 $probeRel = @(
     @{ Key = "HasSwitchExe"; Rel = "vboxserver\devices\LSW\s5700\eNSP_Switch.exe" },

@@ -10,6 +10,76 @@
 # ASCII-only: PowerShell 5.1 reads BOM-less files as ANSI, so non-ASCII
 # literals here would break parsing.
 
+# --- install-tree discovery ------------------------------------------------
+#
+# The two probes every other probe is handed a directory for. Both are
+# read-only: the registry is only ever read, never written.
+#
+# Neither function exits and neither prints. An unusable -Override returns
+# $null exactly like any other miss, and the caller decides what to say about
+# it. That is the whole reason these live here rather than in install.ps1: a
+# function that calls exit takes the reporting decision away from whichever
+# script dot-sourced it, and install.ps1 cannot be dot-sourced at all (it has
+# top-level side effects and would run an install).
+#
+# $null rather than "" for the not-found case, so a caller can test the
+# result directly instead of guessing which empty value it got.
+function Find-EnspDir {
+    param([string]$Override)
+    if ($Override) {
+        if (Test-Path (Join-Path $Override "tools")) { return $Override }
+        return $null
+    }
+    # 1) the uninstall entry whose DisplayName mentions eNSP
+    $uninstRoots = @(
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    )
+    foreach ($root in $uninstRoots) {
+        if (-not (Test-Path $root)) { continue }
+        $hit = Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
+            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+            if ($p.DisplayName -like "*eNSP*" -and $p.InstallLocation) { $p.InstallLocation }
+        } | Where-Object { $_ -and (Test-Path (Join-Path $_ "tools")) } | Select-Object -First 1
+        if ($hit) { return $hit.TrimEnd('\') }
+    }
+    # 2) default install locations
+    $defaults = @(
+        (Join-Path ${env:ProgramFiles(x86)} "Huawei\eNSP"),
+        (Join-Path $env:ProgramFiles        "Huawei\eNSP")
+    )
+    foreach ($d in $defaults) {
+        if ($d -and (Test-Path (Join-Path $d "tools"))) { return $d.TrimEnd('\') }
+    }
+    return $null
+}
+
+# A missing VBoxSVC.exe does NOT invalidate an -Override: the caller may be
+# pointing at a tree that is still being repaired, and each probe that needs
+# the exe tests for it on its own. Both branches therefore return the
+# override; the test only decides whether the trailing separator is stripped.
+function Find-VBoxDir {
+    param([string]$Override)
+    if ($Override) {
+        if (Test-Path (Join-Path $Override "VBoxSVC.exe")) { return $Override }
+        return $Override.TrimEnd('\')
+    }
+    # The InstallDir value survives the version spoof (which rewrites only
+    # Version), so it still names the real tree.
+    $keys = @(
+        "HKLM:\SOFTWARE\Oracle\VirtualBox",
+        "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox"
+    )
+    foreach ($k in $keys) {
+        if (-not (Test-Path $k)) { continue }
+        $p = Get-ItemProperty $k -ErrorAction SilentlyContinue
+        if ($p.InstallDir -and (Test-Path $p.InstallDir)) { return $p.InstallDir.TrimEnd('\') }
+    }
+    $def = Join-Path $env:ProgramFiles "Oracle\VirtualBox"
+    if (Test-Path $def) { return $def.TrimEnd('\') }
+    return $null
+}
+
 # --- VBoxDrvInst: driver registration -------------------------------------
 #
 # The 2026-09-15 failure was both VBox network driver packages missing from

@@ -42,6 +42,13 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
+# checks.ps1 是纯只读探测库(只有函数定义,无顶层副作用),可安全 dot-source。
+# 目录查找(Find-EnspDir / Find-VBoxDir)与 host-only 各层探测都取自它 ——
+# 那份实现不打印、不 exit,找不到就返回 $null,由本文件的调用点决定怎么报错。
+# 必须在 script 作用域(dot-source 会写入调用方作用域)执行,checks.ps1 里的
+# $script: 变量才落在本脚本的作用域里,其函数读取时才解析得到。
+. (Join-Path $ScriptDir "checks.ps1")
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -92,59 +99,9 @@ function Assert-Admin {
 }
 
 # ---------------------------------------------------------------------------
-# 路径检测
+# 路径检测 —— Find-EnspDir / Find-VBoxDir 已下沉到 checks.ps1(在文件开头 dot-source)。
+# 那份实现只读、不打印、不 exit;调用点负责报错,见文件末尾的定位段。
 # ---------------------------------------------------------------------------
-function Find-EnspDir {
-    param([string]$Override)
-    if ($Override) {
-        if (Test-Path (Join-Path $Override "tools")) { return $Override }
-        Write-Err "指定的 eNSP 目录无效(缺 tools\): $Override"; exit 1
-    }
-    # 1) 卸载注册表项里找 DisplayName 含 eNSP 的
-    $uninstRoots = @(
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
-    )
-    foreach ($root in $uninstRoots) {
-        if (-not (Test-Path $root)) { continue }
-        $hit = Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-            if ($p.DisplayName -like "*eNSP*" -and $p.InstallLocation) { $p.InstallLocation }
-        } | Where-Object { $_ -and (Test-Path (Join-Path $_ "tools")) } | Select-Object -First 1
-        if ($hit) { return $hit.TrimEnd('\') }
-    }
-    # 2) 默认安装位置回退
-    $defaults = @(
-        (Join-Path ${env:ProgramFiles(x86)} "Huawei\eNSP"),
-        (Join-Path $env:ProgramFiles        "Huawei\eNSP")
-    )
-    foreach ($d in $defaults) {
-        if ($d -and (Test-Path (Join-Path $d "tools"))) { return $d.TrimEnd('\') }
-    }
-    return $null
-}
-
-function Find-VBoxDir {
-    param([string]$Override)
-    if ($Override) {
-        if (Test-Path (Join-Path $Override "VBoxSVC.exe")) { return $Override }
-        Write-Warn "指定的 VirtualBox 目录缺 VBoxSVC.exe: $Override"
-        return $Override.TrimEnd('\')
-    }
-    # InstallDir 注册表项(版本伪装只改 Version,InstallDir 保留真实值)
-    $keys = @(
-        "HKLM:\SOFTWARE\Oracle\VirtualBox",
-        "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox"
-    )
-    foreach ($k in $keys) {
-        if (-not (Test-Path $k)) { continue }
-        $p = Get-ItemProperty $k -ErrorAction SilentlyContinue
-        if ($p.InstallDir -and (Test-Path $p.InstallDir)) { return $p.InstallDir.TrimEnd('\') }
-    }
-    $def = Join-Path $env:ProgramFiles "Oracle\VirtualBox"
-    if (Test-Path $def) { return $def.TrimEnd('\') }
-    return $null
-}
 
 # ---------------------------------------------------------------------------
 # 文件部署辅助 —— 用 payload 中预构建好的 DLL 直接覆盖(不字节补丁)
@@ -391,63 +348,141 @@ function Do-Uninstall {
 # 已知坏法:Windows/VBox 允许存在多块**同名** host-only 适配器,而 VM 是按名字绑的
 # (hostonlyadapterN="VirtualBox Host-Only Ethernet Adapter"),于是客机可能被挂到
 # 没有 IP 的那一块(169.254.x.x)上,永远够不到 192.168.56.1。
-# 本函数只报告,不擅自改网络配置。
+#
+# 事实采集全部来自 checks.ps1(与 diag.ps1 共用同一套解析与判据),本函数只负责展示。
+# 六层:1 驱动包注册 / 2 服务 / 3 VBox 视角的接口 / 4 Windows 视角的网卡 /
+#       5 NDIS 过滤驱动绑定 / 6 模板名 vs 实际接口名。
+# 只报告,不擅自改网络配置。
 # ---------------------------------------------------------------------------
-function Test-HostOnlyNetwork {
-    param([string]$VBoxDir)
-    if (-not $VBoxDir) { return }
-    $vbm = Join-Path $VBoxDir "VBoxManage.exe"
-    if (-not (Test-Path $vbm)) { Write-Info "host-only 网络 : 找不到 VBoxManage.exe,跳过自检"; return }
+function Write-EnvReportHostOnly {
+    param([string]$VBoxDir, [string]$EnspDir)
 
-    # --- 解析 list hostonlyifs ---
-    $list = @()
-    $cur = $null
-    foreach ($line in (& $vbm list hostonlyifs 2>$null)) {
-        if ($line -match '^Name:\s+(.+)$')            { $cur = @{ Name = $Matches[1].Trim(); IP = "" } }
-        elseif ($line -match '^IPAddress:\s+(.+)$' -and $cur) { $cur.IP = $Matches[1].Trim(); $list += $cur; $cur = $null }
+    $vbm     = ""
+    $drvInst = ""
+    if ($VBoxDir) {
+        $vbm     = Join-Path $VBoxDir "VBoxManage.exe"
+        $drvInst = Join-Path $VBoxDir "VBoxDrvInst.exe"
     }
 
     Write-Info "host-only 网络(设备回连 192.168.56.1 的必经之路):"
-    foreach ($i in $list) { Write-Info ("  {0}  ->  {1}" -f $i.Name, $(if ($i.IP) { $i.IP } else { "(无 IP)" })) }
-
     $problems = @()
+    $ifNames  = @()
 
-    if ($list.Count -eq 0) {
-        $problems += "一块 host-only 适配器都没有 —— eNSP 设备无法回连宿主"
-    }
-    elseif ($list.Count -gt 1) {
-        $problems += ("存在 {0} 块 host-only 适配器。VM 按名字绑(hostonlyadapterN),名字重复时" -f $list.Count) +
-                     "VBox 选哪块不确定 —— 客机可能挂到没有 IP 的那块上"
-    }
+    # --- 第 1 层(驱动包注册)+ 第 2 层(服务)---
+    # 第 1 层是 2026-09-15 的真实故障形态:两个驱动包都不在驱动库里。旧版自检完全没有
+    # 这一层,所以那次故障只能靠人工想到去查 VBoxDrvInst。
+    #
+    # "两个包都注册了"的判据取自 checks.ps1 的 Layer1.DriverRegistered,不在本文件里
+    # 重算 —— 判据只能有一份,否则两边迟早漂移。
+    $drvLines = @()
+    try {
+        if ($drvInst -and (Test-Path $drvInst)) { $drvLines = @(& $drvInst list 2>$null) }
+        $layers = Get-HostOnlyDriverLayers -DrvInstLines $drvLines
 
-    # 名字必须能和 VM 的 hostonlyadapterN 对上
-    $named = @($list | Where-Object { $_.Name -like "VirtualBox Host-Only Ethernet Adapter*" })
-    if ($list.Count -gt 1 -and $named.Count -gt 1) {
-        $problems += "有多块适配器用了同一个名字 'VirtualBox Host-Only Ethernet Adapter'"
-    }
-
-    # 192.168.56.1 必须真的配在某一块上
-    $withIp = @($list | Where-Object { $_.IP -eq "192.168.56.1" })
-    if ($list.Count -gt 0 -and $withIp.Count -eq 0) {
-        $problems += "没有任何一块 host-only 适配器配了 192.168.56.1 —— 设备回连必然超时(10060)"
-    } elseif ($withIp.Count -gt 1) {
-        $problems += "有多块适配器同时配着 192.168.56.1,会产生重复 IP 冲突"
-    }
-
-    # VBox DHCP 必须绑在该网络名上
-    $dhcpOk = $false
-    foreach ($line in (& $vbm list dhcpservers 2>$null)) {
-        if ($line -match '^NetworkName:\s+(.+)$') {
-            $net = $Matches[1].Trim()
-            if ($net -eq "HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter" -and $withIp.Count -ge 1) { $dhcpOk = $true }
+        # 一条输出都没取到时不许报"缺失" —— 那等于把"读不到"说成缺陷,是假警报。
+        if ($drvLines.Count -eq 0) {
+            Write-Info "  host-only 第 1 层(驱动注册): 取不到 VBoxDrvInst 输出,本层无法判定。"
+        } else {
+            Write-Info ("  host-only 第 1 层(驱动注册): VBoxNetAdp6={0}  VBoxNetLwf={1}" -f `
+                        $(if ($layers.Layer1.NetAdpPresent) { "已注册" } else { "缺失" }), `
+                        $(if ($layers.Layer1.NetLwfPresent) { "已注册" } else { "缺失" }))
+            if (-not $layers.Layer1.DriverRegistered) {
+                $problems += "VBox 网络驱动包没注册进驱动库 —— 这是 2026-09-15 的故障形态。" +
+                             "禁启用适配器、重装驱动都修不好,必须重新注册驱动包(见 diag.ps1 第 1 层提示)"
+            }
         }
-    }
-    if ($list.Count -gt 0 -and -not $dhcpOk) {
-        $problems += "VBox 的 DHCP 服务器没有绑在 'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter' 上 —— 设备拿不到 IP"
-    }
+
+        # 第 2 层只读服务,与驱动输出无关,取不到输出时照样列。
+        foreach ($s in $layers.Layer2.Services) {
+            Write-Info ("  host-only 第 2 层(服务): {0} = {1}" -f $s.Name.PadRight(12), $(if ($s.Present) { $s.Status.ToString() } else { "不存在" }))
+        }
+        if (-not $layers.Layer2.AllRunning) {
+            $problems += "上面有 VBox 服务没有在运行(VBoxSup 不跑,虚拟机直接起不来)"
+        }
+    } catch { $problems += ("第 1/2 层读取失败: " + $_.Exception.Message) }
+
+    # --- 第 3 层:VBox 视角的接口 ---
+    try {
+        if (-not ($vbm -and (Test-Path $vbm))) {
+            Write-Info "  host-only 第 3 层(VBox 接口): 找不到 VBoxManage.exe,本层跳过。"
+        } else {
+            $ifs = @(Parse-HostOnlyIfs -Lines @(& $vbm list hostonlyifs 2>$null))
+            if ($ifs.Count -eq 0) {
+                $problems += "一块 host-only 适配器都没有 —— eNSP 设备无法回连宿主"
+            }
+            foreach ($i in $ifs) {
+                Write-Info ("  host-only 第 3 层(VBox 接口): {0}  ->  {1}" -f $i.Name, $(if ($i.IPAddress) { $i.IPAddress } else { "(无 IP)" }))
+                $ifNames += $i.Name
+            }
+            if ($ifs.Count -gt 1) {
+                $problems += ("存在 {0} 块 host-only 适配器。VM 按名字绑(hostonlyadapterN),名字重复时" -f $ifs.Count) +
+                             "VBox 选哪块不确定 —— 客机可能挂到没有 IP 的那块上"
+            }
+            # 192.168.56.1 必须真的配在某一块上
+            $withIp = @($ifs | Where-Object { $_.IPAddress -eq "192.168.56.1" })
+            if ($ifs.Count -gt 0 -and $withIp.Count -eq 0) {
+                $problems += "没有任何一块 host-only 适配器配了 192.168.56.1 —— 设备回连必然超时(10060)"
+            } elseif ($withIp.Count -gt 1) {
+                $problems += "有多块适配器同时配着 192.168.56.1,会产生重复 IP 冲突"
+            }
+        }
+    } catch { $problems += ("第 3 层读取失败: " + $_.Exception.Message) }
+
+    # --- 第 4 层:Windows 视角的网卡 ---
+    # 连接名是本地化的(如「以太网 11」),不可用于匹配;InterfaceDescription 才是稳定键。
+    try {
+        $adapters = @(Get-HostOnlyNetAdapterFacts)
+        if ($adapters.Count -eq 0) {
+            $problems += '没找到 InterfaceDescription 含 "VirtualBox Host-Only" 的网卡(驱动包可能没进数据路径)'
+        }
+        foreach ($a in $adapters) {
+            Write-Info ("  host-only 第 4 层(Windows 网卡): {0}  ->  {1}  ({2})" -f $a.InterfaceName, $a.IPv4, $a.Status)
+        }
+    } catch { $problems += ("第 4 层读取失败: " + $_.Exception.Message) }
+
+    # --- 第 5 层:NDIS 过滤驱动绑定 ---
+    try {
+        foreach ($b in @(Get-HostOnlyBindingFacts)) {
+            Write-Info ("  host-only 第 5 层(NDIS 绑定): {0} = {1}" -f $b.InterfaceName, $(if ($b.Bound -and $b.Enabled) { "已绑定并启用" } else { "未绑定或未启用" }))
+            if (-not ($b.Bound -and $b.Enabled)) {
+                $problems += ("网卡 " + $b.InterfaceName + " 上没有启用 oracle_VBoxNetLwf 绑定 —— 流量进不了 VBox 的数据路径")
+            }
+        }
+    } catch { $problems += ("第 5 层读取失败: " + $_.Exception.Message) }
+
+    # --- 第 6 层:模板名 vs 实际接口名 ---
+    # 这一层才是 "#2" 类问题的正确判据:带后缀本身不是故障,模板名和实际名对不上才是
+    # (VM 是按 hostonlyadapterN 的名字绑的)。旧版用通配符 "Adapter*" 判名字,把带 #2 的
+    # 适配器当成正常的,于是这一类问题从来没被报出来过。
+    try {
+        $tplPath = ""
+        if ($EnspDir) { $tplPath = Join-Path $EnspDir "vboxserver\AR_Base\AR_Base.vbox" }
+        if ($ifNames.Count -eq 0) {
+            # 第 3 层没取到接口名,比对无意义,不做判定。
+        } elseif (-not ($tplPath -and (Test-Path $tplPath))) {
+            Write-Info "  host-only 第 6 层(模板名比对): 读不到 AR_Base.vbox,本层跳过。"
+        } else {
+            $tplNames = @()
+            foreach ($line in (Get-Content -Path $tplPath -ErrorAction SilentlyContinue)) {
+                if ($line -match 'HostOnlyInterface\s+name="([^"]*)"') { $tplNames += $Matches[1] }
+            }
+            if ($tplNames.Count -eq 0) {
+                Write-Info "  host-only 第 6 层(模板名比对): 模板里没有主机专用接口名,无从比对。"
+            } else {
+                $cmp = Compare-HostOnlyName -VBoxNames $ifNames -TemplateNames $tplNames
+                if ($cmp.HasMismatch) {
+                    Write-Info ("  host-only 第 6 层(模板名比对): 匹配 {0} / {1}" -f $cmp.MatchedCount, $tplNames.Count)
+                    $problems += ("模板里有 " + $cmp.MissingInVBox.Count + " 个接口名在实际接口中不存在:" + ($cmp.MissingInVBox -join " | ")) +
+                                 '。修法是重新注册设备(会重写模板里的名字),而不是把 "#2" 本身当成故障'
+                } else {
+                    Write-Info ("  host-only 第 6 层(模板名比对): 一致({0} 个)。" -f $cmp.MatchedCount)
+                }
+            }
+        }
+    } catch { $problems += ("第 6 层读取失败: " + $_.Exception.Message) }
 
     if ($problems.Count -eq 0) {
-        Write-OK "host-only 网络 : 正常(唯一一块,192.168.56.1,DHCP 已绑定)"
+        Write-OK "host-only 网络 : 正常(驱动已注册、服务在跑、接口名与模板一致)"
     } else {
         Write-Warn "host-only 网络异常 —— 这会让设备卡在进度条,且症状与补丁问题无法区分:"
         foreach ($p in $problems) { Write-Warn "       - $p" }
@@ -455,10 +490,11 @@ function Test-HostOnlyNetwork {
         Write-Warn "    1. VBoxManage list hostonlyifs 看有几块、名字分别是什么"
         Write-Warn "    2. 多余的同名适配器用 VBoxManage hostonlyif remove `"<名字>`" 删除"
         Write-Warn "       (该命令只认名字不认 GUID;同名时多删几次并逐次核对)"
-        Write-Warn "    3. 保证剩下那块名字为 'VirtualBox Host-Only Ethernet Adapter'、IP 为 192.168.56.1/24"
-        Write-Warn "    4. VBoxManage list dhcpservers 确认 NetworkName ="
-        Write-Warn "       'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter'"
+        Write-Warn "    3. 保证剩下那块名字与设备模板一致、IP 为 192.168.56.1/24"
+        Write-Warn "    4. VBoxManage list dhcpservers 确认 DHCP 的 NetworkName 指向该适配器"
+        Write-Warn "       (本自检不含 DHCP 绑定,须手工核对)"
         Write-Warn "  另:设备起不来时先确认没有杀不掉的僵尸 eNSP_VBoxServer 进程,有就重启。"
+        Write-Warn "  完整六层解读见 环境检查.bat(diag.ps1)。"
     }
 }
 
@@ -536,7 +572,7 @@ function Do-Check {
 # 经 Start-Transcript 镜像,以下 Write-Host 同时上终端和进日志。
 # ---------------------------------------------------------------------------
 function Write-EnvReport {
-    param([string]$VBoxDir)
+    param([string]$VBoxDir, [string]$EnspDir)
     Write-Step "环境检测(仅排查用,不改动系统)"
 
     # --- 操作系统 ---
@@ -560,7 +596,7 @@ function Write-EnvReport {
     Write-EnvReportHyperV
     Write-EnvReportNested
     Write-EnvReportVcrt -VBoxDir $VBoxDir
-    Test-HostOnlyNetwork -VBoxDir $VBoxDir
+    Write-EnvReportHostOnly -VBoxDir $VBoxDir -EnspDir $EnspDir
     Write-EnvReportSpoof
 }
 
@@ -670,8 +706,14 @@ Start-Transcript -Path $LogPath -Force -ErrorAction SilentlyContinue | Out-Null
 
 $ensp = Find-EnspDir -Override $EnspDir
 if (-not $ensp) {
-    Write-Err "未能自动定位 eNSP 安装目录。请用 -EnspDir 手动指定,例如:"
-    Write-Err '  install.ps1 -EnspDir "D:\Program Files\Huawei\eNSP"'
+    # checks.ps1 的 Find-EnspDir 只返回 $null,报错与退出由这里负责(原实现的
+    # exit 正是在查找函数里,下沉后必须补回调用点,否则会带着空目录继续跑)。
+    if ($EnspDir) {
+        Write-Err "指定的 eNSP 目录无效(缺 tools\): $EnspDir"
+    } else {
+        Write-Err "未能自动定位 eNSP 安装目录。请用 -EnspDir 手动指定,例如:"
+        Write-Err '  install.ps1 -EnspDir "D:\Program Files\Huawei\eNSP"'
+    }
     exit 1
 }
 $vbox = Find-VBoxDir -Override $VBoxDir
@@ -680,7 +722,7 @@ if (-not $vbox) { Write-Warn "未能定位 VirtualBox 目录(版本伪装仍会�
 Write-Host "eNSP : $ensp"
 Write-Host "VBox : $vbox"
 
-Write-EnvReport -VBoxDir $vbox
+Write-EnvReport -VBoxDir $vbox -EnspDir $ensp
 
 if ($Check)         { Do-Check     -EnspDir $ensp -VBoxDir $vbox }
 elseif ($Uninstall) { Do-Uninstall -EnspDir $ensp -VBoxDir $vbox }
