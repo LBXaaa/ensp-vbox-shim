@@ -960,17 +960,53 @@ function Repair-AllowEnspFirewall {
         if ($b -match '(?m)^Profile\s*:\s*(.+?)\s*$') { $ruleProfile = $Matches[1] }
         if (($enabled -ne "False") -and ($action -ne "Block")) { continue }
 
+        # A rule that exists but is disabled or blocking. Correct THAT rule
+        # rather than adding a second one next to it -- but correct it, do not
+        # hand the caller a command and stop.
+        #
+        # This used to return Ok=$false with the remedy as text, on the reasoning
+        # that a repair should not rewrite a rule it did not create. The
+        # reasoning is sound and the outcome was not: the diagnostic lists
+        # "firewall not allowing eNSP" whenever no enabled+allow rule exists,
+        # which covers BOTH "no rule at all" (this function fixes it) and "rule
+        # present but disabled" (it refused). So the menu offered an item that
+        # could never succeed and answered every attempt with "[skip]", which
+        # reads as the tool being broken rather than as a deliberate refusal.
+        #
+        # Enabling is also the LESS invasive of the two available actions: the
+        # alternative here is creating a second rule with the same display name
+        # and leaving the first one dead beside it. Action is forced to Allow
+        # because a rule that reads "set to block" would otherwise be enabled
+        # into exactly the wrong state; Profile is widened to all three for the
+        # same reason the create path uses all three (see the comment there).
         $why = "disabled"
         if ($enabled -ne "False") { $why = "set to block" }
-        $remedy = Format-CommandLine -Exe "Set-NetFirewallRule" -Arguments @(
+        $remedyCmds = @(Format-CommandLine -Exe "Set-NetFirewallRule" -Arguments @(
             "-DisplayName", $name,
             "-Enabled", "True",
             "-Action", "Allow",
-            "-Profile", ($profiles -join ","))
-        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Extra @{ DisplayName = $name; Enabled = $enabled; Action = $action; Profile = $ruleProfile } `
-            -Reason ("a rule named '" + $name + "' already exists but is " + $why + `
-                "; correct that rule instead of adding a second one: " + $remedy)
+            "-Profile", ($profiles -join ",")))
+
+        if ($DryRun) {
+            Write-DryRunLine $step ("would enable and normalise the existing rule '" + $name + "' (" + $why + ")")
+            return New-RepairResult -Ok $true -DryRun $true -Commands $remedyCmds `
+                -Extra @{ DisplayName = $name; Enabled = $enabled; Action = $action
+                          Profile = $ruleProfile; Mode = "enable existing rule" }
+        }
+        if (-not (Test-RepairRights $false)) {
+            return New-RepairResult -Ok $false -Commands $remedyCmds `
+                -Reason "not elevated; changing a firewall rule needs administrator rights"
+        }
+        try {
+            Set-NetFirewallRule -DisplayName $name -Enabled True -Action Allow `
+                -Profile $profiles -ErrorAction Stop | Out-Null
+        } catch {
+            return New-RepairResult -Ok $false -Commands $remedyCmds -Extra @{ DisplayName = $name } `
+                -Reason ("Set-NetFirewallRule failed: " + $_.Exception.Message)
+        }
+        return New-RepairResult -Ok $true -Changed $true -Commands $remedyCmds `
+            -Extra @{ DisplayName = $name; Enabled = "True"; Action = "Allow"
+                      Profile = ($profiles -join ","); Mode = "enable existing rule" }
     }
 
     if ($DryRun) {
