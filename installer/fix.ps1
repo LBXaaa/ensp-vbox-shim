@@ -35,6 +35,17 @@
 #     nothing at all. That false "fixed it and it did not help" is the single
 #     most expensive way to get this wrong.
 #
+#   - Two further steps sit OUTSIDE that chain, because nothing else depends on
+#     them and they depend on nothing else:
+#         5 Repair-RebuildPerfCounters  rebuild damaged Windows performance counters
+#         6 Repair-AllowEnspFirewall    inbound allow rule for eNSP_VBoxServer.exe
+#     They repair the SAME symptom as the chain above -- a device that prints
+#     '####' forever and never reaches a prompt -- from two different layers,
+#     which is why the diagnostic probes both and why leaving them out looks
+#     exactly like having repaired nothing. Neither touches the network stack or
+#     anything else on the machine, so both are the "lossless" tier of design
+#     section 7.1: reversible, no reboot, no effect on unrelated functions.
+#
 #   - Two different names belong to the same adapter and they are NOT
 #     interchangeable:
 #         VBox side     VBoxManage hostonlyif ... names it, as printed by
@@ -751,4 +762,239 @@ function Repair-EnableHostOnlyDhcp {
     }
     return New-RepairResult -Ok $true -Changed $true -Commands $cmds `
         -Extra @{ InterfaceName = $server.IfName; NetworkName = $server.NetworkName; DhcpEnabled = $true }
+}
+
+# ===========================================================================
+# performance counters
+# ===========================================================================
+
+# Damaged Windows performance counters make an eNSP device print '####' forever
+# and never reach a prompt, which is the same symptom the host-only chain above
+# produces from a completely different layer -- so it has to be repairable from
+# here, and no amount of driver or adapter work will fix a damaged counter store.
+#
+# `lodctr /R` rebuilds the counter registration from the backup copies Windows
+# keeps alongside the library files, and it fails without administrator rights.
+# That is why elevation is checked rather than assumed.
+#
+# "Already satisfied" is read by RUNNING a counter (checks.ps1's
+# Test-PerfCountersFunctional), never by looking for the Perflib registry key:
+# that key is absent on current Windows on a perfectly healthy machine, so
+# reading it would call every machine damaged. A healthy reading skips the step
+# instead of rebuilding anyway -- rebuilding is not free, it rewrites the whole
+# counter store, and there is nothing to gain from doing it to working counters.
+#
+# A note on what a result means. lodctr /R is known to return exit code 0 while
+# having accomplished nothing, so the exit code alone is not treated as proof:
+# the output is captured and returned, and the counters are probed AGAIN after
+# the run. Only a functional reading afterwards is reported as a success; a
+# still-broken reading after a 0 exit is reported as a failure with the command's
+# own output attached, because that is what it is -- the desired state was not
+# reached, and a caller told otherwise would stop looking.
+function Repair-RebuildPerfCounters {
+    param([string]$LodctrExe = "", [switch]$DryRun)
+
+    $step = "perf counters"
+    if (-not (Test-ChecksAvailable)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "checks.ps1 is not loaded, so the current counter state cannot be read"
+    }
+
+    $lodctr = $LodctrExe
+    if (-not $lodctr) { $lodctr = Join-Path $env:SystemRoot "System32\lodctr.exe" }
+    if (-not (Test-Path $lodctr)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason ("lodctr.exe not found: " + $lodctr)
+    }
+
+    $cmds = @(Format-CommandLine -Exe $lodctr -Arguments @("/R"))
+
+    $before = Test-PerfCountersFunctional
+    if ($before.Functional) {
+        if ($DryRun) { Write-DryRunLine $step ("counters are functional (" + $before.Reason + "); nothing to do") }
+        return New-RepairResult -Ok $true -Skipped $true -DryRun ([bool]$DryRun) -Commands $cmds `
+            -Extra @{ State = "counters functional"; FunctionalBefore = $true }
+    }
+
+    if ($DryRun) {
+        Write-DryRunLine $step "would run: $($cmds[0])"
+        return New-RepairResult -Ok $true -DryRun $true -Commands $cmds `
+            -Extra @{ State = ("counters not functional: " + $before.Reason); FunctionalBefore = $false }
+    }
+    if (-not (Test-RepairRights $false)) {
+        return New-RepairResult -Ok $false -Commands $cmds `
+            -Reason "not elevated; lodctr /R needs administrator rights to rewrite the counter store"
+    }
+
+    $run = Invoke-Native -Exe $lodctr -Arguments @("/R")
+    if (-not $run.Ok -or $run.ExitCode -ne 0) {
+        return New-RepairResult -Ok $false -Commands $cmds `
+            -Extra @{ ExitCode = $run.ExitCode; Output = @($run.Output) } `
+            -Reason ("lodctr /R failed (exit " + $run.ExitCode + "): " + ($run.Output -join " "))
+    }
+
+    $after = Test-PerfCountersFunctional
+    if (-not $after.Functional) {
+        return New-RepairResult -Ok $false -Changed $true -Commands $cmds `
+            -Extra @{ ExitCode = $run.ExitCode; Output = @($run.Output); FunctionalAfter = $false } `
+            -Reason ("lodctr /R exited 0 but the counters are still not functional (" + $after.Reason + "); output: " + ($run.Output -join " "))
+    }
+
+    return New-RepairResult -Ok $true -Changed $true -Commands $cmds `
+        -Extra @{ ExitCode = $run.ExitCode; Output = @($run.Output); FunctionalAfter = $true }
+}
+
+# ===========================================================================
+# firewall allow rule
+# ===========================================================================
+
+# Huawei's own FAQ lists the firewall not allowing eNSP as a cause of the same
+# '####'-forever symptom, so it is repaired from here for the same reason as the
+# counters: same symptom, different layer.
+#
+# The rule names the REAL executable, resolved through Find-EnspDir rather than
+# hard-coded. A rule pointing at a path that does not exist never matches
+# anything and still reads as "done" in every listing, which is worse than having
+# no rule at all -- so a missing executable is a precondition failure, not
+# something to work around by creating the rule anyway.
+#
+# "Already satisfied" is read through the diagnostic's own pair
+# (Get-FirewallRuleTextForEnsp + Parse-FirewallRulesForEnsp), so the repair and
+# the report that recommended it agree on what "the rule is there" means. The
+# profile the existing rule covers is returned as a fact and is deliberately NOT
+# part of the verdict: a Public-only rule is enabled, allows, and still does not
+# apply on a domain-joined machine, but widening a rule is a different action
+# from creating one, and it is not taken here behind an "already satisfied"
+# verdict. A caller that sees CoversAllProfiles=$false can say so.
+#
+# A rule that carries the same name but is DISABLED or set to BLOCK is a third
+# case, and it is reported rather than repaired: the fix for it is to correct
+# that rule, and creating a second rule beside it would leave two rules whose
+# display names collide, with no way for a later diagnostic to tell which one it
+# read. A wrong duplicate is worse than none.
+function Repair-AllowEnspFirewall {
+    param([string]$EnspDir = "", [switch]$DryRun)
+
+    $step = "firewall allow"
+    if (-not (Test-ChecksAvailable)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "checks.ps1 is not loaded, so the current firewall state cannot be read"
+    }
+    if (-not (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "New-NetFirewallRule is unavailable; the NetSecurity module is missing"
+    }
+
+    $dir = Find-EnspDir -Override $EnspDir
+    if (-not $dir) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "eNSP install directory not found; pass -EnspDir"
+    }
+    $exe = Join-Path $dir "vboxserver\eNSP_VBoxServer.exe"
+    if (-not (Test-Path $exe)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason ("eNSP_VBoxServer.exe not found: " + $exe)
+    }
+
+    # Created on all three profiles. Huawei's FAQ asks for Domain and Public, and
+    # narrowing to the profile that happens to be active would recreate exactly
+    # the false green the diagnostic warns about the moment the machine changes
+    # network. Nothing about an inbound allow rule for one local program argues
+    # for a narrower scope. Protocol is left unspecified on purpose, so the rule
+    # covers TCP and UDP in one entry instead of the TCP/UDP pair the interactive
+    # Windows prompt leaves behind.
+    $profiles = @("Domain", "Private", "Public")
+    $cmds = @(Format-CommandLine -Exe "New-NetFirewallRule" -Arguments @(
+        "-DisplayName", "eNSP_VBoxServer",
+        "-Direction", "Inbound",
+        "-Action", "Allow",
+        "-Program", $exe,
+        "-Profile", ($profiles -join ","),
+        "-Enabled", "True"))
+
+    $fwText = @(Get-FirewallRuleTextForEnsp)
+    $fw = Parse-FirewallRulesForEnsp -Lines $fwText
+
+    if ($fw.HasAllowRule) {
+        # "Any" is the whole set; otherwise all three names have to appear. An
+        # empty Profile means the text carried no Profile line at all, which is
+        # "unknown" and not "covers everything".
+        $coversAll = $false
+        if ($fw.Profile -match "Any") {
+            $coversAll = $true
+        } elseif (($fw.Profile -match "Domain") -and ($fw.Profile -match "Private") -and ($fw.Profile -match "Public")) {
+            $coversAll = $true
+        }
+        $found = @($fwText | Where-Object { $_ -match '^DisplayName\s*:\s*.*VBoxServer' }).Count
+
+        if ($DryRun) {
+            Write-DryRunLine $step ("an enabled allow rule already exists (covers: " + $fw.Profile + "); nothing to do")
+        }
+        return New-RepairResult -Ok $true -Skipped $true -DryRun ([bool]$DryRun) -Commands $cmds `
+            -Extra @{
+                State             = ("enabled allow rule present, covers " + $fw.Profile)
+                RulesFound        = $found
+                Profile           = $fw.Profile
+                CoversAllProfiles = $coversAll
+            }
+    }
+
+    # The blocks are separated by a blank line by the collector above, so each is
+    # evaluated whole for the same reason its enabled+allow case is: testing the
+    # fields over the whole blob would let an unrelated rule satisfy them.
+    #
+    # (?i) is load-bearing, not decoration. The static [regex] methods are
+    # case-SENSITIVE, unlike the -match operator that the parser above uses, and
+    # the display name on a real machine is lowercase ("ensp_vboxserver") -- the
+    # same trap checks.ps1 documents for its own literal. Without it this scan
+    # finds nothing and the step happily creates the duplicate rule it exists to
+    # prevent.
+    $blocks = [regex]::Split(($fwText -join "`n"), '(\r?\n){2,}')
+    foreach ($b in $blocks) {
+        $m = [regex]::Match($b, '(?im)^DisplayName\s*:\s*(.*VBoxServer.*)$')
+        if (-not $m.Success) { continue }
+        $name = $m.Groups[1].Value.Trim()
+        $enabled = "True"
+        $action = "Allow"
+        $ruleProfile = ""
+        if ($b -match '(?m)^Enabled\s*:\s*(\S+)') { $enabled = $Matches[1] }
+        if ($b -match '(?m)^Action\s*:\s*(\S+)') { $action = $Matches[1] }
+        if ($b -match '(?m)^Profile\s*:\s*(.+?)\s*$') { $ruleProfile = $Matches[1] }
+        if (($enabled -ne "False") -and ($action -ne "Block")) { continue }
+
+        $why = "disabled"
+        if ($enabled -ne "False") { $why = "set to block" }
+        $remedy = Format-CommandLine -Exe "Set-NetFirewallRule" -Arguments @(
+            "-DisplayName", $name,
+            "-Enabled", "True",
+            "-Action", "Allow",
+            "-Profile", ($profiles -join ","))
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Extra @{ DisplayName = $name; Enabled = $enabled; Action = $action; Profile = $ruleProfile } `
+            -Reason ("a rule named '" + $name + "' already exists but is " + $why + `
+                "; correct that rule instead of adding a second one: " + $remedy)
+    }
+
+    if ($DryRun) {
+        Write-DryRunLine $step ("would run: " + $cmds[0])
+        return New-RepairResult -Ok $true -DryRun $true -Commands $cmds `
+            -Extra @{
+                State      = "no enabled allow rule for eNSP_VBoxServer.exe"
+                Program    = $exe
+                Profile    = ($profiles -join ",")
+                RulesFound = 0
+            }
+    }
+    if (-not (Test-RepairRights $false)) {
+        return New-RepairResult -Ok $false -Commands $cmds `
+            -Reason "not elevated; creating a firewall rule needs administrator rights"
+    }
+
+    try {
+        New-NetFirewallRule -DisplayName "eNSP_VBoxServer" -Direction "Inbound" -Action "Allow" `
+            -Program $exe -Profile $profiles -Enabled "True" -ErrorAction Stop | Out-Null
+    } catch {
+        return New-RepairResult -Ok $false -Commands $cmds -Extra @{ Program = $exe } `
+            -Reason ("New-NetFirewallRule failed: " + $_.Exception.Message)
+    }
+    return New-RepairResult -Ok $true -Changed $true -Commands $cmds `
+        -Extra @{ DisplayName = "eNSP_VBoxServer"; Program = $exe; Profile = ($profiles -join ",") }
 }
