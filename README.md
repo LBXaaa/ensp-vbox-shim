@@ -73,11 +73,35 @@ NE9000 这几台跑在完整虚拟机里、各配 4 GB 内存，同时拉起多�
 > 这是 Windows Sandbox 与 VirtualBox 的固有冲突，非本垫片可修复（原版 VBox 在沙箱内同样起不来）。
 > 请改用普通虚拟机或物理机。
 
+## 环境诊断(设备起不来时先跑这个)
+
+整合包里的 **`环境检查.bat`** 是一个独立的只读诊断:双击即采集本机 eNSP 与 VirtualBox 的
+环境事实,产出一份报告,落到 `%ProgramData%\ensp-vbox-shim\` 下,可直接附进 issue。
+
+- **全程只读** —— 不启动任何虚拟机、不修改任何系统设置;报告里只有只读采集的内容,不含交互记录。
+- **用平时启动 eNSP 的那个账户运行** —— 它读的是该账户的 VirtualBox 配置
+  (`%USERPROFILE%\.VirtualBox\`),换别的管理员账户跑,读到的不是 eNSP 实际用的那一份,结论会对不上。
+- **报告按分层推进** —— 基础事实 → 宿主侧设备层(不走 VBox 的交换机/PC 类设备) → AR 模板层 →
+  设备包与 eNSP 版本匹配 → VirtualBox 细查(驱动完整性/适配器/绑定/数据路径/名字比对/注册与快照/权限)
+  → 日志尾部。日志只取当前文件并做尾部截断,不打包历史备份。
+- **诊断结束后进入交互式修复菜单**,只列本次实际查出的问题,分三档:无损的(防火墙放行、
+  建 host-only 接口并配 IP、重建性能计数器)选中即执行;有损但必需的(重装 host-only 驱动并
+  重绑网卡,会短暂断网)**明示影响并要求单独确认**;有损且非必需的(关闭 Hyper-V / VBS /
+  内核隔离)**不执行**,只写现状与原因 —— 见下方"关于启动速度"。
+- **报告没有报错,不等于环境完全没有问题** —— 抓包驱动(WinPcap / Npcap)与安装器自身的校验
+  不在覆盖范围内。
+- **修复菜单尚未在真实故障机上端到端走通**(只在 dry run、注入的发现项与单元级检查下验证过)。
+  机器真坏掉时,仍以报告与文档给出的手动步骤为准。
+
+「错误 40」是多根因通用码,单靠一句现象无法定位 —— 报障时附上这份报告,可省下大量往返。
+分层细节与排错步骤见 [installer/README.md](installer/README.md) 与
+[docs/troubleshooting-error40.md](docs/troubleshooting-error40.md)。
+
 ## 仓库结构
 
 | 目录 | 内容 |
 |------|------|
-| [`installer/`](installer/) | **一键整合包**源文件：双击 `安装.bat` 自动检测路径、打补丁、按需注册基础设备 VM 并补建链接克隆快照(打包好的 zip 见 [Releases](../../releases)) |
+| [`installer/`](installer/) | **一键整合包**源文件：双击 `安装.bat` 自动检测路径、打补丁、按需注册基础设备 VM 并补建链接克隆快照;另含只读环境诊断 `环境检查.bat`(打包好的 zip 见 [Releases](../../releases)) |
 | [`src/`](src/)         | 垫片源码：`vbox52_proxy.cpp`、`vbox52_thunks.asm`、`spoof_thunks.cpp`、`imachine_entries.asm`、`vbox52.def` |
 | [`build/`](build/)     | `build.bat`（32 位 MSVC）和我们预编译好的 `VBox52.dll` |
 | [`patches/`](patches/) | `patch_var_plugin.py`、`patch_ngfw_plugin.py` 及插件补丁规格说明 |
@@ -97,6 +121,10 @@ NE9000 这几台跑在完整虚拟机里、各配 4 GB 内存，同时拉起多�
 4. 它分两步:第 1 步打补丁(自动检测 eNSP/VBox 装在哪、拷垫片 DLL、写版本伪装、按真实
    路径生成 CLSID 项、给 AR 插件打补丁),第 2 步核对基础设备 VM 的注册状态、按需修复并
    补建缺失的链接克隆快照。全程双击一次、UAC 只弹一次,无需手动指定路径。
+
+设备拉不起来报"错误 40"时,**先双击 `环境检查.bat`** 采一份环境报告 —— 只读采集、不改动任何
+设置,报告落在 `%ProgramData%\ensp-vbox-shim\` 下,可直接附进 issue;诊断结束后的菜单会对
+本次实际查出的问题给出可修项。详见 [installer/README.md](installer/README.md)。
 
 还原:双击 **`卸载.bat`**。只想看当前状态不改动:`install.ps1 -Check`。
 整合包里的脚本与说明就是仓库 [`installer/`](installer/) 目录的内容,详见
