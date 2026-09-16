@@ -34,7 +34,10 @@ param(
     [switch]$Yes,             # 跳过逐条确认(无人值守;与 -Fix 合用)
     [switch]$DryRun,          # 只列计划,不执行任何修复
     [switch]$NoMenu,          # 旧参数:现在是默认行为,接受但不起作用
-    [string]$ReportPath = ""  # 默认 %ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt
+    [string]$ReportPath = "", # 默认 %ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt
+    # 把本机【可修】项写成清单(一行一条:<档位>\t<id>),供安装器攒修复计划。
+    # 默认不写。
+    [string]$PlanFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -832,7 +835,7 @@ function Invoke-RepairCli {
     if ($fixable.Count -eq 0) {
         Write-Host ""
         Write-Note "没有发现可由本工具自动修复的问题,本次不改动任何系统设置。"
-        return
+        return [pscustomobject]@{ Done = 0; Skipped = 0; Failed = 0; Refused = $false }
     }
 
     # --- 选择 ---
@@ -860,7 +863,7 @@ function Invoke-RepairCli {
             }
             Write-Host ""
             Write-Host "  本次不执行任何修复(选择里含未知项)。"
-            return
+            return [pscustomobject]@{ Done = 0; Skipped = 0; Failed = 0; Refused = $true }
         }
     }
 
@@ -871,7 +874,7 @@ function Invoke-RepairCli {
         Write-Host "    只做无损档          : 环境检查.bat -Fix"
         Write-Host "    含需确认档          : 环境检查.bat -Fix all"
         Write-Host "    只做指定项          : 环境检查.bat -Fix <id>[,<id>]"
-        return
+        return [pscustomobject]@{ Done = 0; Skipped = 0; Failed = 0; Refused = $false }
     }
 
     Write-Host ""
@@ -894,6 +897,10 @@ function Invoke-RepairCli {
         if ($res.Done -gt 0) {
             Write-Host "  修复后重跑一次 环境检查.bat 复核:报告第 [9] 节会按新的状态重新判定。"
         }
+    }
+
+    return [pscustomobject]@{
+        Done = $res.Done; Skipped = $res.Skipped; Failed = $res.Failed; Refused = $false
     }
 }
 
@@ -2401,6 +2408,31 @@ $fxItems = @($findings | Where-Object { ($_.Tier -eq "lossless") -or ($_.Tier -e
 $mnItems = @($findings | Where-Object { $_.Tier -eq "manual" })
 $fixIds  = @($fxItems | ForEach-Object { $_.Id })
 
+# 可修项清单,一行一条:<档位>\t<id>。
+#
+# 给安装器用:在提权之前跑一遍检测,据此攒出"用户同意的计划",再把计划交给提权的
+# 那一段执行。这是本项目的既有分工 —— 同意在提权之前征得,提权侧只执行计划、
+# 不自行判断该修什么。
+#
+# 只写【可修】的那两档:manual 档里除了第三档,还有"探测失败、未能判定"的条目,
+# 它们根本没有可执行的修复,写进去只会让下游以为有活可干。
+#
+# 写不成不是错误(没传这个开关是常态),但也【不静默】:调用方拿不到清单会以为
+# 本机没有问题,而实际可能只是这个文件没落盘。故失败时打印一行并计入探测失败。
+if ($PlanFile) {
+    try {
+        $lines = @($fxItems | ForEach-Object { ([string]$_.Tier) + "`t" + ([string]$_.Id) })
+        $planDir = Split-Path -Parent $PlanFile
+        if ($planDir -and -not (Test-Path $planDir)) {
+            New-Item -ItemType Directory -Path $planDir -Force | Out-Null
+        }
+        Set-Content -Path $PlanFile -Value $lines -Encoding ASCII
+        Write-Host ("  可修项清单: " + $PlanFile + " (" + $lines.Count + " 条)")
+    } catch {
+        Write-Fail "可修项清单" $_.Exception.Message
+    }
+}
+
 if ($fxItems.Count -eq 0) {
     Write-Host "  没有发现可由本工具自动修复的问题。"
 } else {
@@ -2523,18 +2555,30 @@ if ($Fix) {
         } catch { }
     }
 
+    # 退出码是给调用方看的:安装器那一段要据此判断"这一段到底做成了没有"。
+    # 只报 0 会让"计划里的 id 对不上、一项都没修"与"修好了"长得一模一样。
+    #   0  执行完毕(含"本机没有可修项",那不算失败)
+    #   2  没有执行任何修复,原因需要人看(选择里有未知项 / 修复出错)
+    #   3  执行了,但有项失败
+    $fixRc = 0
     try {
-        Invoke-RepairCli -Select $Fix -EnspDir $EnspDir -VBoxDir $VBoxDir `
-                         -AssumeYes $Yes.IsPresent -PlanOnly $DryRun.IsPresent
+        $cliRes = Invoke-RepairCli -Select $Fix -EnspDir $EnspDir -VBoxDir $VBoxDir `
+                                   -AssumeYes $Yes.IsPresent -PlanOnly $DryRun.IsPresent
+        if ($cliRes) {
+            if ($cliRes.Refused) { $fixRc = 2 }
+            elseif ($cliRes.Failed -gt 0) { $fixRc = 3 }
+        }
     } catch {
         Write-Host ""
         Write-Host ("[提示] 修复出错,已中止(报告已写好,不受影响): " + $_.Exception.Message)
+        $fixRc = 2
     }
 
     if ($repairTranscript) { try { Stop-Transcript | Out-Null } catch { } }
     if ($repairLog -and (Test-Path $repairLog)) {
         Write-Host ("  修复过程记录: " + $repairLog)
     }
+    exit $fixRc
 } else {
     # 不带 -Fix 时到此为止,一个键都不读。指一句下一步就够 ——
     # 该修什么、怎么修,报告第 [9] 节已经逐条写清楚了。

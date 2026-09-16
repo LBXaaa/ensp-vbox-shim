@@ -768,7 +768,7 @@ Assert-True ($diagText -match '(?m)^\s*\[switch\]\$NoMenu\b') "cli: the old -NoM
 # returns $null at EOF, and the $null case has to return not-go-ahead.
 Assert-True ($diagText -match '\[Console\]::ReadLine\(\)') "cli: the go-ahead reader is [Console]::ReadLine()"
 
-$liveReadHost = @($diagText -split "`r`n" | Where-Object {
+$liveReadHost = @([regex]::Split($diagText, '\r?\n') | Where-Object {
     ($_ -match 'Read-Host') -and ($_.TrimStart() -notmatch '^#')
 })
 Assert-Equal $liveReadHost.Count 0 "cli: no live Read-Host call remains"
@@ -818,5 +818,107 @@ $sec9  = $diagText.IndexOf('[9] ')
 $sec10 = $diagText.IndexOf('[10] ')
 Assert-True ($sec9 -gt 0) "report: section 9 exists"
 Assert-True ($sec10 -gt $sec9) "report: section 10 follows section 9"
+
+Write-Host "=== Task 15: the installer's runtime check and repair ==="
+
+# install_all.ps1 ends the install with a runtime environment check, then repairs
+# whatever it agreed with the user. The handoff between the two is a plan file:
+# diag.ps1 writes "<tier>`t<id>" lines, install_all.ps1 reads them back, decides
+# which tiers need agreement, and hands an explicit id list to the elevated pass.
+$allPath = Join-Path $repoRoot "installer\install_all.ps1"
+$allText = ""
+if (Test-Path $allPath) { $allText = Get-Content -Path $allPath -Raw }
+Assert-True ($allText.Length -gt 1000) "install: install_all.ps1 was actually read"
+
+# --- diag.ps1 can produce the plan file at all -------------------------------
+Assert-True ($diagText -match '(?m)^\s*\[string\]\$PlanFile\s*=') "plan: diag.ps1 takes -PlanFile"
+Assert-True ($diagText -match 'if \(\$PlanFile\)') "plan: diag.ps1 only writes it when asked"
+
+# The plan carries tiers, not just ids: which tier a finding is in decides whether
+# the installer may act on it without asking. A plan of bare ids would force the
+# reader to re-derive the tier, and the two could disagree.
+Assert-True ($diagText -match '\[string\]\$PlanFile\s*=') "plan: the switch exists"
+$planBlock = [regex]::Match($diagText, 'if \(\$PlanFile\) \{[\s\S]{0,1400}?\r\n\}')
+Assert-True $planBlock.Success "plan: the writing block is present"
+if ($planBlock.Success) {
+    $pb = $planBlock.Value
+    Assert-True ($pb -match '\[string\]\$_.Tier') "plan: each line carries the tier"
+    Assert-True ($pb -match '\[string\]\$_.Id') "plan: each line carries the id"
+    # PowerShell writes a tab inside a double-quoted string as backtick-t, so the
+    # source text carries those two characters rather than a literal tab. Match
+    # the sequence by code point instead of wrestling with escaping in here.
+    Assert-True ($pb.Contains([string][char]0x60 + "t")) "plan: tier and id are tab-separated"
+}
+
+# --- install_all.ps1 reads it back and splits by tier ------------------------
+Assert-True ($allText -match '-PlanFile') "install: install_all.ps1 asks for the plan"
+Assert-True ($allText -match '\$runPlan') "install: the plan is read into a list"
+Assert-True ($allText -match 'Tier = \$parts\[0\]') "install: the tier is parsed off each line"
+Assert-True ($allText -match 'Id = \$parts\[1\]') "install: the id is parsed off each line"
+
+# --- only the lossless tier may be acted on without asking -------------------
+# This is the whole point of carrying the tier: a confirm-tier repair drops the
+# network, so it may only run once the user has been shown the impact and has
+# agreed. If this ever regressed to "run everything in the plan", an install
+# would bounce the adapter with no prompt.
+Assert-True ($allText -match '\$silentItems\s+=.*Tier -eq "lossless"') "install: lossless items are separated"
+Assert-True ($allText -match '\$confirmItems\s+=.*Tier -eq "confirm"') "install: confirm items are separated"
+
+$agreeIdx = $allText.IndexOf('if ($confirmItems.Count -gt 0)')
+$agreedAdd = $allText.IndexOf('$agreed += @($confirmItems')
+Assert-True ($agreeIdx -gt 0) "install: confirm-tier items get their own prompt"
+Assert-True ($agreedAdd -gt $agreeIdx) "install: confirm-tier ids are added only after the prompt"
+
+# --- the repair pass is skipped entirely when nothing needs fixing -----------
+# The second UAC is the cost of this design, so it must not be paid for a no-op.
+$skipIdx  = $allText.IndexOf('if ($agreed.Count -eq 0)')
+$raiseIdx = $allText.IndexOf('-Verb RunAs', $skipIdx)
+Assert-True ($skipIdx -gt 0) "install: an empty plan is handled"
+Assert-True ($raiseIdx -gt $skipIdx) "install: the elevation comes after the empty-plan check"
+
+# --- the elevated pass is told what was agreed, and not to re-ask ------------
+Assert-True ($allText -match '-Fix `"\$idList`"') "install: the agreed ids are passed explicitly"
+Assert-True ($allText -match '\$idList = @\(\$agreed\) -join') "install: an empty array is caught before joining"
+Assert-True ($allText -match '-Yes') "install: the elevated pass runs without re-prompting"
+Assert-False ($allText -match '-Fix all') "install: the elevated pass never widens to every finding"
+
+# --- a stale plan file must not survive into the next run --------------------
+# Reading last run's plan would repair whatever was wrong then, not now. The
+# delete has to happen before the diagnostic runs, not after.
+$rmIdx   = $allText.IndexOf('Remove-Item $planFile')
+$diagIdx = $allText.IndexOf('& powershell.exe @diagArgs')
+Assert-True ($rmIdx -gt 0) "install: the stale plan file is cleared"
+Assert-True (($diagIdx -gt $rmIdx) -and (($diagIdx - $rmIdx) -lt 900)) "install: it is cleared before the diagnostic runs"
+
+# --- the confirmation gesture matches the rest of the tool -------------------
+# [Console]::ReadLine() and not Read-Host, for the reason given in Task 14.
+$picIdx = $allText.IndexOf('function Read-PreInstallConfirm')
+$picEnd = $allText.IndexOf('function ', $picIdx + 10)
+Assert-True ($picIdx -gt 0) "install: Read-PreInstallConfirm exists"
+if (($picIdx -gt 0) -and ($picEnd -gt $picIdx)) {
+    $picBody = $allText.Substring($picIdx, $picEnd - $picIdx)
+    Assert-True ($picBody -match '\[Console\]::ReadLine\(\)') "install: it uses [Console]::ReadLine()"
+    # The word also appears in the comment explaining why it is not used there,
+    # so only live (non-comment) lines count.
+    # Split on \r?\n rather than "`r`n": the scripts in this repo are not all
+    # stored with the same line ending (git normalises to LF in the index and
+    # checks out per core.autocrlf, so individual files are pure CRLF or pure
+    # LF). A CRLF-only split silently returns one giant line for an LF file,
+    # which would make this filter pass on the function header alone.
+    $picLive = @([regex]::Split($picBody, '\r?\n') | Where-Object {
+        ($_ -match 'Read-Host') -and ($_.TrimStart() -notmatch '^#')
+    })
+    Assert-Equal $picLive.Count 0 "install: no live Read-Host call remains"
+    Assert-True ($picBody -match 'return \$false') "install: EOF does not count as agreement"
+}
+
+# --- the exit codes the installer reads --------------------------------------
+# "Repaired" and "refused to repair, nothing done" must not look the same to the
+# caller. diag.ps1's -Fix path reports 0 / 2 / 3 and install_all.ps1 branches on
+# the child's exit code.
+Assert-True ($diagText -match 'exit \$fixRc') "exit: diag.ps1 exits with the repair result"
+Assert-True ($diagText -match '\$cliRes\.Refused') "exit: refusal is distinguished"
+Assert-True ($diagText -match '\$cliRes\.Failed') "exit: partial failure is distinguished"
+Assert-True ($allText -match '\$fixProc\.ExitCode') "exit: install_all.ps1 reads the child's exit code"
 
 Complete-TestRun

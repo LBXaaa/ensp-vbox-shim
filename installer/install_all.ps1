@@ -361,19 +361,22 @@ function Get-PreInstallRepairPlan {
 # 读不到输入(非交互会话里 stdin 被重定向,Read-Host 会立刻返回空串)时不能
 # 无限重问,否则脚本会卡死;问满 3 次按【不修】处理(不修只是维持原样)。
 function Read-PreInstallConfirm {
-    for ($i = 0; $i -lt 3; $i++) {
-        $a = ""
-        try { $a = Read-Host "  现在修复吗? 输入 Y 修复 / N 跳过" } catch { $a = "" }
-        switch ("$a".Trim().ToUpper()) {
-            "Y" { return $true }
-            "YES" { return $true }
-            "N" { return $false }
-            "NO" { return $false }
-            default { Write-Host "  请输入 Y 或 N。" -ForegroundColor Yellow }
-        }
+    Write-Host -NoNewline "  回车 = 执行 / 输入 n 再回车 = 跳过: "
+
+    # 用 [Console]::ReadLine(),不用 Read-Host。后者在 EOF 上返回空串,与"用户按了
+    # 一下回车"无从区分 —— 于是无人值守时撞上 EOF 会被当成放行,把装驱动、重绑网卡
+    # 这类动作跑掉。[Console]::ReadLine() 在 EOF 上返回 $null,两者分得开。
+    $a = $null
+    try { $a = [Console]::ReadLine() } catch { $a = $null }
+
+    if ($null -eq $a) {
+        Write-Host ""
+        Write-Info "读不到输入,按【跳过修复】处理(不改动系统)。"
+        return $false
     }
-    Write-Info "读不到输入,按【跳过修复】处理(不改动系统)。"
-    return $false
+    $t = ([string]$a).Trim().ToLower()
+    if (($t -eq "n") -or ($t -eq "no")) { return $false }
+    return $true
 }
 
 # 读一次"还要不要继续装"。只在那几条【没有自动修复手段】的发现出现时才问。
@@ -483,7 +486,7 @@ if (-not (Test-Path $installPs1))  { Write-Err "整合包损坏:缺 install.ps1"
 if (-not (Test-Path $registerPs1)) { Write-Err "整合包损坏:缺 register_vms.ps1"; exit 1 }
 
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  ensp-vbox-shim  一键安装(打补丁 + 注册设备)" -ForegroundColor Cyan
+Write-Host "  ensp-vbox-shim  一键安装(打补丁 + 注册设备 + 环境检测)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
 # --- -Check:只读检测,不提权,两段都不跑 ---
@@ -515,7 +518,7 @@ $repairPlan = @($pre.Plan)
 
 # --- 段 1:提权跑 install.ps1 ---
 # Start-Process -ArgumentList 用单一字符串,含空格路径必须自己加引号。
-Write-Step "第 1 步 / 共 2 步:打补丁(需要管理员权限,UAC 会弹一次)"
+Write-Step "第 1 步 / 共 3 步:打补丁(需要管理员权限,UAC 会弹一次)"
 $installArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$installPs1`""
 if ($EnspDir) { $installArgs += " -EnspDir `"$EnspDir`"" }
 if ($VBoxDir) { $installArgs += " -VBoxDir `"$VBoxDir`"" }
@@ -548,7 +551,7 @@ Write-OK "补丁部署完成。"
 
 # --- 段 2:非提权跑 register_vms.ps1(仅当账户就是登录用户) ---
 # 调用操作符 & 用数组,每个元素自动加引号,【不要】再手动加。
-Write-Step "第 2 步 / 共 2 步:注册基础设备 VM"
+Write-Step "第 2 步 / 共 3 步:注册基础设备 VM"
 if (Test-CurrentUserIsInteractive) {
     $regArgs = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$registerPs1)
     if ($EnspDir) { $regArgs += @("-EnspDir",$EnspDir) }
@@ -561,7 +564,103 @@ if (Test-CurrentUserIsInteractive) {
     Write-Warn "请用【平时启动 eNSP 的账户】双击本目录里的  注册设备.bat  完成注册。"
 }
 
+# --- 段 3:运行时环境检测(只读,非提权) ---
+# 装完立刻采一遍环境事实,并据此征得修复同意。
+#
+# 同意在这里征得,与安装前检查同一个理由:别让用户在一个没有上下文的提权窗口里
+# 被问话。提权侧只执行计划,不自行判断该修什么 —— 计划就是用户同意的记录。
+#
+# 为什么要有这一步:此前装完就结束了,只留下一句"启动 eNSP 拉一台设备试试"。
+# 环境行不行,使用者得自己试;试不出来,报障时手里又什么都没有。装完立刻采一次,
+# 当场的状态就被固定下来了,而报告第 [9] 节自带每一项对应的确切命令。
+Write-Step "第 3 步 / 共 3 步:运行时环境检测(只读)"
+$logDir   = Join-Path $env:ProgramData "ensp-vbox-shim"
+$planFile = Join-Path $logDir "runtime-plan.txt"
+$diagPs1  = Join-Path $ScriptDir "diag.ps1"
+$runPlan  = @()
+
+if (-not (Test-Path $diagPs1)) {
+    Write-Warn "整合包缺 diag.ps1,跳过运行时检测与修复。"
+} else {
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    # 上一轮的清单必须先删掉:留着的话,本次检测即便一条都没查出来,下面也会照着
+    # 旧清单去修——而那份清单描述的是上一次运行时的机器状态。
+    if (Test-Path $planFile) { Remove-Item $planFile -Force -ErrorAction SilentlyContinue }
+
+    $diagArgs = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$diagPs1,"-PlanFile",$planFile)
+    if ($EnspDir) { $diagArgs += @("-EnspDir",$EnspDir) }
+    if ($VBoxDir) { $diagArgs += @("-VBoxDir",$VBoxDir) }
+    & powershell.exe @diagArgs
+
+    if (Test-Path $planFile) {
+        $runPlan = @(Get-Content -Path $planFile | Where-Object { $_ -match '\S' } | ForEach-Object {
+            $parts = $_ -split "`t", 2
+            if ($parts.Count -eq 2) {
+                [pscustomobject]@{ Tier = $parts[0].Trim(); Id = $parts[1].Trim() }
+            }
+        })
+    } else {
+        # 清单没落盘 != 本机没问题。不静默跳过:说清楚,并据此不执行任何修复。
+        Write-Warn "运行时检测没有产出可修项清单,本次不做任何修复(报告仍然有效)。"
+    }
+}
+
+# --- 段 4:执行运行时检测商定的修复(提权,按需) ---
+#
+# 只在真的检出可修项时才提权。正常路径下安装前检查已经把无损档与有损档都处理过
+# 了,这里通常是空的 —— 那就不该为一次空跑再弹一个 UAC。
+$silentItems  = @($runPlan | Where-Object { $_.Tier -eq "lossless" })
+$confirmItems = @($runPlan | Where-Object { $_.Tier -eq "confirm" })
+$agreed = @($silentItems | ForEach-Object { $_.Id })
+
+if ($confirmItems.Count -gt 0) {
+    Write-Host ""
+    Write-Warn ("下面 " + $confirmItems.Count + " 项修复会短暂中断本机网络(影响见上面第 [9] 节):")
+    foreach ($it in $confirmItems) { Write-Warn ("  * " + $it.Id) }
+    if (Read-PreInstallConfirm) {
+        $agreed += @($confirmItems | ForEach-Object { $_.Id })
+    } else {
+        Write-Info "按你的选择跳过(环境保持不变)。"
+    }
+}
+
+if ($agreed.Count -eq 0) {
+    Write-OK "运行时检测没有需要执行的修复。"
+} elseif (-not (Test-Path $diagPs1)) {
+    Write-Warn "整合包缺 diag.ps1,无法执行修复。"
+} else {
+    # 空数组在 PowerShell 里会被展平成一无所有,所以这里先接住再判空。
+    $idList = @($agreed) -join ','
+    Write-Step "继续:执行运行时检测商定的修复(需要管理员权限,会再弹一次 UAC)"
+    Write-Info ("本次执行: " + $idList)
+
+    $fixArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$diagPs1`" -Fix `"$idList`" -Yes"
+    if ($EnspDir) { $fixArgs += " -EnspDir `"$EnspDir`"" }
+    if ($VBoxDir) { $fixArgs += " -VBoxDir `"$VBoxDir`"" }
+
+    $fixProc = $null
+    try {
+        $fixProc = Start-Process -FilePath "powershell.exe" -ArgumentList $fixArgs `
+                                 -Verb RunAs -Wait -PassThru -ErrorAction Stop
+    } catch {
+        Write-Warn "取消或无法提权,已跳过修复(环境保持不变)。"
+        Write-Info "稍后可双击 环境检查.bat -Fix 单独执行。"
+    }
+    if ($fixProc) {
+        if ($fixProc.ExitCode -eq 0) {
+            Write-OK "修复步骤完成(详见上方逐条结果)。"
+        } else {
+            # 非 0 有两种:某一项修复失败,或计划里的 id 在提权侧对不上(环境在这两步
+            # 之间变了)。两种都不该当作已修好,所以都指到同一份记录。
+            Write-Warn "修复步骤未全部成功(退出码 $($fixProc.ExitCode))。"
+            Write-Info "逐条结果见上方输出与 修复过程记录 那两行;"
+            Write-Info "也可以双击 环境检查.bat 重新采一份报告看现状。"
+        }
+    }
+}
+
 Write-Host "`n============================================================" -ForegroundColor Green
 Write-Host "  全部完成。启动 eNSP,拉一台设备试试。" -ForegroundColor Green
 Write-Host "  要还原:双击 卸载.bat。" -ForegroundColor Green
+Write-Host "  环境报告在 $logDir 下,报障时可直接附进 issue。" -ForegroundColor Green
 Write-Host "============================================================`n" -ForegroundColor Green
