@@ -31,9 +31,9 @@ if (-not (Test-Path $ChecksPath)) {
 }
 . $ChecksPath
 
-# 全书共用的两个记账变量:
+# 全部共用的两个记账变量:
 #   $script:DiagFailCount —— 失败的探测数,由 Write-Fail 累加(见该函数处的说明)。
-#      是全书的标量计数,读写在脚本作用域内完成,不涉及数组跨作用域绑定。
+#      是全部的标量计数,读写在脚本作用域内完成,不涉及数组跨作用域绑定。
 #   $sectionsOk           —— 实际产出内容的节号。只在顶层追加与读取,不跨函数。
 $script:DiagFailCount = 0
 $sectionsOk = @()
@@ -876,9 +876,9 @@ $sectionsOk += "8"
 Write-Host ""
 Write-Host ("  本次诊断到此结束,已产出第 " + ($sectionsOk -join " / ") + " 节。")
 if ($script:DiagFailCount -eq 0) {
-    Write-Host "  全书没有出现探测失败。"
+    Write-Host "  全部没有出现探测失败。"
 } else {
-    Write-Host ("  全书共有 " + $script:DiagFailCount + " 处探测失败,逐条标在各节里(以 [探测失败] 开头)。")
+    Write-Host ("  全部共有 " + $script:DiagFailCount + " 处探测失败,逐条标在各节里(以 [探测失败] 开头)。")
 }
 Write-Host ""
 Write-Host "  本报告只覆盖上面列出的这些节,不表示环境完全无问题:"
