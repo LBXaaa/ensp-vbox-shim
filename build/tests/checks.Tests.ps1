@@ -730,4 +730,93 @@ foreach ($constName in @("DLL_SHA256", "DLL_NAME", "CLSID_VBOX", "VARP_SHA256",
 $dllNameConst = [regex]::Match($installerText, '\$DLL_NAME\s*=\s*"([^"]*)"').Groups[1].Value
 Assert-Equal $dllNameConst "VBox52.dll" "const: the CLSID target filename is unchanged"
 
+Write-Host "=== Task 14: the repair command-line surface ==="
+
+# The interactive menu and its console layer were replaced by a command line.
+# None of the rest of this file looks at that code, so a merge that quietly
+# resurrects tui.ps1 or re-adds the menu would pass every other assertion here.
+$menuFns = @("Show-RepairMenu", "Invoke-RepairMenuEntry", "Read-RepairChoiceTui",
+             "Read-RepairChoiceLine", "Format-RepairMenuPanel", "Get-RepairMenuRows",
+             "Read-RepairConfirm", "ConvertTo-MenuSelection", "Read-MenuLine")
+
+# Everything below reads diag.ps1 as text. Pin the source first: with $diagText
+# left $null every "Assert-False ($diagText -match ...)" here would pass
+# vacuously -- $null -match anything is False -- and the task would report green
+# while checking nothing at all.
+$diagText = ""
+if (Test-Path $diagPath) { $diagText = Get-Content -Path $diagPath -Raw }
+Assert-True ($diagText.Length -gt 1000) "cli: diag.ps1 was actually read"
+
+Assert-False (Test-Path (Join-Path $repoRoot "installer\tui.ps1")) "cli: tui.ps1 is gone from the package tree"
+Assert-False ($diagText -match 'tui\.ps1') "cli: diag.ps1 no longer loads tui.ps1"
+foreach ($gone in $menuFns) {
+    Assert-False ($diagText -match ('(?m)^function\s+' + $gone + '\b')) ("cli: " + $gone + " is gone")
+}
+
+# --- the switches the documented interface describes -------------------------
+Assert-True ($diagText -match '(?m)^\s*\[string\]\$Fix\s*=') "cli: -Fix takes a selector"
+Assert-True ($diagText -match '(?m)^\s*\[switch\]\$Yes\b') "cli: -Yes exists"
+Assert-True ($diagText -match '(?m)^\s*\[switch\]\$DryRun\b') "cli: -DryRun exists"
+Assert-True ($diagText -match '(?m)^\s*\[switch\]\$NoMenu\b') "cli: the old -NoMenu is still accepted"
+
+# --- the safety property, which is the one that matters most -----------------
+#
+# A confirm-tier item must not run when nothing answers the prompt. Read-Host
+# returns "" at EOF, and "" is indistinguishable from a bare Enter -- so an
+# unattended run that hit EOF would have read as go-ahead and bounced the
+# network adapter. The reader is [Console]::ReadLine() precisely because it
+# returns $null at EOF, and the $null case has to return not-go-ahead.
+Assert-True ($diagText -match '\[Console\]::ReadLine\(\)') "cli: the go-ahead reader is [Console]::ReadLine()"
+
+$liveReadHost = @($diagText -split "`r`n" | Where-Object {
+    ($_ -match 'Read-Host') -and ($_.TrimStart() -notmatch '^#')
+})
+Assert-Equal $liveReadHost.Count 0 "cli: no live Read-Host call remains"
+
+$nullTestIdx = $diagText.IndexOf('if ($null -eq $ans)')
+Assert-True ($nullTestIdx -gt 0) "cli: the EOF case is detected with -eq `$null"
+if ($nullTestIdx -gt 0) {
+    $afterNull = $diagText.Substring($nullTestIdx, [Math]::Min(400, $diagText.Length - $nullTestIdx))
+    Assert-True ($afterNull -match 'return \$false') "cli: EOF returns not-go-ahead"
+}
+
+# --- -DryRun stops before the execution loop ---------------------------------
+# The check has to come before the loop that calls the primitives, not after it.
+$planIdx = $diagText.IndexOf('if ($PlanOnly) {')
+$execIdx = $diagText.IndexOf('$r = & $step.Fn @argMap', $planIdx)
+Assert-True ($planIdx -gt 0) "cli: -DryRun has its own branch"
+Assert-True (($execIdx -gt $planIdx) -and ($execIdx -lt ($planIdx + 2000))) "cli: the -DryRun branch sits before the execution loop"
+
+# --- an unknown id aborts the run rather than being ignored -------------------
+#
+# Silently dropping an unrecognised id and repairing the rest would leave the
+# caller believing everything they named had been handled.
+$badIdx = $diagText.IndexOf('if ($bad.Count -gt 0)')
+$runIdx = $diagText.IndexOf('$res = Invoke-RepairRun')
+Assert-True ($badIdx -gt 0) "cli: unknown ids are detected"
+Assert-True ($runIdx -gt $badIdx) "cli: the unknown-id branch precedes the runner"
+if (($badIdx -gt 0) -and ($runIdx -gt $badIdx)) {
+    $badBlock = $diagText.Substring($badIdx, $runIdx - $badIdx)
+    Assert-True ($badBlock -match 'return') "cli: an unknown id returns before anything is executed"
+}
+
+# --- the findings reach the report -------------------------------------------
+#
+# Section 9 is the whole point of the CLI rework: what is wrong on THIS machine,
+# and the exact commands, in the file people attach to issues. It has to be
+# computed before the report's transcript stops -- computing findings afterwards
+# is where they used to live, and it left the report describing problems with no
+# way to act on them.
+$findIdx = $diagText.IndexOf('$findings = @(Get-RepairFindings')
+$stopIdx = $diagText.IndexOf('if ($transcriptOn) {')
+Assert-True ($findIdx -gt 0) "report: diag.ps1 computes findings for the report"
+Assert-True ($stopIdx -gt $findIdx) "report: findings are computed before the report transcript stops"
+
+# The order matters for the same reason: section numbering is written by hand in
+# several places, and a bad merge can drop one.
+$sec9  = $diagText.IndexOf('[9] ')
+$sec10 = $diagText.IndexOf('[10] ')
+Assert-True ($sec9 -gt 0) "report: section 9 exists"
+Assert-True ($sec10 -gt $sec9) "report: section 10 follows section 9"
+
 Complete-TestRun
