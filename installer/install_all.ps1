@@ -70,10 +70,24 @@ function Test-CurrentUserIsInteractive {
 # 目的:把问题提到"提权安装之前"报出来。v0.1.4 的教训是故障要到设备启动阶段才
 # 暴露,那时用户已经装完并认为成功了 —— 本检查让问题在装之前就浮出水面。
 #
-# 范围是穷举的固定集合(设计 §8.1),共五项,不含启发式判断:
+# 范围是穷举的固定集合(设计 §8.1),不含启发式判断:
 #     host-only 驱动包缺失 / VBox 目录 / eNSP 目录 / 目标目录可写 / VBox 主版本 < 7
-# 性能计数器、防火墙、端口占用、抓包驱动、子网冲突、VRAMSize 都不在这里:它们不
-# 阻断安装,在安装阶段报出来只是噪音,由独立的 环境检查.bat 承担。
+#     + 性能计数器、防火墙放行
+# 后两项在 §8.1 里原本不进安装前检查(「不阻断安装,报出来只是噪音」)。现在纳入,
+# 是因为它们从"只报"变成了"能自动修好"(设计 §7.1 的无损档):既然能在用户不承担
+# 任何风险的前提下替他把环境修好,就没理由让它们留到设备启动时才暴露。
+# 端口占用、抓包驱动、子网冲突、VRAMSize 仍不在这里 —— 它们既不阻断安装,也没有
+# 自动修复手段,由独立的 环境检查.bat 承担。
+#
+# 发现问题后按【是否无损】(设计 §7.1)分三档处置,而不是按严重程度:
+#     report   没有自动修复手段          -> 只报,问用户是否还要继续装
+#     confirm  可修,但会打断在用的东西   -> 打印影响,问过才修
+#     silent   可修、可撤销、不打断任何东西 -> 不问,直接修
+#
+# 三档的【判断】全在本文件完成,而【执行】在提权后的 install.ps1 —— 因为本检查
+# 刻意不提权(要能在 UAC 弹出来之前拦住用户),而每一项修复都要管理员权限。于是
+# 这里产出的是"商定好的修复计划"(一串令牌),原样传给提权的子进程;提权侧只执行
+# 计划,不再自行判断该修什么。计划就是用户同意的记录,提权侧多修一项都是越权。
 #
 # 探测函数一律只读、不打印、不退出;判据单独成一个纯函数(事实进、问题清单出),
 # 这样每一条判据都能用手工构造的假事实核对,而不必真去弄坏一台机器。
@@ -186,6 +200,28 @@ function Get-PreInstallFacts {
         if ($verProbe.Ok) { $major = Get-VBoxMajorVersion -Lines $verProbe.Lines }
     }
 
+    # 性能计数器:判据是【实跑一次计数器】,不是去看 Perflib 注册表键 —— 那个键
+    # 在健康的当前 Windows 上本来就不存在(checks.ps1 里记了这条实测)。探测抛错
+    # 记 $null(无法判定),不记 $false。
+    $perf = $null
+    try { $perf = [bool](Test-PerfCountersFunctional).Functional } catch { $perf = $null }
+
+    # 防火墙:同样只取正读。读到 0 条规则时【不】下"缺规则"的结论 —— 那既可能是
+    # 确实没有,也可能是当前权限读不到防火墙配置,两种情形在这里分不开。宁可
+    # 留给 环境检查.bat 以更高权限复核,也不据此去建一条可能重复的规则。
+    #
+    # 这一步在非提权下要枚举全部规则(本机实测 1274 条,约 7 秒),是本次检查里
+    # 最慢的一步,所以调用点会先打印一行提示,免得用户以为卡死了。
+    $fwCount = -1
+    $fwAllow = $false
+    try {
+        $fwLines = @(Get-FirewallRuleTextForEnsp)
+        $fwCount = $fwLines.Count
+        if ($fwCount -gt 0) { $fwAllow = [bool](Parse-FirewallRulesForEnsp -Lines $fwLines).HasAllowRule }
+    } catch {
+        $fwCount = -1
+    }
+
     return [pscustomobject]@{
         EnspDir        = $ensp
         VBoxDir        = $vbox
@@ -195,123 +231,250 @@ function Get-PreInstallFacts {
         # 说一句话(见下方调用点)。
         DriverProbeOk  = $drvOk
         TargetWritable = (Get-TargetWritableFact -EnspDir $ensp)
+        PerfFunctional = $perf
+        # -1 表示没读到(与"读到 0 条"是两回事)。
+        FirewallRuleCount    = $fwCount
+        FirewallHasAllowRule = $fwAllow
     }
 }
 
-# 判据(纯函数):事实进,阻断项清单出。不采集、不打印、不退出。
+# 一条发现的形状。Tier 三档见文件上方说明;Token 是提权侧认得的修复令牌
+# (report 档为空 —— 它没有可执行的修复);Impact 只在 confirm 档有内容,那是要
+# 用户点头之前必须先看到的那段话。
+function New-PreInstallFinding {
+    param(
+        [string]$Id,
+        [string]$Tier,
+        [string]$Detail,
+        [string]$Token = "",
+        [string[]]$Impact = @()
+    )
+    return [pscustomobject]@{
+        Id     = $Id
+        Tier   = $Tier
+        Detail = $Detail
+        Token  = $Token
+        Impact = @($Impact)
+    }
+}
+
+# 判据(纯函数):事实进,发现清单出。不采集、不打印、不退出。
 #
-# $Driver / $VBoxMajor / $TargetWritable 为 $null 一律表示"取不到、无法判定",
-# 不当作缺陷 —— 探测拿不到值就判成有问题,是在凭空制造故障(checks.ps1 的
-# Test-VramTooSmall 记的是同一条教训)。
-function Get-PreInstallBlockers {
+# $Driver / $VBoxMajor / $TargetWritable / $PerfFunctional 为 $null 一律表示
+# "取不到、无法判定",不当作缺陷 —— 探测拿不到值就判成有问题,是在凭空制造故障
+# (checks.ps1 的 Test-VramTooSmall 记的是同一条教训)。同理,防火墙读到 0 条
+# ($FirewallRuleCount 为 0)不下结论:它和"读不到"分不开。
+#
+# 清单顺序固定为 report -> confirm -> silent:打印时先出最需要用户做决定的那几条。
+function Get-PreInstallFindings {
     param(
         [string]$EnspDir,
         [string]$VBoxDir,
         $VBoxMajor,
         $Driver,
-        $TargetWritable
+        $TargetWritable,
+        $PerfFunctional,
+        [int]$FirewallRuleCount = -1,
+        [bool]$FirewallHasAllowRule = $false
     )
 
-    $problems = @()
+    $found = @()
 
+    # --- report 档:没有自动修复手段,只报 ------------------------------------
     if (-not $EnspDir) {
-        $problems += "找不到 eNSP 安装目录(可用 -EnspDir 手动指定)"
+        $found += New-PreInstallFinding -Id "enspdir" -Tier "report" `
+            -Detail "找不到 eNSP 安装目录(可用 -EnspDir 手动指定)"
     }
     if (-not $VBoxDir) {
-        $problems += "找不到 VirtualBox 安装目录(可用 -VBoxDir 手动指定)"
+        $found += New-PreInstallFinding -Id "vboxdir" -Tier "report" `
+            -Detail "找不到 VirtualBox 安装目录(可用 -VBoxDir 手动指定)"
     }
     # 垫片面向 7.x;5.2 是 eNSP 原生支持的版本,不需要也不该装本垫片。
     if ($null -ne $VBoxMajor -and [int]$VBoxMajor -lt 7) {
-        $problems += "VirtualBox 主版本是 $VBoxMajor,垫片只适用于 7.x"
-    }
-    # 只检查"这两个驱动包在不在驱动库里"。服务是否在跑不在这里 —— 它不阻断安装。
-    if ($null -ne $Driver) {
-        if (-not $Driver.NetAdpPresent) { $problems += "host-only 驱动包缺失: VBoxNetAdp6" }
-        if (-not $Driver.NetLwfPresent) { $problems += "host-only 驱动包缺失: VBoxNetLwf" }
+        $found += New-PreInstallFinding -Id "vboxver" -Tier "report" `
+            -Detail "VirtualBox 主版本是 $VBoxMajor,垫片只适用于 7.x"
     }
     if ($TargetWritable -eq $false) {
-        $problems += "eNSP 目录不可写(连管理员都写不进去): $EnspDir"
+        $found += New-PreInstallFinding -Id "writable" -Tier "report" `
+            -Detail "eNSP 目录不可写(连管理员都写不进去): $EnspDir"
     }
 
-    return $problems
+    # --- confirm 档:可修,但会打断正在使用的东西 ------------------------------
+    # 只检查"这两个驱动包在不在驱动库里"。服务是否在跑不在这里 —— 它不阻断安装。
+    # 两个包无论缺哪个,修复都是同一条四步链(见 fix.ps1 头部:顺序是硬依赖),
+    # 所以只出一个发现、一个令牌。
+    $drvWhy = @()
+    if ($null -ne $Driver) {
+        if (-not $Driver.NetAdpPresent) { $drvWhy += "VBoxNetAdp6" }
+        if (-not $Driver.NetLwfPresent) { $drvWhy += "VBoxNetLwf" }
+    }
+    if ($drvWhy.Count -gt 0) {
+        $found += New-PreInstallFinding -Id "hostonly" -Tier "confirm" -Token "hostonly" `
+            -Detail ("host-only 驱动包缺失: " + ($drvWhy -join "、") + "(设备会起不来,或起来连不通宿主)") `
+            -Impact @(
+                "重装驱动包会重新注册网络组件,并禁用/启用一次 host-only 网卡 ——"
+                "本机网络会短暂中断(数秒到十几秒)。"
+                "正在运行的设备、Tailscale / WireGuard 之类的常连隧道、"
+                "Hyper-V 虚拟交换机都会闪断。修复前请先关闭 eNSP。"
+            )
+    }
+
+    # --- silent 档:无损可修,不问 --------------------------------------------
+    if ($PerfFunctional -eq $false) {
+        $found += New-PreInstallFinding -Id "perfcounters" -Tier "silent" -Token "perfcounters" `
+            -Detail "Windows 性能计数器损坏(会导致设备一直打印 ####,进不到命令行)"
+    }
+    if ($FirewallRuleCount -gt 0 -and (-not $FirewallHasAllowRule)) {
+        $found += New-PreInstallFinding -Id "firewall" -Tier "silent" -Token "firewall" `
+            -Detail "防火墙未放行 eNSP_VBoxServer(会导致设备一直打印 ####,进不到命令行)"
+    }
+
+    return $found
 }
 
-function Write-PreInstallBlockers($Blockers) {
-    Write-Warn "安装前检查发现 $($Blockers.Count) 个问题:"
-    foreach ($b in $Blockers) { Write-Warn "  - $b" }
+# 判据(纯函数):发现清单 + "要不要修有损项"的答复 -> 交给提权侧执行的令牌计划。
+#
+# 这个计划就是用户同意的记录,install.ps1 只执行它、不增删。silent 档不受答复
+# 影响(它本来就无需征得同意);confirm 档只有答复为真才进计划。
+#
+# 顺序按 install.ps1 的执行顺序固定下来,与该清单的排列无关 —— 计划是确定性的
+# 才好逐步核对。每个令牌最多进计划一次:计划里若出现两次同一个令牌,提权侧会把
+# 整条链跑两遍(host-only 那条链会因此重绑两次网卡)。返回空数组时 PowerShell 会
+# 把它摊平成一无所有,调用方要用 @(Get-PreInstallRepairPlan ...) 接住。
+function Get-PreInstallRepairPlan {
+    param($Findings, [bool]$ConfirmAnswer = $false)
+
+    $order = @("hostonly", "perfcounters", "firewall")
+    $plan = @()
+    foreach ($token in $order) {
+        foreach ($f in @($Findings)) {
+            if ($f.Token -ne $token) { continue }
+            if ($f.Tier -eq "silent") { $plan += $token; break }
+            if (($f.Tier -eq "confirm") -and $ConfirmAnswer) { $plan += $token; break }
+        }
+    }
+    return @($plan)
 }
 
-# 读一次菜单选择。返回 1 / 2 / 3。
+# 读一次"要不要修有损项"的确认。
 #
 # 读不到输入(非交互会话里 stdin 被重定向,Read-Host 会立刻返回空串)时不能
-# 无限重问,否则脚本会卡死;问满 3 次就按【退出】处理 —— 没装总比乱装好。
-function Read-PreInstallChoice {
-    Write-Host ""
-    Write-Host "  怎么处理?" -ForegroundColor Yellow
-    Write-Host "    [1] 修复后继续 —— 先双击 环境检查.bat 按提示修好环境,再回来重装(推荐)"
-    Write-Host "    [2] 仍要继续 —— 带着这些问题继续安装"
-    Write-Host "    [3] 退出"
+# 无限重问,否则脚本会卡死;问满 3 次按【不修】处理 —— 没动总比乱动好,而且
+# 不修的后果只是"维持原样",不是"弄坏"。
+function Read-PreInstallConfirm {
     for ($i = 0; $i -lt 3; $i++) {
         $a = ""
-        try { $a = Read-Host "  请输入 1 / 2 / 3" } catch { $a = "" }
-        switch ("$a".Trim()) {
-            "1" { return 1 }
-            "2" { return 2 }
-            "3" { return 3 }
-            default { Write-Host "  请输入 1、2 或 3。" -ForegroundColor Yellow }
+        try { $a = Read-Host "  现在修复吗? 输入 Y 修复 / N 跳过" } catch { $a = "" }
+        switch ("$a".Trim().ToUpper()) {
+            "Y" { return $true }
+            "YES" { return $true }
+            "N" { return $false }
+            "NO" { return $false }
+            default { Write-Host "  请输入 Y 或 N。" -ForegroundColor Yellow }
+        }
+    }
+    Write-Info "读不到输入,按【跳过修复】处理(不改动系统)。"
+    return $false
+}
+
+# 读一次"还要不要继续装"。只在那几条【没有自动修复手段】的发现出现时才问。
+#
+# 默认按【退出】处理:没装总比乱装好 —— 与原来那个三选一菜单里"退出"的取向一致。
+function Read-PreInstallContinue {
+    for ($i = 0; $i -lt 3; $i++) {
+        $a = ""
+        try { $a = Read-Host "  仍要继续安装吗? 输入 C 继续 / Q 退出" } catch { $a = "" }
+        switch ("$a".Trim().ToUpper()) {
+            "C" { return $true }
+            "CONTINUE" { return $true }
+            "Q" { return $false }
+            "QUIT" { return $false }
+            default { Write-Host "  请输入 C 或 Q。" -ForegroundColor Yellow }
         }
     }
     Write-Info "读不到输入,按【退出】处理。"
-    return 3
+    return $false
 }
 
-# 依选择动作。单独成函数,好让三个分支都能被逐条核对。
-function Invoke-PreInstallChoice {
-    param([int]$Choice)
-
-    switch ($Choice) {
-        1 {
-            # 不在这里修:修复要提权,还要求 eNSP 已关闭,那是 环境检查.bat 的活。
-            Write-Info "已停止安装。请先双击本目录里的  环境检查.bat ,按提示修复环境,"
-            Write-Info "修好后重新双击 安装.bat 即可。"
-            exit 1
-        }
-        2 {
-            Write-Warn "按你的选择继续安装。上面列出的问题可能导致装完仍然起不来设备。"
-        }
-        3 {
-            Write-Info "已退出,未做任何改动。"
-            exit 0
-        }
-    }
-}
-
-# 安装前检查全流程:采集 -> 判定 -> 有阻断就问用户。
-# 单独成函数,好让整段(含干净机器上那句话)都能被直接调用核对。
+# 安装前检查全流程:采集 -> 判定 -> 分档处置 -> 出计划。
+#
+# 全程只读,且【只返回决定、不 exit】—— 退出由调用点做。原来那几个分支是直接
+# exit 的,那样整段逻辑就没法被调用核对(调用一次会把核对用的进程一起结束掉)。
+# 现在返回 @{ Plan; Proceed },两件事分开:
+#   Plan     商定好要修的令牌清单(report 档永远不进计划;confirm 档看答复)
+#   Proceed  用户在 report 档面前选了继续还是退出
 function Invoke-PreInstallCheck {
     param([string]$EnspDir, [string]$VBoxDir)
 
-    $facts    = Get-PreInstallFacts -EnspDir $EnspDir -VBoxDir $VBoxDir
-    $blockers = @(Get-PreInstallBlockers -EnspDir $facts.EnspDir -VBoxDir $facts.VBoxDir `
-                                         -VBoxMajor $facts.VBoxMajor `
-                                         -Driver $facts.Driver `
-                                         -TargetWritable $facts.TargetWritable)
+    # 这一步里防火墙要枚举全部规则,非提权下约 7 秒(本机 1274 条实测)。先说一声,
+    # 免得用户以为卡死了。
+    Write-Info "正在采集(其中防火墙规则枚举约需数秒)⋯"
+    $facts = Get-PreInstallFacts -EnspDir $EnspDir -VBoxDir $VBoxDir
+    $found = @(Get-PreInstallFindings -EnspDir $facts.EnspDir -VBoxDir $facts.VBoxDir `
+                                      -VBoxMajor $facts.VBoxMajor `
+                                      -Driver $facts.Driver `
+                                      -TargetWritable $facts.TargetWritable `
+                                      -PerfFunctional $facts.PerfFunctional `
+                                      -FirewallRuleCount $facts.FirewallRuleCount `
+                                      -FirewallHasAllowRule $facts.FirewallHasAllowRule)
 
-    if ($blockers.Count -gt 0) {
-        Write-PreInstallBlockers $blockers
-        Invoke-PreInstallChoice -Choice (Read-PreInstallChoice)
-        return
-    }
-
-    # 干净机器上只说一句通过,不逐条罗列非问题 —— 健康用户不该在这里被拦下问话。
-    $verText = if ($null -ne $facts.VBoxMajor) { "VBox 主版本 $($facts.VBoxMajor)" } else { "VBox 版本未知" }
+    # 探测取不到值不等于有问题(不阻断、也不算发现),但也不能装作查过了 ——
+    # 明说这一层没判成,与干净路径那句"通过"要分得开。
     if ($facts.VBoxDir -and (-not $facts.DriverProbeOk)) {
-        # 探测取不到值不等于有问题(不阻断),但也不能装作查过了 —— 明说这一层没判成。
         Write-Info "host-only 驱动层取不到 VBoxDrvInst 输出,本层未判定(不阻断安装)。"
-        Write-OK "其余安装前检查通过($verText)。"
-    } else {
-        Write-OK "通过:eNSP 与 VirtualBox 均可定位,host-only 驱动齐全,$verText。"
     }
+    if ($null -eq $facts.PerfFunctional) {
+        Write-Info "性能计数器探测失败,本层未判定(不阻断安装)。"
+    }
+    if ($facts.FirewallRuleCount -lt 0) {
+        Write-Info "防火墙规则读不到,本层未判定(不阻断安装)。"
+    }
+
+    if ($found.Count -eq 0) {
+        # 干净机器上只说一句通过,不逐条罗列非问题 —— 健康用户不该在这里被拦下问话,
+        # 更不该被问到修复。
+        $verText = if ($null -ne $facts.VBoxMajor) { "VBox 主版本 $($facts.VBoxMajor)" } else { "VBox 版本未知" }
+        Write-OK "通过:eNSP 与 VirtualBox 均可定位,host-only 驱动齐全,性能计数器与防火墙放行正常,$verText。"
+        return [pscustomobject]@{ Plan = @(); Proceed = $true }
+    }
+
+    $report  = @($found | Where-Object { $_.Tier -eq "report" })
+    $confirm = @($found | Where-Object { $_.Tier -eq "confirm" })
+    $silent  = @($found | Where-Object { $_.Tier -eq "silent" })
+
+    Write-Warn ("安装前检查发现 " + $found.Count + " 个问题:")
+    foreach ($f in $report)  { Write-Warn ("  [无法自动修复] " + $f.Detail) }
+    foreach ($f in $confirm) { Write-Warn ("  [可修复,会影响网络] " + $f.Detail) }
+    foreach ($f in $silent)  { Write-Warn ("  [可修复] " + $f.Detail) }
+    if ($silent.Count -gt 0) {
+        Write-Info "  标 [可修复] 的无需确认,安装时会一并修好。"
+    }
+
+    # 有损档:先把影响说清楚,再问。答复只影响这一档进不进计划。
+    $answer = $false
+    if ($confirm.Count -gt 0) {
+        Write-Host ""
+        Write-Warn "修复下面这项会短暂中断本机网络:"
+        foreach ($f in $confirm) { foreach ($line in @($f.Impact)) { Write-Warn ("  " + $line) } }
+        $answer = Read-PreInstallConfirm
+    }
+
+    # 无解档:没有自动修复手段,只能如实说明并让用户决定要不要带着它继续。
+    $proceed = $true
+    if ($report.Count -gt 0) {
+        Write-Host ""
+        Write-Warn "标 [无法自动修复] 的问题没有自动修复手段,只能手动处理(或带着它继续)。"
+        $proceed = Read-PreInstallContinue
+    }
+
+    $plan = @(Get-PreInstallRepairPlan -Findings $found -ConfirmAnswer $answer)
+    if ($plan.Count -gt 0) {
+        Write-Info ("本次安装会先修复: " + ($plan -join ", "))
+    } elseif ($confirm.Count -gt 0) {
+        Write-Info "按你的选择跳过该项修复(环境保持不变,继续安装)。"
+    }
+
+    return [pscustomobject]@{ Plan = $plan; Proceed = $proceed }
 }
 
 # --- 段 0:前置检查 ---
@@ -327,6 +490,9 @@ Write-Host "============================================================" -Foreg
 # --- -Check:只读检测,不提权,两段都不跑 ---
 # 检测路径不改动系统,不需要管理员权限,所以【绝不】走 RunAs —— 用户只是想知道
 # 环境什么样,不该为此吃一个 UAC。register_vms.ps1 同样跳过:检测不写任何东西。
+#
+# 同样地,-Check 也【绝不】进下面的 Invoke-PreInstallCheck:那条路径会问出修复
+# 计划来,而 -Check 只报不修。整个分支在本行以下、安装前检查以上就 exit 掉了。
 if ($Check) {
     Write-Step "只读检测:不提权,直接转交 install.ps1 -Check"
     # 调用操作符 & 用数组,每个元素自动加引号,【不要】再手动加。
@@ -337,10 +503,16 @@ if ($Check) {
     exit $LASTEXITCODE
 }
 
-# --- 安装前检查:五项阻断条件,有问题先问用户 ---
-# 放在提权之前 —— 这就是它的全部意义:别让用户装完才发现问题。
+# --- 安装前检查:只读采集 + 分档处置,同意在这里征得 ---
+# 放在提权之前 —— 这就是它的全部意义:别让用户装完才发现问题,也别让用户在
+# 一个没有上下文的提权窗口里被问话。用户在这里点头,提权侧才动手。
 Write-Step "安装前检查(只读)"
-Invoke-PreInstallCheck -EnspDir $EnspDir -VBoxDir $VBoxDir
+$pre = Invoke-PreInstallCheck -EnspDir $EnspDir -VBoxDir $VBoxDir
+if (-not $pre.Proceed) {
+    Write-Info "已退出,未做任何改动。"
+    exit 0
+}
+$repairPlan = @($pre.Plan)
 
 # --- 段 1:提权跑 install.ps1 ---
 # Start-Process -ArgumentList 用单一字符串,含空格路径必须自己加引号。
@@ -348,6 +520,9 @@ Write-Step "第 1 步 / 共 2 步:打补丁(需要管理员权限,UAC 会弹一�
 $installArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$installPs1`""
 if ($EnspDir) { $installArgs += " -EnspDir `"$EnspDir`"" }
 if ($VBoxDir) { $installArgs += " -VBoxDir `"$VBoxDir`"" }
+# 商定好的修复计划,令牌逗号分隔。为空就【不传这个开关】—— 提权侧把"没传"和
+# "传了空串"都当"一项都不修",但少一个参数在命令行里更好核对。
+if ($repairPlan.Count -gt 0) { $installArgs += " -Repair `"$($repairPlan -join ',')`"" }
 # 本编排器本身【非提权】运行,当前 SID 就是交互登录用户的 SID。
 # 传给提权的 install.ps1,让它把 vboxserver\ 树的写权限授给这个账户
 # (eNSP 在 Program Files 时,非提权的 VBoxHeadless 否则建不出 Logs\ -> error 40)。
@@ -362,8 +537,12 @@ try {
     exit 1
 }
 if ($proc.ExitCode -ne 0) {
-    Write-Err "打补丁步骤失败(退出码 $($proc.ExitCode)),已跳过注册。"
+    # 两种失败共用这个出口:安装前商定的修复没做成,或打补丁本身失败。两者都不该
+    # 当作装好了继续往下走,所以都停在这里,并指向同一份日志。
+    Write-Err "提权步骤失败(退出码 $($proc.ExitCode)),已跳过注册。"
+    Write-Info "可能是打补丁失败,也可能是上面商定的修复没有全部完成(日志里搜 [修复])。"
     Write-Info "详情见日志: $env:ProgramData\ensp-vbox-shim\install.log"
+    Write-Info "若想先装上垫片、环境稍后再修:重跑 安装.bat,修复那一步选 N 跳过即可。"
     exit 1
 }
 Write-OK "补丁部署完成。"

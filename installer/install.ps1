@@ -25,6 +25,10 @@
       powershell -ExecutionPolicy Bypass -File install.ps1 -Check     # 只检测,不改动
 
     可选 -EnspDir / -VBoxDir 手动指定路径(自动检测失败时)。
+
+    -Repair 是安装前商定好的修复计划(逗号分隔的令牌,见 Get-RepairPlanSteps),
+    由 install_all.ps1 在【非提权】上下文里问过用户之后传进来。本脚本只执行这个
+    计划,不自行判断该修什么;不传即为一项都不修。-Check 不看这个参数。
 #>
 [CmdletBinding()]
 param(
@@ -36,7 +40,11 @@ param(
     # 非提权运行的 VBoxHeadless 要往 vboxserver\<VM>\ 写日志/运行态,需要该账户对那棵树有
     # "修改"权限,否则建不出 Logs\ 目录 -> VERR_FILE_NOT_FOUND -> error 40。
     # 留空则回退授权给本地 Users 组(well-known SID S-1-5-32-545)。
-    [string]$GrantSid = ""
+    [string]$GrantSid = "",
+    # 安装前商定的修复计划,逗号分隔的令牌(如 "hostonly,perfcounters")。由【非提权】
+    # 的 install_all.ps1 在用户眼皮底下问出来再传进来。留空 = 一项都不修。
+    # 认得的令牌见 Get-RepairPlanSteps;不认得的令牌会让修复失败,安装随之停下。
+    [string]$Repair = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,6 +56,14 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # 必须在 script 作用域(dot-source 会写入调用方作用域)执行,checks.ps1 里的
 # $script: 变量才落在本脚本的作用域里,其函数读取时才解析得到。
 . (Join-Path $ScriptDir "checks.ps1")
+
+# fix.ps1 是修复原语库(顶层只有函数定义,外加 dot-source 一次 checks.ps1),同样
+# 可安全 dot-source。只在"安装前商定了要修"时才真正被调用,但 dot-source 本身不
+# 改任何东西,放在这里省得两处判断。
+# 缺这个文件不算致命(不用修复就装得下去),所以不在这里报错退出 —— 真的要用它时
+# 由 Invoke-AgreedRepairs 报"找不到修复原语",那才是该报的地方。
+$fixPs1 = Join-Path $ScriptDir "fix.ps1"
+if (Test-Path $fixPs1) { . $fixPs1 }
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -190,6 +206,219 @@ function Set-RegValue($Path, $Name, $Value) {
     } else {
         New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType String -Force | Out-Null
     }
+}
+
+# ---------------------------------------------------------------------------
+# 安装前商定的修复(提权侧执行)
+#
+# 设计 §7.1 把修复分三档,但【判断】不在这里:本文件跑在提权窗口里,那里没有
+# 用户的输入;而 -Check 又必须全程不提权、只读。所以"该修什么"与"征得同意"都在
+# install_all.ps1 那边完成,本文件只执行它传进来的计划。计划就是用户同意的记录
+# —— 这里多修一项是越权,少修一项则辜负了那句"本次安装会先修复"。
+#
+# 令牌 -> 步骤 的展开只此一份。顺序是 fix.ps1 头部写死的硬依赖:只做 1-2 不做 3,
+# 绑定看着是 Enabled,但过滤驱动不在数据路径上,startvm 仍报
+# VERR_INTNET_FLT_IF_NOT_FOUND —— 症状与完全没修一模一样,是最难查的一种"修了没用"。
+#
+# BestEffort 是"这一项失败要不要拦下整个安装":
+#   hostonly     否。要用户点头、会断网的就是它,用户是为它点的头,没做成必须停下;
+#                停下的出口也现成 —— 重跑 安装.bat,修复那步选 N 跳过。
+#   其余两项     是。无损档,没问过用户。一次防火墙策略被组策略锁死,不该让这台
+#                机器从此再也装不上垫片。失败照报,后果照说,但不拦。
+# ---------------------------------------------------------------------------
+
+# "a,b , c" -> @("a","b","c")。空串与多余空白都丢掉。
+function Parse-RepairPlanTokens {
+    param([string]$Text)
+    $tokens = @()
+    foreach ($p in @("$Text" -split ",")) {
+        $t = $p.Trim()
+        if ($t) { $tokens += $t }
+    }
+    return $tokens
+}
+
+# 令牌 -> 步骤。认得的令牌展开成原语调用;不认得的令牌展开成一条 Fn 为空的步骤,
+# 由 Invoke-AgreedRepairs 当作失败报出来 —— 悄悄忽略它,等于"说好要修,其实没修"。
+function Get-RepairPlanSteps {
+    param([string[]]$Tokens, [string]$EnspDir = "", [string]$VBoxDir = "")
+
+    $steps = @()
+    foreach ($t in @($Tokens)) {
+        switch ($t) {
+            "hostonly" {
+                $steps += [pscustomobject]@{ Token = $t; BestEffort = $false; Fn = "Repair-InstallNetAdp";    Args = @{ VBoxDir = $VBoxDir } }
+                $steps += [pscustomobject]@{ Token = $t; BestEffort = $false; Fn = "Repair-InstallNetLwf";    Args = @{ VBoxDir = $VBoxDir } }
+                $steps += [pscustomobject]@{ Token = $t; BestEffort = $false; Fn = "Repair-BounceAdapter";    Args = @{} }
+                # 这一步建出来的 DHCP 条目是【禁用】的,本文件也从不启用它 ——
+                # 设计 §10.1 把"host-only 的 DHCP 到底该不该开"列为未决问题,
+                # 不在这里替它选边(fix.ps1 里记了同一件事)。
+                $steps += [pscustomobject]@{ Token = $t; BestEffort = $false; Fn = "Repair-CreateHostOnlyIf"; Args = @{ VBoxDir = $VBoxDir } }
+            }
+            "perfcounters" {
+                $steps += [pscustomobject]@{ Token = $t; BestEffort = $true; Fn = "Repair-RebuildPerfCounters"; Args = @{} }
+            }
+            "firewall" {
+                $steps += [pscustomobject]@{ Token = $t; BestEffort = $true; Fn = "Repair-AllowEnspFirewall"; Args = @{ EnspDir = $EnspDir } }
+            }
+            default {
+                $steps += [pscustomobject]@{ Token = $t; BestEffort = $false; Fn = ""; Args = @{} }
+            }
+        }
+    }
+    return $steps
+}
+
+# 一条步骤结果的形状。BestEffort 随行带着,汇总时才不必回头再算它属于哪一档。
+function New-RepairStepResult {
+    param(
+        [string]$Token, [string]$Fn, [bool]$Ok,
+        [bool]$Skipped = $false, [bool]$Changed = $false, [bool]$BestEffort = $false,
+        [string]$Reason = "", [string[]]$Commands = @()
+    )
+    return [pscustomobject]@{
+        Token = $Token; Fn = $Fn; Ok = $Ok; Skipped = $Skipped
+        Changed = $Changed; BestEffort = $BestEffort; Reason = $Reason; Commands = @($Commands)
+    }
+}
+
+# 执行商定的修复。Ok = $false 表示【必须停下安装】。
+#
+# 每一步先 -DryRun 一遍再真跑:这是 fix.ps1 定下的约定(调用方先 dry-run 显示、
+# 再去掉开关执行),顺带把前置条件校验掉 —— 前置不成立时连一步都还没动过。
+# 真实模式本身是静默的,所以这里替它把上下文补上:提权窗口里的用户看不到非提权
+# 那边打印的影响说明,也看不到"为什么在装垫片之前先动网络"。
+function Invoke-AgreedRepairs {
+    param([string[]]$Tokens, [string]$EnspDir = "", [string]$VBoxDir = "")
+
+    $plan = @($Tokens | Where-Object { "$_" -ne "" })
+    if ($plan.Count -eq 0) { return [pscustomobject]@{ Ok = $true; Results = @() } }
+
+    Write-Step ("安装前修复(" + ($plan -join ", ") + ")")
+    Write-Info "这是安装前你已确认过的那几项;垫片部署之后不再回头做。"
+
+    $steps = @(Get-RepairPlanSteps -Tokens $plan -EnspDir $EnspDir -VBoxDir $VBoxDir)
+
+    # eNSP 必须先关闭 —— 重装驱动包 + 重绑网卡会打断正在运行的设备。这不是安全
+    # 余量,是设计 §7 的硬要求。非提权那边已经确认过一次,但用户完全可能在 UAC
+    # 弹窗那几秒里把 eNSP 打开,所以动手前再确认一次。
+    # 只管 host-only 那一条链:计数器与防火墙都不碰网络栈,拿"eNSP 开着"去拦它们,
+    # 是拿一条不相干的理由挡掉一次本来做得成的修复。
+    if (@($plan | Where-Object { $_ -eq "hostonly" }).Count -gt 0) {
+        $pre = $null
+        try { $pre = Test-RepairPreconditions } catch { $pre = $null }
+        if ($pre -and (-not $pre.Ok)) {
+            Write-Err ("eNSP 正在运行(" + ($pre.Running -join ", ") + "),host-only 修复会打断正在运行的设备,一项都没做。")
+            Write-Info "关闭 eNSP 后重新双击 安装.bat 即可完成这一步。"
+            return [pscustomobject]@{
+                Ok      = $false
+                Results = @([pscustomobject]@{
+                    Token = "hostonly"; Fn = "Test-RepairPreconditions"; Ok = $false
+                    Skipped = $false; Changed = $false
+                    Reason = ("eNSP 正在运行: " + ($pre.Running -join ", ")); Commands = @()
+                })
+            }
+        }
+    }
+
+    $results      = @()
+    $failedTokens = @()
+    $gateFailed   = $false
+
+    foreach ($step in $steps) {
+        # 同一条链上前一步失败过,后面的不必再试:顺序是硬依赖,接着做只会留下
+        # "接口在、栈不通"的状态,症状与完全没修一样。
+        if ($failedTokens -contains $step.Token) {
+            $results += New-RepairStepResult -Token $step.Token -Fn $step.Fn -Ok $false -Skipped $true `
+                -BestEffort $step.BestEffort -Reason "同一条修复链的前一步已失败,未执行"
+            continue
+        }
+
+        $fatal   = $false
+        $done    = $false
+        $skipped = $false
+        $changed = $false
+        $reason  = ""
+        $cmds    = @()
+
+        if ((-not $step.Fn) -or (-not (Get-Command $step.Fn -ErrorAction SilentlyContinue))) {
+            $fatal  = $true
+            if ($step.Fn) { $reason = "找不到修复原语 " + $step.Fn + "(整合包不完整,缺 fix.ps1?)" }
+            else          { $reason = "不认得的修复令牌: " + $step.Token }
+            Write-Err ("[失败] " + $reason)
+        } else {
+            # --- 计划阶段:只读校验前置,不改任何东西 --------------------------
+            $argMap = $step.Args
+            $dry = $null
+            try { $dry = & $step.Fn @argMap -DryRun } catch { $dry = $null }
+
+            if ($null -eq $dry) {
+                $fatal  = $true
+                $reason = $step.Fn + " 计划阶段抛出异常"
+                Write-Err ("[失败] " + $reason)
+            } elseif (-not $dry.Ok) {
+                $fatal  = $true
+                $reason = $step.Fn + ": " + $dry.Reason
+                $cmds   = @($dry.Commands)
+                Write-Err ("[失败] " + $reason + "(前置条件不成立,未做任何改动)")
+            } elseif ($dry.Skipped) {
+                # 计划阶段就判定已满足。真实模式会再确认一次 —— 两步之间状态可能变了。
+                $done    = $true
+                $skipped = $true
+                Write-Info ("[跳过] " + $step.Fn + ": 已满足,无需执行")
+            } else {
+                Write-Info ("将要执行 " + $step.Fn + ":")
+                foreach ($c in @($dry.Commands)) { Write-Info ("    " + $c) }
+
+                # --- 执行阶段 -------------------------------------------------
+                $r = $null
+                try { $r = & $step.Fn @argMap } catch { $r = $null }
+
+                if ($null -eq $r) {
+                    $fatal  = $true
+                    $reason = $step.Fn + " 执行时抛出异常"
+                    $cmds   = @($dry.Commands)
+                    Write-Err ("[失败] " + $reason)
+                } elseif (-not $r.Ok) {
+                    $fatal  = $true
+                    $reason = $r.Reason
+                    $cmds   = @($r.Commands)
+                    Write-Err ("[失败] " + $step.Fn + ": " + $r.Reason)
+                    foreach ($c in @($r.Commands)) { Write-Info ("    可手动执行: " + $c) }
+                } else {
+                    $done    = $true
+                    $skipped = [bool]$r.Skipped
+                    $changed = [bool]$r.Changed
+                    if ($skipped)     { Write-Info ("[跳过] " + $step.Fn + ": 已满足,无需执行") }
+                    elseif ($changed) { Write-OK   ("[完成] " + $step.Fn + ": 已修改") }
+                    else              { Write-OK   ("[完成] " + $step.Fn + ": 没有需要改动的项") }
+                }
+            }
+        }
+
+        if ($fatal) {
+            $failedTokens += $step.Token
+            if (-not $step.BestEffort) { $gateFailed = $true }
+        }
+        $results += New-RepairStepResult -Token $step.Token -Fn $step.Fn -Ok $done -Skipped $skipped `
+            -Changed $changed -BestEffort $step.BestEffort -Reason $reason -Commands $cmds
+    }
+
+    # 失败要连同【后果】一起说清楚,不能只报个错就往下走 —— 用户被告知"会先修复",
+    # 就得知道修成没成,以及没成意味着什么。
+    foreach ($f in @($results | Where-Object { (-not $_.Ok) -and (-not $_.Skipped) })) {
+        if ($f.BestEffort) {
+            # 无损档:没问过用户,失败不该拦下整个安装 —— 否则一次被组策略锁死的
+            # 防火墙策略会让这台机器从此再也装不上垫片。
+            Write-Warn ("[警告] " + $f.Token + " 未修好: " + $f.Reason)
+            Write-Warn "  后果:设备可能仍会一直打印 #### 或进不到命令行。装完后可双击 环境检查.bat 单独修这一项。"
+        } else {
+            Write-Err ("[错误] " + $f.Token + " 未修好: " + $f.Reason)
+            Write-Err "  后果:host-only 网络仍是坏的,设备起不来。安装就此停下,不改动垫片与注册表。"
+        }
+    }
+
+    return [pscustomobject]@{ Ok = (-not $gateFailed); Results = $results }
 }
 
 # ---------------------------------------------------------------------------
@@ -737,8 +966,25 @@ Write-Host "VBox : $vbox"
 
 Write-EnvReport -VBoxDir $vbox -EnspDir $ensp
 
-if ($Check)         { Do-Check     -EnspDir $ensp -VBoxDir $vbox }
-elseif ($Uninstall) { Do-Uninstall -EnspDir $ensp -VBoxDir $vbox }
-else                { Do-Install   -EnspDir $ensp -VBoxDir $vbox -GrantSid $GrantSid }
+if ($Check) {
+    # 只读分支。它既不修任何东西,也不看 $Repair —— -Check 全程只读、不提权,
+    # 这是它存在的意义,不能因为多了个 -Repair 参数就有缝。
+    Do-Check -EnspDir $ensp -VBoxDir $vbox
+} elseif ($Uninstall) {
+    Do-Uninstall -EnspDir $ensp -VBoxDir $vbox
+} else {
+    # 商定的修复先做,再做六步安装。修复是环境前提:做没做成必须在安装输出之前
+    # 就摆清楚,失败了更不能把安装当成功继续下去。
+    $repairResult = Invoke-AgreedRepairs -Tokens @(Parse-RepairPlanTokens -Text $Repair) `
+                                         -EnspDir $ensp -VBoxDir $vbox
+    if (-not $repairResult.Ok) {
+        Write-Err "安装前商定的修复没有完成,已停止安装(垫片与注册表均未改动)。"
+        Write-Info "排掉上面的原因后重新双击 安装.bat 即可。"
+        Write-Info "若想先装上垫片、环境稍后再修:重跑 安装.bat,修复那一步选 N 跳过。"
+        Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+        exit 1
+    }
+    Do-Install -EnspDir $ensp -VBoxDir $vbox -GrantSid $GrantSid
+}
 
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
