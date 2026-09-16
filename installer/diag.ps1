@@ -476,6 +476,57 @@ try {
     Write-Fail "第 6 层" $_.Exception.Message
 }
 
+# --- DHCP 服务器 ------------------------------------------------------------
+# 设计 §10.1 把「host-only 的 DHCP 到底该不该启用」列为【待核实项】:社区资料称
+# 5.2 上「启用服务器」应不勾选,而本项目安装器主动创建并启用了它,两者场景不同
+# (5.2 与 7.2),从未用实测对齐过。所以这一段只如实呈现状态与作用域,
+# 不判对错、不给通过/失败、不写「应该关掉」。
+#
+# 与接口的对应关系用适配器【真实的 VBoxNetworkName】(DHCP 的 NetworkName 与它
+# 是同一种完整形式)。绝不手搓 "HostInterfaceNetworking-..." 字面量:适配器带
+# "#N" 后缀时,字面量精确比对必然全不匹配 —— 老 install.ps1 的自检就是这么误报的。
+#
+# 第 3 层的接口在这里重新解析一次(纯函数,代价为零),而不是去读那一节的局部
+# 变量:各节要能独立降级,第 3 层没跑成时这一段仍应给出 DHCP 本身的事实。
+try {
+    Write-Host ""
+    Write-Host "  -- DHCP 服务器 (VBoxManage list dhcpservers) --"
+    $dhcpProbe = Invoke-Probe -Exe $vboxManageExe -Arguments @("list", "dhcpservers")
+
+    if (-not $dhcpProbe.Ok) {
+        Write-Fail "DHCP 服务器" $dhcpProbe.Error
+    } else {
+        $dhcpServers = @(Parse-DhcpServers -Lines $dhcpProbe.Lines)
+        if ($dhcpServers.Count -eq 0) {
+            Write-Note "  没有取到任何 DHCP 服务器 —— VBox 当前没有为 host-only 网段提供 DHCP。"
+        } else {
+            $ifRecords = @()
+            if ($ifsProbe.Ok) { $ifRecords = @(Parse-HostOnlyIfs -Lines $ifsProbe.Lines) }
+
+            foreach ($d in @(Join-DhcpServerToHostOnlyIf -DhcpServers $dhcpServers -HostOnlyIfs $ifRecords)) {
+                Write-Host ("  * " + $d.NetworkName)
+                Write-Fact "地址池" ($d.LowerIP + " - " + $d.UpperIP) 20
+                Write-Fact "掩码" $d.NetworkMask 20
+                Write-Fact "服务器地址" $d.DhcpdIP 20
+                Write-Fact "启用" $(if ($d.Enabled) { "是" } else { "否" }) 20
+                if ($d.IfName) {
+                    Write-Fact "对应接口" ($d.IfName + "   (VBox 网络名与之一致)") 20
+                } else {
+                    Write-Fact "对应接口" "(没有 VBoxNetworkName 与之一致的 host-only 接口)" 20
+                }
+            }
+        }
+
+        # 中立的收尾说明:没有它,读者无从知道上面那行「启用: 是」算不算问题。
+        Write-Note "  DHCP 该不该启用,本项目的设计(§10.1)把它列为【未核实】:"
+        Write-Note "  社区资料称 host-only 的「启用服务器」应不勾选,而本项目安装器主动创建"
+        Write-Note "  并启用了它;两者场景不同(5.2 与 7.2),尚未用实测对齐。"
+        Write-Note "  因此上面只报状态,不判定这个状态是对是错。"
+    }
+} catch {
+    Write-Fail "DHCP 服务器" $_.Exception.Message
+}
+
 # ===========================================================================
 # 第 4 节  eNSP 本体层
 #

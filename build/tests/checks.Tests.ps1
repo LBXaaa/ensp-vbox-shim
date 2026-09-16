@@ -192,4 +192,83 @@ $p = ClassifyPacketDriver -WinPcapVersion "4.1.3" -NpcapPresent $true
 Assert-True $p.NpcapConflict "npcap conflict flagged"
 Assert-False $p.WinPcapUsable "winpcap not usable while npcap is present"
 
+Write-Host "=== DHCP servers (list dhcpservers parser) ==="
+
+# The real capture: one server, six top-level fields, then an indented
+# "Global Configuration:" block whose "minLeaseTime:" / "1/legacy:" lines look
+# like fields but are not. Only the six top-level fields may be read.
+$dh = @(Parse-DhcpServers -Lines (Get-Content (Get-TestDataPath "dhcpservers_normal.txt")))
+Assert-Equal $dh.Count 1 "normal: one server parsed"
+Assert-Equal $dh[0].NetworkName "HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter" "normal: network name"
+Assert-Equal $dh[0].DhcpdIP "192.168.56.100" "normal: dhcpd ip"
+Assert-Equal $dh[0].LowerIP "192.168.56.101" "normal: lower ip"
+Assert-Equal $dh[0].UpperIP "192.168.56.254" "normal: upper ip"
+Assert-Equal $dh[0].NetworkMask "255.255.255.0" "normal: mask"
+Assert-True  $dh[0].Enabled "normal: Enabled Yes reads as true"
+
+# Enabled has to be a real [bool], not the string "Yes": the report renders it
+# as a yes/no word, and a truthy string would make that branch unconditional.
+Assert-Equal ($dh[0].Enabled -is [bool]) $true "normal: Enabled is a boolean"
+
+# The nested "Global Configuration:" lines must not be read as fields. The real
+# fixture cannot show this by itself -- its nested "1/legacy:" entry carries the
+# same 255.255.255.0 as the genuine NetworkMask, so a leaking parser would land
+# on an identical value. An indented NetworkMask is fed in explicitly, since
+# indentation is the only thing that distinguishes it from the real field.
+$nested = @(
+    "NetworkName:    HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter",
+    "NetworkMask:    255.255.255.0",
+    "Global Configuration:",
+    "    NetworkMask: 10.0.0.0",
+    "Groups:               None"
+)
+Assert-Equal @(Parse-DhcpServers -Lines $nested)[0].NetworkMask "255.255.255.0" "indented lines are not read as fields"
+
+# "One block per server" is the parser's whole contract, and the real capture
+# holds a single server, so the block boundary is exercised here: a machine
+# with two host-only adapters gets two servers, and no field may bleed from one
+# block into the next.
+$two = @(
+    "NetworkName:    HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter",
+    "Dhcpd IP:       192.168.56.100",
+    "Enabled:        Yes",
+    "Groups:               None",
+    "NetworkName:    HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter #2",
+    "Dhcpd IP:       192.168.99.100",
+    "LowerIPAddress: 192.168.99.101",
+    "Enabled:        No"
+)
+$twoP = @(Parse-DhcpServers -Lines $two)
+Assert-Equal $twoP.Count 2 "two servers parsed as two records"
+Assert-Equal $twoP[0].LowerIP "" "first block keeps its own (absent) lower ip"
+Assert-Equal $twoP[1].LowerIP "192.168.99.101" "second block keeps its own lower ip"
+Assert-False $twoP[1].Enabled "Enabled No reads as false"
+
+# The join key is the adapter's VBoxNetworkName -- never its Name, and never a
+# hand-built literal. The suffixed fixture is the discriminating case: its
+# VBoxNetworkName ends in "#2", which no literal could ever match. That is the
+# exact shape of the false alarm the deleted install.ps1 self-check produced.
+$ifsSfx = Get-Content (Get-TestDataPath "hostonlyifs_suffixed.txt")
+$sfxNetName = @(Parse-HostOnlyIfs -Lines $ifsSfx)[0].VBoxNetworkName
+$sfxDhcp = @(
+    ("NetworkName:    " + $sfxNetName),
+    "Dhcpd IP:       192.168.56.100",
+    "LowerIPAddress: 192.168.56.101",
+    "UpperIPAddress: 192.168.56.254",
+    "NetworkMask:    255.255.255.0",
+    "Enabled:        Yes"
+)
+$join = @(Join-DhcpServerToHostOnlyIf -DhcpServers @(Parse-DhcpServers -Lines $sfxDhcp) `
+                                     -HostOnlyIfs @(Parse-HostOnlyIfs -Lines $ifsSfx))
+Assert-Equal $join.Count 1 "suffixed: one join record"
+Assert-Equal $join[0].IfName "VirtualBox Host-Only Ethernet Adapter #2" "suffixed: server joins to the #2 adapter"
+Assert-True  $join[0].Enabled "suffixed: enabled survives the join"
+
+# A server with no matching adapter carries no verdict: it comes back empty
+# rather than crashing or attaching itself to the wrong adapter.
+$orphan = @(Join-DhcpServerToHostOnlyIf -DhcpServers @($dh[0]) -HostOnlyIfs @())
+Assert-Equal $orphan.Count 1 "orphan: record still returned"
+Assert-Equal $orphan[0].IfName "" "orphan: no adapter name"
+Assert-Equal $orphan[0].Interface $null "orphan: no adapter object"
+
 Complete-TestRun

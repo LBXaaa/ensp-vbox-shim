@@ -188,6 +188,102 @@ function Parse-HostOnlyIfs {
     return $out
 }
 
+# --- host-only DHCP servers ------------------------------------------------
+#
+# `VBoxManage list dhcpservers` prints one block per server:
+#
+#     NetworkName:    HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter
+#     Dhcpd IP:       192.168.56.100
+#     LowerIPAddress: 192.168.56.101
+#     UpperIPAddress: 192.168.56.254
+#     NetworkMask:    255.255.255.0
+#     Enabled:        Yes
+#     Global Configuration:
+#         minLeaseTime:     default
+#         ...
+#             1/legacy: 255.255.255.0
+#     Groups:               None
+#     Individual Configs:   None
+#
+# Only the six top-level fields above are read. The "Global Configuration:"
+# block is indented, and every field pattern below is anchored at column 0, so
+# the nested "minLeaseTime:"-style lines and the odd "1/legacy:" entry cannot
+# be picked up as fields. "Groups:" / "Individual Configs:" do sit at column 0
+# like real fields and are skipped only because their labels are not in the
+# list -- do not loosen the patterns into a generic "key: value" match without
+# re-checking against build/testdata/dhcpservers_normal.txt.
+#
+# A block with no Enabled line reads as $false. VBoxManage always prints the
+# line, so the missing case means a truncated capture, not a state to
+# interpret; $false is the safe reading and keeps the field a real [bool].
+function Parse-DhcpServers {
+    param([string[]]$Lines)
+    $out = @()
+    $cur = $null
+    foreach ($line in $Lines) {
+        if ($line -match '^NetworkName:\s+(.+)$') {
+            if ($cur) { $out += [pscustomobject]$cur }
+            $cur = @{
+                NetworkName = $Matches[1].Trim()
+                DhcpdIP     = ""
+                LowerIP     = ""
+                UpperIP     = ""
+                NetworkMask = ""
+                Enabled     = $false
+            }
+            continue
+        }
+        if (-not $cur) { continue }
+        if     ($line -match '^Dhcpd IP:\s+(.+)$')       { $cur.DhcpdIP     = $Matches[1].Trim() }
+        elseif ($line -match '^LowerIPAddress:\s+(.+)$') { $cur.LowerIP     = $Matches[1].Trim() }
+        elseif ($line -match '^UpperIPAddress:\s+(.+)$') { $cur.UpperIP     = $Matches[1].Trim() }
+        elseif ($line -match '^NetworkMask:\s+(.+)$')    { $cur.NetworkMask = $Matches[1].Trim() }
+        elseif ($line -match '^Enabled:\s+(\S+)\s*$')    { $cur.Enabled     = ($Matches[1] -eq "Yes") }
+    }
+    if ($cur) { $out += [pscustomobject]$cur }
+    return $out
+}
+
+# Joins each DHCP server to the host-only adapter it serves.
+#
+# The join key is the FULL network name on both sides: a server's NetworkName
+# and an adapter's VBoxNetworkName are the same
+# "HostInterfaceNetworking-<adapter name>" string, so they compare directly
+# with no normalisation.
+#
+# Neither a hand-built literal nor the adapter's Name may be used here. The
+# adapter's name is the "VirtualBox Host-Only Ethernet Adapter" form with no
+# prefix, so it never equals a NetworkName; and a literal
+# "HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter" stops
+# matching the moment the adapter carries a "#N" suffix -- which is exactly the
+# false alarm the deleted install.ps1 self-check used to produce. Feeding the
+# parsed VBoxNetworkName is what makes the suffix harmless: it travels into
+# VBoxNetworkName, so the two sides stay equal.
+#
+# A server with no matching adapter is NOT an error and carries no verdict: it
+# keeps Interface = $null / IfName = "" and the caller decides what to say.
+function Join-DhcpServerToHostOnlyIf {
+    param([object[]]$DhcpServers, [object[]]$HostOnlyIfs)
+    $out = @()
+    foreach ($s in @($DhcpServers)) {
+        $match = $null
+        foreach ($i in @($HostOnlyIfs)) {
+            if ($i.VBoxNetworkName -and ($i.VBoxNetworkName -eq $s.NetworkName)) { $match = $i; break }
+        }
+        $out += [pscustomobject]@{
+            NetworkName = $s.NetworkName
+            DhcpdIP     = $s.DhcpdIP
+            LowerIP     = $s.LowerIP
+            UpperIP     = $s.UpperIP
+            NetworkMask = $s.NetworkMask
+            Enabled     = $s.Enabled
+            Interface   = $match
+            IfName      = $(if ($match) { $match.Name } else { "" })
+        }
+    }
+    return $out
+}
+
 # --- layer 6: name comparison ---------------------------------------------
 #
 # A "#N" suffix is NOT itself a defect. What breaks eNSP is a mismatch between
