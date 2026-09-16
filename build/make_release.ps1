@@ -117,6 +117,7 @@ $Allowlist = @(
     'register_vms.ps1'       # 注册设备.bat 的入口
     'diag.ps1'               # 环境检查.bat 的入口
     'fix.ps1'                # 修复原语,由 diag.ps1 dot-source
+    'tui.ps1'                # 控制台交互层,由 diag.ps1 在可能进菜单时 dot-source
     # --- 顶层:中文名入口(编码已在下方往返校验里守住) ---
     '安装.bat'
     '卸载.bat'

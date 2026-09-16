@@ -43,6 +43,20 @@ if (-not (Test-Path $ChecksPath)) {
 $FixPath = Join-Path $ScriptDir "fix.ps1"
 if (Test-Path $FixPath) { . $FixPath }
 
+# 交互层:控制台能力探测、控制台模式开关与还原、按键/鼠标事件读取、绘制原语。
+# 纯机制,不含任何界面文案(文案在本文件里),因此它保持纯 ASCII 无 BOM。
+#
+# 两个刻意的选择:
+#   1. 只在本次真的可能进菜单时加载。tui.ps1 顶层要 Add-Type 编译一段 C#(实测
+#      ~800ms);-NoMenu 是自动化用的路径,不该为一份用不上的交互层付费,也就更
+#      不可能碰到控制台模式。
+#   2. dot-source 留在脚本作用域,不能挪进函数。tui.ps1 顶层有变量赋值
+#      ($TuiInteropReady / $TuiSavedMode ...),dot-source 进函数会落到那个函数的
+#      局部作用域,而它内部一律用 $script: 记号读写这几个变量 —— 两者对不上,
+#      模式还原就会失效。缺文件只降级:菜单按函数在不在自行判断。
+$TuiPath = Join-Path $ScriptDir "tui.ps1"
+if ((-not $NoMenu) -and (Test-Path $TuiPath)) { . $TuiPath }
+
 # 全部共用的两个记账变量:
 #   $script:DiagFailCount —— 失败的探测数,由 Write-Fail 累加(见该函数处的说明)。
 #      是全部的标量计数,读写在脚本作用域内完成,不涉及数组跨作用域绑定。
@@ -54,21 +68,27 @@ $sectionsOk = @()
 # 展示辅助
 # ---------------------------------------------------------------------------
 
-# 中文是双宽字符,PowerShell 的 "{0,-16}" 按字符数补齐会错位,这里按显示宽度补。
+# 单个字符的显示宽度。中文/全角区段算 2 列,其余算 1 列。
 # 只覆盖 CJK / 全角区段,足够本项目的中文标签使用。
+# 单独成函数是因为折行也要按列数算:补位和折行用同一张表,两边的「宽度」才一致。
+function Get-CharDisplayWidth {
+    param([char]$Char)
+    $c = [int]$Char
+    if (($c -ge 0x1100 -and $c -le 0x115F) -or
+        ($c -ge 0x2E80 -and $c -le 0xA4CF) -or
+        ($c -ge 0xAC00 -and $c -le 0xD7A3) -or
+        ($c -ge 0xF900 -and $c -le 0xFAFF) -or
+        ($c -ge 0xFE30 -and $c -le 0xFE6F) -or
+        ($c -ge 0xFF00 -and $c -le 0xFF60) -or
+        ($c -ge 0xFFE0 -and $c -le 0xFFE6)) { return 2 }
+    return 1
+}
+
+# 中文是双宽字符,PowerShell 的 "{0,-16}" 按字符数补齐会错位,这里按显示宽度补。
 function Get-DisplayWidth {
     param([string]$Text)
     $w = 0
-    foreach ($ch in $Text.ToCharArray()) {
-        $c = [int]$ch
-        if (($c -ge 0x1100 -and $c -le 0x115F) -or
-            ($c -ge 0x2E80 -and $c -le 0xA4CF) -or
-            ($c -ge 0xAC00 -and $c -le 0xD7A3) -or
-            ($c -ge 0xF900 -and $c -le 0xFAFF) -or
-            ($c -ge 0xFE30 -and $c -le 0xFE6F) -or
-            ($c -ge 0xFF00 -and $c -le 0xFF60) -or
-            ($c -ge 0xFFE0 -and $c -le 0xFFE6)) { $w += 2 } else { $w += 1 }
-    }
+    foreach ($ch in $Text.ToCharArray()) { $w += (Get-CharDisplayWidth -Char $ch) }
     return $w
 }
 
@@ -148,10 +168,21 @@ function Invoke-Probe {
 #   lossless  无损可修      —— 选中即执行
 #   confirm   有损但必需    —— 先明示影响,再单独确认一次,与菜单选择是两次输入
 #   manual    有损且非必需  —— 不进菜单编号,只打印现状、原因与手动步骤
+#
+# 两条输入路径,判据是「有没有可交互的控制台」(设计 §9):
+#   TUI  —— Test-TuiConsoleAvailable 为真且能绘制时走这条:方向键 / Enter / 数字键 /
+#           A / Esc / 鼠标点击,全部可用;面板原地重画。
+#   逐行 —— 其余情况(标准输入被重定向、远程控制台取不到控制台模式、控制台画不出来)
+#           走这条:按提示逐行输入编号,不启用鼠标、不改控制台模式。
+#           走到这条必须明说「只能用键盘」—— 默默吃掉点击会让用户以为程序坏了。
+# 两条路解析出来的是同一份「编号列表」,执行那一段只有一份实现。
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
 # 输入:读不到就退出,不死等
+#
+# 下面两个函数只服务降级的那条路(非可交互控制台)。TUI 那条路完全不经过它们 ——
+# 那一边的按键与鼠标由 tui.ps1 的事件通道读。
 # ---------------------------------------------------------------------------
 
 # 控制台输入是否被重定向。取不到 Console 的宿主(无控制台的服务/计划任务)按
@@ -460,6 +491,481 @@ function Get-RepairFindings {
 }
 
 # ---------------------------------------------------------------------------
+# 菜单:行模型与渲染(纯函数)
+#
+# 渲染刻意做成纯函数 —— 输入是「行数组 + 当前选中项」,输出是「整块面板文本」。
+# 两个好处:布局可以脱离终端核对(没有控制台也能把它打印出来看对不对),
+# 以及「画出来的行」与「鼠标点得到的行」读的是同一份行数据,两者不可能对不上。
+#
+# 边框一律用 ASCII 的 + - |。设计 §9 已记下:制表符依赖 TrueType 字体,
+# 不保证所有机器都有。菜单在任何字体下都不该显示成乱码。
+# ---------------------------------------------------------------------------
+
+# 面板宽度:控制台宽度留出边距,并夹在 44..78。
+# 太窄会把中文说明折成碎句;太宽在 80 列控制台上会贴着最后一格写,
+# 而在屏幕底部写最后一格会触发滚动,把面板顶走。
+function Get-RepairMenuWidth {
+    param([int]$ConsoleWidth = 80)
+    $w = $ConsoleWidth - 6
+    if ($w -lt 44) { $w = 44 }
+    if ($w -gt 78) { $w = 78 }
+    return $w
+}
+
+# 按显示宽度折行。返回字符串数组(至少一行)。-Hang 是续行前缀。
+# 折行上限逐行收窄:续行多了一个前缀,内容部分就得相应地少占几列,
+# 否则补位之后总宽会超出去,右边框会被顶歪。
+function Split-DisplayText {
+    param([string]$Text = "", [int]$Width = 74, [string]$Hang = "")
+
+    if ($Width -lt 4) { $Width = 4 }
+    $hangW = 0
+    if ($Hang) { $hangW = Get-DisplayWidth $Hang }
+    if ($hangW -ge ($Width - 2)) { $Hang = ""; $hangW = 0 }
+
+    $out = @()
+    $cur = ""
+    $curW = 0
+    $prefix = ""
+    $limit = $Width
+
+    foreach ($ch in ("$Text").ToCharArray()) {
+        $cw = Get-CharDisplayWidth -Char $ch
+        if ((($curW + $cw) -gt $limit) -and ($curW -gt 0)) {
+            $out += ($prefix + $cur)
+            $prefix = $Hang
+            $limit = $Width - $hangW
+            $cur = ""
+            $curW = 0
+        }
+        $cur += $ch
+        $curW += $cw
+    }
+    $out += ($prefix + $cur)
+    return @($out)
+}
+
+# 把右栏贴到左栏同一行的右端。贴不下就并成一行交给折行 ——
+# 宁可折行也不能把右栏截掉:档位标记正是用户判断「这一项会不会断网」的依据。
+function Join-MenuColumns {
+    param([string]$Left = "", [string]$Right = "", [int]$Width = 74)
+    if (-not $Right) { return $Left }
+    $gap = $Width - (Get-DisplayWidth $Left) - (Get-DisplayWidth $Right)
+    if ($gap -ge 2) { return ($Left + (" " * $gap) + $Right) }
+    return ($Left + "  " + $Right)
+}
+
+# 面板的一行。Kind 决定它能不能被选中、要不要画选中标记:
+#   text / gap —— 说明与留白,不参与选择
+#   item       —— 条目标题行;Index 是它在可修项里的 0 基下标,选中的那行画 "> "
+#   note       —— 条目续行(症状、依据);Index 与它的标题相同,点它也算选中同一项
+# 命中测试只看 Index 是否为 -1,所以以后新增行类型不会漏掉鼠标。
+function New-MenuRow {
+    param([string]$Kind = "text", [string]$Text = "", [int]$Index = -1)
+    return [pscustomobject]@{ Kind = $Kind; Text = $Text; Index = $Index }
+}
+
+# 条目行文本。空串是合法的(那一项没有对应内容),不打印。
+function Get-RepairMenuRows {
+    param([object[]]$Fixable = @(), [int]$Width = 74, [bool]$Mouse = $false)
+
+    $inner = $Width - 4
+    $rows = @()
+
+    for ($i = 0; $i -lt $Fixable.Count; $i++) {
+        $it = $Fixable[$i]
+        $tierText = "<无损>"
+        if ($it.Tier -eq "confirm") { $tierText = "<有损,执行前单独确认>" }
+
+        $head = ("  [" + ($i + 1) + "] " + $it.Title)
+        $rows += New-MenuRow -Kind "item" -Index $i -Text (Join-MenuColumns -Left $head -Right $tierText -Width $inner)
+
+        foreach ($l in @(Split-DisplayText -Text ("  症状: " + $it.Symptom) -Width $inner -Hang "        ")) {
+            $rows += New-MenuRow -Kind "note" -Index $i -Text $l
+        }
+        foreach ($l in @(Split-DisplayText -Text ("  依据: " + $it.Evidence) -Width $inner -Hang "        ")) {
+            $rows += New-MenuRow -Kind "note" -Index $i -Text $l
+        }
+    }
+
+    # 操作提示固定成两行。挤在一行时会在任意位置折行(中文没有词边界,
+    # 折出来的半截词比换行更难看),而两行既放得下也不随控制台宽度变形。
+    $rows += New-MenuRow -Kind "gap"
+    $rows += New-MenuRow -Kind "text" -Text "  方向键 移动   Enter 执行   数字键 直选   A 全选   Esc / 0 退出"
+    if ($Mouse) {
+        $rows += New-MenuRow -Kind "text" -Text "  鼠标: 左键点击选择,滚轮上下移动"
+    }
+    return $rows
+}
+
+# 行 → 面板文本。每行的显示宽度都补齐到 inner,右边框因此一定对齐。
+# 选中项那一行的行首两个空格被换成 "> ",两者同宽,不会把右边框挤歪。
+#
+# 返回「一行一个对象」而不是纯字符串:@Index 是这一行对应的条目下标(供鼠标命中
+# 测试),@Sel 表示这一行属于当前选中项(供反显)。画出来的行与点得到的行
+# 因此是同一份数据算出来的,不存在两套坐标。
+function Format-RepairMenuPanel {
+    param([object[]]$Rows = @(), [int]$Selected = 0, [int]$Width = 74)
+
+    $inner = $Width - 4
+    if ($inner -lt 8) { $inner = 8 }
+
+    $border = "+" + ("-" * ($Width - 2)) + "+"
+    $out = @([pscustomobject]@{ Text = $border; Index = -1; Sel = $false })
+
+    foreach ($r in $Rows) {
+        $firstLine = $true
+        foreach ($l in @(Split-DisplayText -Text $r.Text -Width $inner -Hang "  ")) {
+            $t = $l
+            $sel = $false
+            if ($firstLine -and ($r.Kind -eq "item") -and ($r.Index -eq $Selected)) {
+                if ($t.Length -ge 2) { $t = "> " + $t.Substring(2) } else { $t = "> " }
+                $sel = $true
+            }
+            $firstLine = $false
+            $pad = $inner - (Get-DisplayWidth $t)
+            if ($pad -lt 0) { $pad = 0 }
+            $out += [pscustomobject]@{ Text = ("| " + $t + (" " * $pad) + " |"); Index = [int]$r.Index; Sel = $sel }
+        }
+    }
+
+    $out += [pscustomobject]@{ Text = $border; Index = -1; Sel = $false }
+    return $out
+}
+
+# 把面板画到 (X, Y)。选中行反显 —— 前景背景互换,不写死颜色,
+# 深色与浅色两种控制台主题下对比度都成立。
+function Write-RepairMenuPanel {
+    param([object[]]$Lines = @(), [int]$X = 0, [int]$Y = 0)
+
+    if ($Lines.Count -eq 0) { return $false }
+
+    $revFg = [ConsoleColor]::Black
+    $revBg = [ConsoleColor]::Gray
+    try {
+        $revFg = [Console]::BackgroundColor
+        $revBg = [Console]::ForegroundColor
+    } catch { }
+
+    $any = $false
+    for ($k = 0; $k -lt $Lines.Count; $k++) {
+        $wargs = @{ X = $X; Y = ($Y + $k); Text = [string]$Lines[$k].Text }
+        if ($Lines[$k].Sel) {
+            $wargs["Color"] = $revFg
+            $wargs["BackColor"] = $revBg
+        }
+        if (Write-TuiAt @wargs) { $any = $true }
+    }
+    return $any
+}
+
+# 面板要占的屏幕区域先占好,再取原点。
+#
+# 不能直接拿当前光标当原点:剩余高度不够时,绘制本身会把屏幕顶上去,
+# 而我们记下的原点还停在原处,之后每一次重画都会画错地方。
+# 先写 need 个空行,光标就确定前进了 need 行(该滚就滚);此时「光标上方 need-1 行」
+# 就是这块面板的第一行 —— 滚了多少都不影响这个关系。
+# 面板高度在一轮菜单里是常数,所以原点算一次就够。
+function Reserve-RepairMenuArea {
+    param([int]$Need = 0, [int]$X = 2)
+
+    if ($Need -lt 1) { return $null }
+    for ($k = 0; $k -lt $Need; $k++) { Write-Host "" }
+
+    $y = 0
+    try { $y = [int][Console]::CursorTop - ($Need - 1) } catch { $y = 0 }
+    if ($y -lt 0) { $y = 0 }
+    return [pscustomobject]@{ X = $X; Y = $y; Height = $Need }
+}
+
+# ---------------------------------------------------------------------------
+# 菜单:选择
+# ---------------------------------------------------------------------------
+
+# TUI 路径取一次选择。一次调用只取一个决定 ——
+# 取到就返回,执行输出会把屏幕往下推、旧原点随即失效,所以每次执行之后
+# 重新占一块新区域,比追踪滚动量可靠得多。
+#
+# 返回 @{ Action; Indices },Action 取值:
+#   "select"  Indices 是选中项的 1 基编号(与用户看到的编号一致)
+#   "cancel"  Esc / 0
+#   "eof"     控制台不可用、控制台消失、或读输入出错
+function Read-RepairChoiceTui {
+    param([object[]]$Fixable = @(), [bool]$Mouse = $false)
+
+    $size = $null
+    try { $size = Get-TuiSize } catch { $size = $null }
+    if ((-not $size) -or (-not $size.Ok)) { return @{ Action = "eof"; Indices = @() } }
+
+    $width = Get-RepairMenuWidth -ConsoleWidth $size.Width
+    $rows  = @(Get-RepairMenuRows -Fixable $Fixable -Width $width -Mouse $Mouse)
+    $panel = @(Format-RepairMenuPanel -Rows $rows -Selected 0 -Width $width)
+
+    $origin = Reserve-RepairMenuArea -Need $panel.Count -X 2
+    if (-not $origin) { return @{ Action = "eof"; Indices = @() } }
+
+    # 命中表按行号索引,与画出来的行一一对应。
+    $indexMap = @($panel | ForEach-Object { [int]$_.Index })
+
+    $draw = {
+        param($sel)
+        $p = @(Format-RepairMenuPanel -Rows $rows -Selected $sel -Width $width)
+        [void](Write-RepairMenuPanel -Lines $p -X $origin.X -Y $origin.Y)
+    }.GetNewClosure()
+
+    $hitTest = {
+        param($mx, $my)
+        $r = $my - $origin.Y
+        if ($r -lt 0 -or $r -ge $indexMap.Count) { return -1 }
+        if ($mx -lt $origin.X) { return -1 }
+        if ($mx -ge ($origin.X + $width)) { return -1 }
+        return [int]$indexMap[$r]
+    }.GetNewClosure()
+
+    while ($true) {
+        $res = $null
+        try {
+            $res = Read-TuiChoice -ItemCount $Fixable.Count -RenderScript $draw `
+                     -MouseHitTest $hitTest -KeyMap @{ "A" = "all" }
+        } catch {
+            return @{ Action = "eof"; Indices = @() }
+        }
+
+        $action = [string]$res.Action
+        if ($action -eq "select") { return @{ Action = "select"; Indices = @([int]$res.Index + 1) } }
+        if ($action -eq "all") {
+            $all = @()
+            for ($i = 1; $i -le $Fixable.Count; $i++) { $all += $i }
+            return @{ Action = "select"; Indices = $all }
+        }
+        if ($action -eq "cancel")  { return @{ Action = "cancel"; Indices = @() } }
+        if ($action -eq "eof")     { return @{ Action = "eof"; Indices = @() } }
+        if ($action -eq "timeout") { return @{ Action = "cancel"; Indices = @() } }
+        # 其余是未映射的可打印字符:不理它,重新等一次。
+        # 重进 Read-TuiChoice 会让面板原地重画一遍,内容不变,看不出来。
+    }
+}
+
+# 逐行路径取一次选择。编号的解析仍走 ConvertTo-MenuSelection(纯函数,
+# 逗号分隔 / A / 0 / 范围判断都在那里),这里只负责把一行文本拿回来。
+# 这一条路才是自动化真正会走的那条(标准输入被重定向),必须和以前一样:
+# 读到输入结束就干净退出,绝不在无人应答的终端上死等。
+function Read-RepairChoiceLine {
+    param(
+        [object[]]$Fixable = @(),
+        [bool]$InputRedirected = $false,
+        [int]$InputTimeoutMs = 15000,
+        [object]$StdinReader = $null
+    )
+
+    Write-Host "  输入编号修复(多项用逗号分隔,如 1,3);[A] 全部;[0] 退出:"
+    Write-Host -NoNewline "  > "
+    $text = Read-MenuLine -Redirected $InputRedirected -TimeoutMs $InputTimeoutMs -Reader $StdinReader
+    # 提示行是用 -NoNewline 写的,回车由终端回显补上;重定向时没有回显,
+    # 自己把这一行收尾,否则后续输出会黏在 "> " 后面。
+    if ($null -eq $text -or $InputRedirected) { Write-Host "" }
+    if ($null -eq $text) { return @{ Action = "eof"; Indices = @() } }
+
+    $sel = ConvertTo-MenuSelection -Text $text -Max $Fixable.Count
+    if ($sel.Quit) { return @{ Action = "cancel"; Indices = @() } }
+    if (-not $sel.Ok) {
+        Write-Note ("无效输入「" + $text.Trim() + "」(" + $sel.Reason + ")。")
+        Write-Note ("请输入 1 到 " + $Fixable.Count + " 之间的编号、逗号分隔的多个编号、A 或 0。")
+        return @{ Action = "invalid"; Indices = @() }
+    }
+
+    if ($sel.All) {
+        $all = @()
+        for ($i = 1; $i -le $Fixable.Count; $i++) { $all += $i }
+        return @{ Action = "select"; Indices = $all }
+    }
+    return @{ Action = "select"; Indices = @($sel.Indices) }
+}
+
+# 第二档的独立确认。返回 $true 才执行。
+#
+# 「独立」是设计要求(§7.1):它与选中那一项必须是两次输入。选中是 Enter 或点击,
+# 而这里只有真的按下 Y 才算确认 —— 回车、Esc、鼠标、其它任何键一律跳过。
+# 默认落在「跳过」上,误按的代价因此是「这次没修」,而不是「网断了」。
+function Read-RepairConfirm {
+    param(
+        [object]$Item = $null,
+        [bool]$Tui = $false,
+        [bool]$InputRedirected = $false,
+        [int]$InputTimeoutMs = 15000,
+        [object]$StdinReader = $null
+    )
+
+    Write-Host ""
+    Write-Note "!! 这一项属于「有损但必需」—— 执行前请先看清影响:"
+    foreach ($line in $Item.Impact) { Write-Note ("   " + $line) }
+    Write-Host ""
+
+    if (-not $Tui) {
+        # 降级路径沿用原来的问法(输入 YES),不为了统一而引入第二种约定。
+        Write-Host -NoNewline "  确认执行?输入 YES 继续,其他任何输入都跳过这一项: "
+        $ans = Read-MenuLine -Redirected $InputRedirected -TimeoutMs $InputTimeoutMs -Reader $StdinReader
+        if ($null -eq $ans -or $InputRedirected) { Write-Host "" }
+        if ($null -eq $ans) {
+            Write-Note "输入结束,跳过这一项。"
+            return $false
+        }
+        if ($ans.Trim() -ne "YES") {
+            Write-Note "未确认(输入不是 YES),已跳过这一项。"
+            return $false
+        }
+        return $true
+    }
+
+    Write-Host -NoNewline "  确认执行?[Y] 执行 / 其他任意键跳过: "
+    $ev = $null
+    try { $ev = Read-TuiEvent } catch { $ev = @{ Kind = "eof" } }
+    Write-Host ""
+    # 决定已经拿到,把队列里剩下的按键丢掉:否则下一次选择会被上一次
+    # 多按的键替用户作答。
+    [void](Clear-TuiInput)
+
+    if ((-not $ev) -or ([string]$ev.Kind -eq "eof")) {
+        Write-Note "输入结束,跳过这一项。"
+        return $false
+    }
+    if (([string]$ev.Kind -eq "key") -and (([string]$ev.Char -eq "Y") -or ([string]$ev.Char -eq "y"))) {
+        return $true
+    }
+    Write-Note "未确认(没有按 Y),已跳过这一项。"
+    return $false
+}
+
+# ---------------------------------------------------------------------------
+# 菜单:执行
+# ---------------------------------------------------------------------------
+
+# 执行一批选中项。$Indices 是 1 基编号(与用户看到的编号一致),这里换算成下标。
+# 两条输入路径共用这一段:选择是怎么来的与执行无关,修复的行为必须一致。
+function Invoke-RepairSelection {
+    param(
+        [object[]]$Fixable = @(),
+        [int[]]$Indices = @(),
+        [bool]$Tui = $false,
+        [bool]$InputRedirected = $false,
+        [int]$InputTimeoutMs = 15000,
+        [object]$StdinReader = $null
+    )
+
+    # 设计 §7 的前置校验,不可省:修复前必须确认 eNSP 已关闭。
+    # 未通过时只把命令列出来,一步都不执行。
+    $pre = $null
+    try { $pre = Test-RepairPreconditions } catch { $pre = $null }
+
+    foreach ($idx in @($Indices)) {
+        if ($idx -lt 1 -or $idx -gt $Fixable.Count) { continue }
+        $it = $Fixable[$idx - 1]
+        Write-Host ""
+        Write-Host ("  ---- [" + $idx + "] " + $it.Title + " ----")
+
+        # 先跑一遍 -DryRun。既是「显示将要执行的命令」那条约束的落点
+        # (fix.ps1 的约定:调用方先 -DryRun 显示、再去掉开关执行),也顺带
+        # 确认每一步的前置条件都成立 —— 前置不成立就不该动手。
+        $planned = @()
+        $planOk = $true
+        $planReason = ""
+        $alreadyDone = @()
+        foreach ($step in $it.Steps) {
+            if (-not (Get-Command $step.Fn -ErrorAction SilentlyContinue)) {
+                $planOk = $false
+                $planReason = ("修复原语缺失:找不到 " + $step.Fn + "(整合包不完整)")
+                break
+            }
+            $argMap = $step.Args
+            try {
+                $r = & $step.Fn @argMap -DryRun
+            } catch {
+                $planOk = $false
+                $planReason = ($step.Fn + " 计划阶段出错: " + $_.Exception.Message)
+                break
+            }
+            if (-not $r.Ok) {
+                $planOk = $false
+                $planReason = ($step.Fn + ": " + $r.Reason)
+                break
+            }
+            if ($r.Skipped) { $alreadyDone += $step.Fn }
+            $planned += @($r.Commands)
+        }
+
+        Write-Note ("步骤: " + (@($it.Steps | ForEach-Object { $_.Fn }) -join " -> "))
+        if ($planned.Count -gt 0) {
+            Write-Note "将要执行的命令:"
+            foreach ($c in $planned) { Write-Host ("      " + $c) }
+        } else {
+            Write-Note "计划阶段没有产生任何命令。"
+        }
+        if ($alreadyDone.Count -gt 0) {
+            Write-Note ("计划阶段判定已满足(真正执行时会再确认一次): " + ($alreadyDone -join ", "))
+        }
+
+        if (-not $planOk) {
+            Write-Note ("[跳过] 前置条件不成立,未执行: " + $planReason)
+            continue
+        }
+
+        if ($pre -and (-not $pre.Ok)) {
+            Write-Host ""
+            Write-Note ("eNSP 正在运行(" + ($pre.Running -join ", ") + ")。按设计约定,修复前必须关闭")
+            Write-Note "eNSP —— 网络组件重绑会打断正在运行的设备。本次只显示上面的命令,不执行。"
+            Write-Note "关闭 eNSP 后重跑本菜单即可。"
+            continue
+        }
+
+        # 第二档:与「选择」分开的第二次确认。
+        if ($it.Tier -eq "confirm") {
+            $ok = $false
+            try {
+                $ok = [bool](Read-RepairConfirm -Item $it -Tui $Tui -InputRedirected $InputRedirected `
+                            -InputTimeoutMs $InputTimeoutMs -StdinReader $StdinReader)
+            } catch {
+                $ok = $false
+            }
+            if (-not $ok) { continue }
+        }
+
+        # 执行。顺序是硬依赖:中间一步失败就停下 —— fix.ps1 明确写过,
+        # 前面的步骤没成就去建接口,会留下「接口在、栈不通」的状态,
+        # 症状与完全没修一模一样,是最难查的一种「修了没用」。
+        $failed = $false
+        foreach ($step in $it.Steps) {
+            $argMap = $step.Args
+            try {
+                $r = & $step.Fn @argMap
+            } catch {
+                Write-Note ("[失败] " + $step.Fn + " 抛出异常: " + $_.Exception.Message)
+                $failed = $true
+                break
+            }
+            if (-not $r.Ok) {
+                Write-Note ("[失败] " + $step.Fn + ": " + $r.Reason)
+                if ($r.Commands -and $r.Commands.Count -gt 0) {
+                    Write-Note "  该步的命令行(可手动执行):"
+                    foreach ($c in @($r.Commands)) { Write-Host ("      " + $c) }
+                }
+                $failed = $true
+                break
+            }
+            if ($r.Skipped) {
+                Write-Note ("[跳过] " + $step.Fn + ": 已满足,无需执行")
+            } elseif ($r.Changed) {
+                Write-Note ("[完成] " + $step.Fn)
+            } else {
+                Write-Note ("[完成] " + $step.Fn + "(没有需要改动的项)")
+            }
+        }
+        if ($failed) {
+            Write-Note "后续步骤依赖前一步,已停下。排掉上面这条原因后重跑本菜单。"
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # 菜单
 # ---------------------------------------------------------------------------
 
@@ -480,33 +986,14 @@ function Show-RepairMenu {
     Write-Host ("=" * 64)
     Write-Host ""
     Write-Note "这一段会改动系统,且只在明确选择之后才动手。报告是只读采集,已经写完。"
-    if ($InputRedirected) {
-        Write-Note "[提示] 标准输入是重定向的:读到输入结束即退出菜单,不会在这里等。"
-    }
 
-    if ($fixable.Count -eq 0) {
-        Write-Host ""
-        Write-Note "没有发现可由本工具自动修复的问题。"
-        Write-Note "三项可修项(host-only 驱动 / 性能计数器 / 防火墙放行)本次都已满足,"
-        Write-Note "或者根本没被判定为问题 —— 菜单不列空操作,本次也不改动任何系统设置。"
-    } else {
-        Write-Host ""
-        Write-Host ("  发现 " + $fixable.Count + " 个可由本工具修复的问题:")
-        Write-Host ""
-        for ($i = 0; $i -lt $fixable.Count; $i++) {
-            $it = $fixable[$i]
-            $tierText = "无损"
-            if ($it.Tier -eq "confirm") { $tierText = "有损,执行前单独确认" }
-            Write-Host ("  [" + ($i + 1) + "] " + $it.Title + "   <" + $tierText + ">")
-            Write-Note ("症状: " + $it.Symptom)
-            Write-Note ("依据: " + $it.Evidence)
-            Write-Host ""
-        }
-    }
-
-    # 第三档永远只打印。它不占编号,也不出现在选择里 —— 这里没有它的修复入口。
+    # 第三档永远只打印。它不占编号,也不进选择与命中测试的范围 ——
+    # 这一段里没有它的修复入口,措辞保持「不修复、也不建议关闭」不变。
+    # 刻意排在面板之前:面板是原地重画的,它下面不能再追加滚动输出,
+    # 否则面板原点就废了(原点由 Reserve-RepairMenuArea 在画之前定下)。
     if ($manual.Count -gt 0) {
-        Write-Host "  以下项不自动修复:"
+        Write-Host ""
+        Write-Host "  以下项本菜单不提供修复入口(第三档:有损且非必需,只报原因与手动步骤):"
         Write-Host ""
         foreach ($it in $manual) {
             Write-Host ("  * " + $it.Title)
@@ -515,158 +1002,94 @@ function Show-RepairMenu {
         }
     }
 
-    if ($fixable.Count -eq 0) { return }
+    if ($fixable.Count -eq 0) {
+        Write-Host ""
+        Write-Note "没有发现可由本工具自动修复的问题。"
+        Write-Note "三项可修项(host-only 驱动 / 性能计数器 / 防火墙放行)本次都已满足,"
+        Write-Note "或者根本没被判定为问题 —— 菜单不列空操作,本次也不改动任何系统设置。"
+        return
+    }
+
+    Write-Host ""
+    Write-Host ("  发现 " + $fixable.Count + " 个可由本工具修复的问题:")
+
+    # ---------------- 能力探测:决定走 TUI 还是逐行 ----------------
+    # 探测本身不改任何东西;Enter-TuiMode 只在探测通过之后才调用,
+    # 所以「控制台不可用」这条路上一个控制台模式位都不会被碰。
+    $tuiOk = $false
+    if (Get-Command Test-TuiConsoleAvailable -ErrorAction SilentlyContinue) {
+        try { $tuiOk = [bool](Test-TuiConsoleAvailable) } catch { $tuiOk = $false }
+    }
+    if ($tuiOk) {
+        $size = $null
+        try { $size = Get-TuiSize } catch { $size = $null }
+        if ((-not $size) -or (-not $size.Ok)) { $tuiOk = $false }
+    }
+
+    # 降级必须是显式的(设计 §9):探测失败要说出来,不能默默吃掉点击 ——
+    # 否则用户会以为程序坏了,而不是知道自己在纯键盘模式下。
+    if (-not $tuiOk) {
+        if (-not (Get-Command Test-TuiConsoleAvailable -ErrorAction SilentlyContinue)) {
+            # 整合包里缺 tui.ps1。单说出来,否则会被当成「这台机器控制台不行」。
+            Write-Note "[提示] 未加载 tui.ps1(交互层),菜单只能用键盘操作(逐行输入编号)。"
+            Write-Note "       整合包不完整时重新解压即可;只读诊断与下面的修复都不受影响。"
+        } else {
+            Write-Note "[提示] 当前不是可交互控制台(标准输入被重定向,或控制台能力不可用):"
+            Write-Note "       鼠标不可用,菜单只能用键盘操作 —— 这里按「逐行输入编号」接收选择。"
+            Write-Note "       读到输入结束即退出菜单,不会在这里等。"
+        }
+    } else {
+        Write-Note "       方向键移动,Enter 执行,数字键直选,A 全选,Esc 退出。"
+    }
 
     # ---------------- 选择与执行 ----------------
-    while ($true) {
-        Write-Host "  输入编号修复(多项用逗号分隔,如 1,3);[A] 全部;[0] 退出:"
-        Write-Host -NoNewline "  > "
-        $text = Read-MenuLine -Redirected $InputRedirected -TimeoutMs $InputTimeoutMs -Reader $StdinReader
-        # 提示行是用 -NoNewline 写的,回车由终端回显补上;重定向时没有回显,
-        # 自己把这一行收尾,否则后续输出会黏在 "> " 后面。
-        if ($null -eq $text -or $InputRedirected) { Write-Host "" }
-        if ($null -eq $text) {
-            Write-Note "输入结束(或等待输入超时),退出修复菜单。已写好的报告不受影响。"
-            return
-        }
-        $sel = ConvertTo-MenuSelection -Text $text -Max $fixable.Count
-        if ($sel.Quit) {
-            Write-Note "已选择退出,未做任何改动。"
-            return
-        }
-        if (-not $sel.Ok) {
-            Write-Note ("无效输入「" + $text.Trim() + "」(" + $sel.Reason + ")。")
-            Write-Note ("请输入 1 到 " + $fixable.Count + " 之间的编号、逗号分隔的多个编号、A 或 0。")
-            continue
-        }
-
-        $chosen = @()
-        if ($sel.All) {
-            for ($i = 1; $i -le $fixable.Count; $i++) { $chosen += $i }
-        } else {
-            $chosen = @($sel.Indices)
-        }
-
-        # 设计 §7 的前置校验,不可省:修复前必须确认 eNSP 已关闭。
-        # 未通过时只把命令列出来,一步都不执行。
-        $pre = $null
-        try { $pre = Test-RepairPreconditions } catch { $pre = $null }
-
-        foreach ($idx in $chosen) {
-            $it = $fixable[$idx - 1]
-            Write-Host ""
-            Write-Host ("  ---- [" + $idx + "] " + $it.Title + " ----")
-
-            # 先跑一遍 -DryRun。既是「显示将要执行的命令」那条约束的落点
-            # (fix.ps1 的约定:调用方先 -DryRun 显示、再去掉开关执行),也顺带
-            # 确认每一步的前置条件都成立 —— 前置不成立就不该动手。
-            $planned = @()
-            $planOk = $true
-            $planReason = ""
-            $alreadyDone = @()
-            foreach ($step in $it.Steps) {
-                if (-not (Get-Command $step.Fn -ErrorAction SilentlyContinue)) {
-                    $planOk = $false
-                    $planReason = ("修复原语缺失:找不到 " + $step.Fn + "(整合包不完整)")
-                    break
-                }
-                $argMap = $step.Args
-                try {
-                    $r = & $step.Fn @argMap -DryRun
-                } catch {
-                    $planOk = $false
-                    $planReason = ($step.Fn + " 计划阶段出错: " + $_.Exception.Message)
-                    break
-                }
-                if (-not $r.Ok) {
-                    $planOk = $false
-                    $planReason = ($step.Fn + ": " + $r.Reason)
-                    break
-                }
-                if ($r.Skipped) { $alreadyDone += $step.Fn }
-                $planned += @($r.Commands)
+    $mouseOn = $false
+    try {
+        if ($tuiOk) {
+            try { $mouseOn = [bool](Enter-TuiMode) } catch { $mouseOn = $false }
+            if (-not $mouseOn) {
+                Write-Note "[提示] 控制台没有接受鼠标模式:菜单只能用键盘操作,"
+                Write-Note "       方向键 / 数字键 / Enter / Esc 均可用。"
             }
+        }
 
-            Write-Note ("步骤: " + (@($it.Steps | ForEach-Object { $_.Fn }) -join " -> "))
-            if ($planned.Count -gt 0) {
-                Write-Note "将要执行的命令:"
-                foreach ($c in $planned) { Write-Host ("      " + $c) }
+        while ($true) {
+            $choice = $null
+            if ($tuiOk) {
+                $choice = Read-RepairChoiceTui -Fixable $fixable -Mouse $mouseOn
             } else {
-                Write-Note "计划阶段没有产生任何命令。"
-            }
-            if ($alreadyDone.Count -gt 0) {
-                Write-Note ("计划阶段判定已满足(真正执行时会再确认一次): " + ($alreadyDone -join ", "))
+                $choice = Read-RepairChoiceLine -Fixable $fixable -InputRedirected $InputRedirected `
+                            -InputTimeoutMs $InputTimeoutMs -StdinReader $StdinReader
             }
 
-            if (-not $planOk) {
-                Write-Note ("[跳过] 前置条件不成立,未执行: " + $planReason)
-                continue
+            $action = [string]$choice.Action
+            if ($action -eq "eof") {
+                Write-Note "输入结束(或等待输入超时),退出修复菜单。已写好的报告不受影响。"
+                return
             }
+            if ($action -eq "cancel") {
+                Write-Note "已选择退出,未做任何改动。"
+                return
+            }
+            if ($action -eq "invalid") { continue }
 
-            if ($pre -and (-not $pre.Ok)) {
-                Write-Host ""
-                Write-Note ("eNSP 正在运行(" + ($pre.Running -join ", ") + ")。按设计约定,修复前必须关闭")
-                Write-Note "eNSP —— 网络组件重绑会打断正在运行的设备。本次只显示上面的命令,不执行。"
-                Write-Note "关闭 eNSP 后重跑本菜单即可。"
-                continue
-            }
+            # -Tui 传的是「输入走哪条通道」,不是「鼠标有没有开」。二者必须分开:
+            # 控制台在、鼠标模式没开时,菜单仍然是 TUI,第二档确认也得按键读,
+            # 不能掉回「输入 YES」那种逐行问法 —— 那会让同一个菜单里出现两套操作。
+            Invoke-RepairSelection -Fixable $fixable -Indices @($choice.Indices) -Tui $tuiOk `
+                -InputRedirected $InputRedirected -InputTimeoutMs $InputTimeoutMs -StdinReader $StdinReader
 
-            # 第二档:与「选择」分开的第二次确认。
-            if ($it.Tier -eq "confirm") {
-                Write-Host ""
-                Write-Note "!! 这一项属于「有损但必需」—— 执行前请先看清影响:"
-                foreach ($line in $it.Impact) { Write-Note ("   " + $line) }
-                Write-Host ""
-                Write-Host -NoNewline "  确认执行?输入 YES 继续,其他任何输入都跳过这一项: "
-                $ans = Read-MenuLine -Redirected $InputRedirected -TimeoutMs $InputTimeoutMs -Reader $StdinReader
-                if ($null -eq $ans -or $InputRedirected) { Write-Host "" }
-                if ($null -eq $ans) {
-                    Write-Note "输入结束,跳过这一项。"
-                    continue
-                }
-                if ($ans.Trim() -ne "YES") {
-                    Write-Note "未确认(输入不是 YES),已跳过这一项。"
-                    continue
-                }
-            }
-
-            # 执行。顺序是硬依赖:中间一步失败就停下 —— fix.ps1 明确写过,
-            # 前面的步骤没成就去建接口,会留下「接口在、栈不通」的状态,
-            # 症状与完全没修一模一样,是最难查的一种「修了没用」。
-            $failed = $false
-            foreach ($step in $it.Steps) {
-                $argMap = $step.Args
-                try {
-                    $r = & $step.Fn @argMap
-                } catch {
-                    Write-Note ("[失败] " + $step.Fn + " 抛出异常: " + $_.Exception.Message)
-                    $failed = $true
-                    break
-                }
-                if (-not $r.Ok) {
-                    Write-Note ("[失败] " + $step.Fn + ": " + $r.Reason)
-                    if ($r.Commands -and $r.Commands.Count -gt 0) {
-                        Write-Note "  该步的命令行(可手动执行):"
-                        foreach ($c in @($r.Commands)) { Write-Host ("      " + $c) }
-                    }
-                    $failed = $true
-                    break
-                }
-                if ($r.Skipped) {
-                    Write-Note ("[跳过] " + $step.Fn + ": 已满足,无需执行")
-                } elseif ($r.Changed) {
-                    Write-Note ("[完成] " + $step.Fn)
-                } else {
-                    Write-Note ("[完成] " + $step.Fn + "(没有需要改动的项)")
-                }
-            }
-            if ($failed) {
-                Write-Note "后续步骤依赖前一步,已停下。排掉上面这条原因后重跑本菜单。"
-            }
+            Write-Host ""
+            Write-Note "可继续选择其它编号,或按 Esc / 0 退出。修完重跑一次环境检查即可核对结果。"
         }
-
-        Write-Host ""
-        Write-Note "可继续选择其它编号,或输入 0 退出。修完重跑一次环境检查即可核对结果。"
+    } finally {
+        # 模式还原只有这一条路是可靠的:正常退出、中途抛错、用户 Ctrl+C 都走它。
+        # Exit-TuiMode 自己按「是否真的进过模式」判断,没进过就是空操作,
+        # 所以这里无条件调用 —— 关掉快速编辑却不还原,那个窗口里就再也不能
+        # 拖拽选字,而且用户无从知道原因。
+        if (Get-Command Restore-TuiMode -ErrorAction SilentlyContinue) {
+            try { Restore-TuiMode } catch { }
+        }
     }
 }
 
@@ -738,7 +1161,8 @@ function Invoke-RepairMenuEntry {
     } catch { }
 
     try {
-        # 读取器按「输入是否被重定向」二选一:键盘终端走 [Console]::ReadLine(),
+        # 这两个只服务降级的那条路(非可交互控制台);TUI 那条路不经过它们。
+        # 读取器按「输入是否被重定向」二选一:控制台终端走 [Console]::ReadLine(),
         # 重定向走一个整场复用的 StreamReader(理由见 Read-MenuLine)。
         $redirected = Test-ConsoleInputRedirected
         $stdinReader = $null
