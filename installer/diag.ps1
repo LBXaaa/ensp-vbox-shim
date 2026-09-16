@@ -7,8 +7,13 @@
 #       PowerShell 5.1 只对无 BOM 的文件按 ANSI 解码,无 BOM 时中文会乱码。
 #
 # 只读约定:
-#   - 全程不启动任何虚拟机、不修改任何系统设置。
+#   - 诊断与报告全程不启动任何虚拟机、不修改任何系统设置。
+#   - 文件末尾的「修复」菜单是唯一会改动系统的地方:只在用户明确选择后才动手,
+#     且另写一份 <报告名>.repair.txt。报告本体始终保持只读采集的形态 ——
+#     交互内容不进报告,报告里也就不会出现半截的、读不出结论的会话记录。
 #   - 绝不 dot-source install.ps1 —— 该文件有顶层副作用,一旦被 source 就会真的跑安装。
+#   - fix.ps1 则可以 dot-source:它是纯函数库,顶层只有变量赋值与对 checks.ps1 的引入,
+#     没有副作用,也不会自己执行任何修复(修复只在被调用时发生)。
 #   - 读 install.ps1 只按文本读(取 $DLL_SHA256 常量),不执行。
 #
 # 降级约定:每个探测都可能失败(缺 VBox、缺 eNSP、权限不足)。
@@ -18,7 +23,9 @@
 param(
     [string]$EnspDir = "",
     [string]$VBoxDir = "",
-    [string]$ReportPath = ""
+    [switch]$NoMenu,          # 只出报告,不进修复菜单(自动化/无人值守用这个)
+    [switch]$Fix,             # 跳过报告,直接进修复菜单(环境检查.bat -Fix)
+    [string]$ReportPath = ""  # 默认 %ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +37,11 @@ if (-not (Test-Path $ChecksPath)) {
     exit 1
 }
 . $ChecksPath
+
+# 修复原语。缺了它不影响诊断与报告 —— 只读的那条路必须能单独跑通,
+# 所以这里只降级,不 exit;真正要进菜单时,菜单自己按名字检查函数在不在。
+$FixPath = Join-Path $ScriptDir "fix.ps1"
+if (Test-Path $FixPath) { . $FixPath }
 
 # 全部共用的两个记账变量:
 #   $script:DiagFailCount —— 失败的探测数,由 Write-Fail 累加(见该函数处的说明)。
@@ -117,6 +129,634 @@ function Invoke-Probe {
     }
 }
 
+# ===========================================================================
+# 交互式修复(菜单)
+#
+# 这一段是本文件唯一会改动系统的地方,且只在用户明确选择后才动手;上面的诊断与报告
+# 始终是只读的。三条硬约定:
+#
+#   1. 菜单一律在 Start-Transcript 之外运行。报告是「只读采集」的产物:交互提示与
+#      用户键入混进去,报告既读不出结论、又与它抬头的「不修改任何系统设置」自相矛盾。
+#      修复过程单独落一份 <报告名>.repair.txt,记录不会因此丢掉。
+#   2. 任何失败都不许把诊断打断:报告在此之前就已落盘,菜单出错只影响它自己。
+#   3. 读不到输入(EOF)就干净退出,绝不在无人应答的终端上死等。
+#
+# 修复能力全部来自 fix.ps1。这里只负责四件事:挑出「诊断真的发现问题」的那几项、
+# 把将要执行的命令原样显示出来、按档位做确认、调用修复函数并把结果报出来。
+#
+# 档位(设计 §7.1,判据是「是否无损」):
+#   lossless  无损可修      —— 选中即执行
+#   confirm   有损但必需    —— 先明示影响,再单独确认一次,与菜单选择是两次输入
+#   manual    有损且非必需  —— 不进菜单编号,只打印现状、原因与手动步骤
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 输入:读不到就退出,不死等
+# ---------------------------------------------------------------------------
+
+# 控制台输入是否被重定向。取不到 Console 的宿主(无控制台的服务/计划任务)按
+# 「已重定向」处理 —— 那种环境里等待输入必然等不到。
+function Test-ConsoleInputRedirected {
+    try { return [bool][Console]::IsInputRedirected } catch { return $true }
+}
+
+# 为整个菜单会话建一个读取器,只在输入被重定向时用。
+# 必须复用同一个实例:StreamReader 一次会读进一整块,每次新建都会把上一轮多读进来
+# 的行丢掉 —— 输入「1\nYES\n0\n」时,第二问就再也看不到 YES 了。
+function New-MenuStdinReader {
+    try { return (New-Object IO.StreamReader([Console]::OpenStandardInput())) } catch { return $null }
+}
+
+# 读一行输入。返回 $null 表示输入已结束(EOF),调用方据此干净退出。
+#   键盘终端: 直接阻塞读 —— 对面有人在,不需要也不该有超时。
+#   重定向:   有界等待。「管道既不送数据也不关闭」是唯一会把阻塞读永久挂住的情形,
+#             超时把它兜住;超时与 EOF 一样按「没有输入了」处理。
+#
+# 重定向这一路刻意不用 [Console]::In:它在 .NET Framework 里是 SyncTextReader,
+# 它的 ReadLineAsync() 就是同步 ReadLine() 套了一个已完成的任务(实测 IsCompleted
+# 恒为 True)—— 拿它做 Wait(超时) 等于直接阻塞,兜不住任何东西。
+# 自己包一层 StreamReader 才有真的异步读,超时才会到点返回。
+#
+# 也不用 Read-Host:它在 EOF 上返回空串而不是 $null,菜单会当成「无效输入」反复重问,
+# 这正是无人值守时最常见的挂死形态。
+function Read-MenuLine {
+    param([bool]$Redirected = $false, [int]$TimeoutMs = 15000, [object]$Reader = $null)
+
+    if (-not $Redirected) {
+        try { return [Console]::ReadLine() } catch { return $null }
+    }
+    if (-not $Reader) { return $null }
+    try {
+        $task = $Reader.ReadLineAsync()
+        if (-not $task.Wait($TimeoutMs)) { return $null }
+        return $task.Result
+    } catch {
+        return $null
+    }
+}
+
+# 纯函数:把一行输入解析成菜单选择。做成纯函数是为了能脱离终端核对各种写法。
+# 返回 Ok / Quit / All / Indices / Reason。
+function ConvertTo-MenuSelection {
+    param([string]$Text = "", [int]$Max = 0)
+
+    $t = "$Text".Trim()
+    if ($t -eq "0") {
+        return [pscustomobject]@{ Ok = $true; Quit = $true; All = $false; Indices = @(); Reason = "quit" }
+    }
+    if ($t -match '^[Aa]$') {
+        return [pscustomobject]@{ Ok = $true; Quit = $false; All = $true; Indices = @(); Reason = "all" }
+    }
+    if ($t -eq "") {
+        return [pscustomobject]@{ Ok = $false; Quit = $false; All = $false; Indices = @(); Reason = "empty" }
+    }
+
+    $indices = @()
+    foreach ($part in ($t -split ",")) {
+        $p = $part.Trim()
+        $n = 0
+        if (-not [int]::TryParse($p, [ref]$n)) {
+            return [pscustomobject]@{ Ok = $false; Quit = $false; All = $false; Indices = @(); Reason = ("不是编号: " + $p) }
+        }
+        if ($n -lt 1 -or $n -gt $Max) {
+            return [pscustomobject]@{ Ok = $false; Quit = $false; All = $false; Indices = @(); Reason = ("超出范围: " + $n) }
+        }
+        if ($indices -notcontains $n) { $indices += $n }
+    }
+    return [pscustomobject]@{ Ok = $true; Quit = $false; All = $false; Indices = @($indices | Sort-Object); Reason = "ok" }
+}
+
+# ---------------------------------------------------------------------------
+# 虚拟化后端(第三档:只打印,不修)
+# ---------------------------------------------------------------------------
+
+# 纯只读,且刻意绕开 DISM:Get-WindowsOptionalFeature 在本机会挂住(TrustedInstaller
+# 卡死,十分钟不返回),install.ps1 已为此改过一次。判据是「hypervisor 现在是否真的
+# 在跑」,而不是「Hyper-V 功能装没装」—— 前者才决定 VBox 拿不拿得到原生 VT-x。
+function Get-HypervisorFacts {
+    $known   = $false
+    $present = $false
+    try {
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        $present = [bool]$cs.HypervisorPresent
+        $known   = $true
+    } catch { }
+
+    $launch = ""
+    try {
+        $bcd = Join-Path $env:SystemRoot "System32\bcdedit.exe"
+        $probe = Invoke-Probe -Exe $bcd -Arguments @("/enum", "{current}")
+        if ($probe.Ok) {
+            foreach ($line in $probe.Lines) {
+                if ($line -match 'hypervisorlaunchtype\s+(\S+)') { $launch = $Matches[1].Trim() }
+            }
+        }
+    } catch { }
+
+    $vbs = $false
+    try {
+        $dg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard" -ErrorAction Stop
+        if ($dg.EnableVirtualizationBasedSecurity -eq 1) { $vbs = $true }
+    } catch { }
+
+    $hvci = $false
+    try {
+        $hv = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -ErrorAction Stop
+        if ($hv.Enabled -eq 1) { $hvci = $true }
+    } catch { }
+
+    return [pscustomobject]@{
+        Known      = $known
+        Present    = $present
+        LaunchType = $launch
+        Vbs        = $vbs
+        Hvci       = $hvci
+        Any        = ($present -or $vbs -or $hvci -or ($launch -match 'Auto'))
+    }
+}
+
+# 虚拟化后端的说明。探测不到就不打印 —— 不写「未启用」这类会误导的结论。
+# 措辞是本项目已经定下的立场:这不是故障,不要关。见 docs/troubleshooting-error40.md
+# 与设计 §7.1:社区里「关 Hyper-V」的教程针对的是 VirtualBox 5.2(与 Hyper-V 互斥),
+# 与本项目场景(7.x 靠 WHP 共存)正相反。
+function Get-HypervisorNotes {
+    param([object]$Facts = $null)
+
+    $hv = $Facts
+    if (-not $hv) { $hv = Get-HypervisorFacts }
+    $lines = @()
+    if (-not $hv.Any) { return $lines }
+
+    $lines += "已探测到:"
+    if ($hv.Present) { $lines += "  hypervisor 正在运行 (Win32_ComputerSystem.HypervisorPresent = True)" }
+    if ($hv.LaunchType) { $lines += "  启动类型 hypervisorlaunchtype = " + $hv.LaunchType }
+    if ($hv.Vbs)  { $lines += "  基于虚拟化的安全 (VBS) 已启用" }
+    if ($hv.Hvci) { $lines += "  内存完整性 (HVCI / 内核隔离) 已启用" }
+    $lines += "影响: VirtualBox 7.x 拿不到原生 VT-x,改走 WHP 后端 —— 设备启动会变慢,"
+    $lines += "      单台 3-5 分钟属正常,不是故障,也不影响设备功能。"
+    $lines += "处置: 不修复,也不建议关闭。"
+    $lines += "  关掉 Hyper-V / VBS / 内存完整性需要重启,并且会连带影响本机上依赖它们的"
+    $lines += "  其他功能(WDAG、WSL2、沙盒、Credential Guard)。"
+    $lines += "  它不是 error 40 的成因。社区里「关 Hyper-V」的做法针对的是 VirtualBox 5.2,"
+    $lines += "  5.2 与 Hyper-V 互斥;7.x 靠 WHP 与 Hyper-V 共存,开着 Hyper-V 正是本项目的场景。"
+    return $lines
+}
+
+# ---------------------------------------------------------------------------
+# 发现:诊断真的查出问题的那几项
+# ---------------------------------------------------------------------------
+
+# 只报「诊断确实发现的问题」,并给出对应的修复步骤。没查出问题就没有条目 ——
+# 菜单因此不会在健康机器上退化成一串空操作。
+#
+# 判据全部来自 checks.ps1 的同一批探测函数,和报告读的是同一套事实:报告说缺、
+# 菜单才会提;报告说好、菜单就不提。
+#
+# 触发项(与设计 §7.1 的档位对应):
+#   host-only 驱动未注册 / 一个 host-only 接口都没有  -> 四步链,confirm 档
+#   性能计数器不工作                                  -> lodctr /R,  lossless 档
+#   没有「已启用 + 允许」的 eNSP 规则                  -> 加规则,     lossless 档
+#
+# 读不到防火墙配置时不下结论、也不提供修复:那既可能是真的没有规则,也可能是权限
+# 不足;在「没读到」的基础上加一条规则,可能造出与已有规则重名的第二条。诊断本身
+# 就是按这个口径写的,菜单跟着它走。
+#
+# 探测本身失败(抛异常)时也不静默跳过:那会让菜单把「没查到」说成「没问题」。
+# 那种情形落成一条 manual 条目,把失败原因如实打出来。
+function New-UnjudgedItem {
+    param([string]$Id, [string]$Title, [string]$Why)
+    return [pscustomobject]@{
+        Id       = $Id
+        Tier     = "manual"
+        Title    = $Title
+        Symptom  = ""
+        Evidence = ""
+        Impact   = @()
+        Steps    = @()
+        Manual   = @(
+            ("未能判定: " + $Why)
+            "手动步骤: 先排除这条探测失败的原因(权限不足居多),再重跑本菜单。"
+        )
+    }
+}
+
+function Get-RepairFindings {
+    param([string]$VBoxDir = "", [string]$EnspDir = "")
+
+    $items = @()
+    $vboxDirFound = Find-VBoxDir -Override $VBoxDir
+    $vboxManage = ""
+    if ($vboxDirFound) { $vboxManage = Join-Path $vboxDirFound "VBoxManage.exe" }
+
+    # --- host-only(第 1 层驱动注册 / 第 3 层接口是否存在)-------------------
+    try {
+        $drvLines = @()
+        if ($vboxDirFound) {
+            $probe = Invoke-Probe -Exe (Join-Path $vboxDirFound "VBoxDrvInst.exe") -Arguments @("list")
+            if ($probe.Ok) { $drvLines = $probe.Lines }
+        }
+        $layers = Get-HostOnlyDriverLayers -DrvInstLines $drvLines
+
+        # 接口数为 -1 表示没读到(和「读到 0 个」是两回事)。只有读到 0 才作为依据:
+        # 「取不到」不是证据,判成的只是「取到了而且没有」。
+        $ifCount = -1
+        if ($vboxManage) {
+            $probe = Invoke-Probe -Exe $vboxManage -Arguments @("list", "hostonlyifs")
+            if ($probe.Ok) { $ifCount = @(Parse-HostOnlyIfs -Lines $probe.Lines).Count }
+        }
+
+        if ($vboxDirFound) {
+            $why = @()
+            if (-not $layers.Layer1.NetAdpPresent) { $why += "第 1 层: VBoxNetAdp6.NTAMD64 未注册" }
+            if (-not $layers.Layer1.NetLwfPresent) { $why += "第 1 层: VBoxNetLwf.NTAMD64 未注册" }
+            if ($ifCount -eq 0)                    { $why += "第 3 层: 一个 host-only 接口都没有" }
+
+            if ($why.Count -gt 0) {
+                $items += [pscustomobject]@{
+                    Id      = "hostonly"
+                    Tier    = "confirm"
+                    Title   = "host-only 网络驱动 / 接口"
+                    Symptom = "设备起不来,或起来后连不通宿主(VBoxManage startvm 报 VERR_INTNET_FLT_IF_NOT_FOUND)"
+                    Evidence = ($why -join "; ")
+                    Impact  = @(
+                        "重装驱动包会重新注册网络组件,并禁用/启用一次 host-only 网卡 ——"
+                        "本机网络会短暂中断(数秒到十几秒)。"
+                        "正在运行的设备、Tailscale / WireGuard 之类的常连隧道、"
+                        "Hyper-V 虚拟交换机都会闪断。"
+                        "修复前请先关闭 eNSP(下面的前置校验会再确认一次)。"
+                    )
+                    Steps   = @(
+                        [pscustomobject]@{ Fn = "Repair-InstallNetAdp";    Args = @{ VBoxDir = $vboxDirFound } }
+                        [pscustomobject]@{ Fn = "Repair-InstallNetLwf";    Args = @{ VBoxDir = $vboxDirFound } }
+                        [pscustomobject]@{ Fn = "Repair-BounceAdapter";    Args = @{} }
+                        [pscustomobject]@{ Fn = "Repair-CreateHostOnlyIf"; Args = @{ VBoxDir = $vboxDirFound } }
+                    )
+                    Manual  = @()
+                }
+            }
+        }
+    } catch {
+        $items += New-UnjudgedItem -Id "hostonly-unknown" -Title "host-only 网络状态:未能判定" `
+            -Why ("探测出错 —— " + $_.Exception.Message)
+    }
+
+    # --- 性能计数器 ---------------------------------------------------------
+    try {
+        $perf = Test-PerfCountersFunctional
+        if (-not $perf.Functional) {
+            $items += [pscustomobject]@{
+                Id      = "perfcounters"
+                Tier    = "lossless"
+                Title   = "Windows 性能计数器损坏"
+                Symptom = "设备一直打印 #### ,进不到 <Huawei> 提示符"
+                Evidence = ("计数器的实测调用失败: " + $perf.Reason)
+                Impact  = @()
+                Steps   = @( [pscustomobject]@{ Fn = "Repair-RebuildPerfCounters"; Args = @{} } )
+                Manual  = @()
+            }
+        }
+    } catch {
+        $items += New-UnjudgedItem -Id "perfcounters-unknown" -Title "性能计数器状态:未能判定" `
+            -Why ("探测出错 —— " + $_.Exception.Message)
+    }
+
+    # --- 防火墙放行 ---------------------------------------------------------
+    try {
+        $fwText = @(Get-FirewallRuleTextForEnsp)
+        $fw = Parse-FirewallRulesForEnsp -Lines $fwText
+        if (-not $fw.HasAllowRule) {
+            if ($fwText.Count -eq 0) {
+                $items += [pscustomobject]@{
+                    Id      = "firewall-unknown"
+                    Tier    = "manual"
+                    Title   = "eNSP 防火墙放行规则:未能判定"
+                    Symptom = ""
+                    Evidence = ""
+                    Impact  = @()
+                    Steps   = @()
+                    Manual  = @(
+                        "原因: 一条 eNSP / VBoxServer 规则都没读到 —— 既可能是确实没有,"
+                        "也可能是当前权限读不到防火墙配置,诊断不下结论。"
+                        "手动步骤: 用管理员身份重跑一次环境检查;确认确实没有规则之后,"
+                        "再回来让本菜单放行。"
+                    )
+                }
+            } else {
+                $items += [pscustomobject]@{
+                    Id      = "firewall"
+                    Tier    = "lossless"
+                    Title   = "防火墙未放行 eNSP_VBoxServer"
+                    Symptom = "设备一直打印 #### ,进不到 <Huawei> 提示符"
+                    Evidence = "现有规则里没有一条同时满足「已启用 + 允许」的 eNSP / VBoxServer 规则"
+                    Impact  = @()
+                    Steps   = @( [pscustomobject]@{ Fn = "Repair-AllowEnspFirewall"; Args = @{ EnspDir = $EnspDir } } )
+                    Manual  = @()
+                }
+            }
+        }
+    } catch { }
+
+    return $items
+}
+
+# ---------------------------------------------------------------------------
+# 菜单
+# ---------------------------------------------------------------------------
+
+function Show-RepairMenu {
+    param(
+        [object[]]$Items = @(),
+        [bool]$InputRedirected = $false,
+        [int]$InputTimeoutMs = 15000,
+        [object]$StdinReader = $null
+    )
+
+    $fixable = @($Items | Where-Object { ($_.Tier -eq "lossless") -or ($_.Tier -eq "confirm") })
+    $manual  = @($Items | Where-Object { $_.Tier -eq "manual" })
+
+    Write-Host ""
+    Write-Host ("=" * 64)
+    Write-Host "  修复"
+    Write-Host ("=" * 64)
+    Write-Host ""
+    Write-Note "这一段会改动系统,且只在明确选择之后才动手。报告是只读采集,已经写完。"
+    if ($InputRedirected) {
+        Write-Note "[提示] 标准输入是重定向的:读到输入结束即退出菜单,不会在这里等。"
+    }
+
+    if ($fixable.Count -eq 0) {
+        Write-Host ""
+        Write-Note "没有发现可由本工具自动修复的问题。"
+        Write-Note "三项可修项(host-only 驱动 / 性能计数器 / 防火墙放行)本次都已满足,"
+        Write-Note "或者根本没被判定为问题 —— 菜单不列空操作,本次也不改动任何系统设置。"
+    } else {
+        Write-Host ""
+        Write-Host ("  发现 " + $fixable.Count + " 个可由本工具修复的问题:")
+        Write-Host ""
+        for ($i = 0; $i -lt $fixable.Count; $i++) {
+            $it = $fixable[$i]
+            $tierText = "无损"
+            if ($it.Tier -eq "confirm") { $tierText = "有损,执行前单独确认" }
+            Write-Host ("  [" + ($i + 1) + "] " + $it.Title + "   <" + $tierText + ">")
+            Write-Note ("症状: " + $it.Symptom)
+            Write-Note ("依据: " + $it.Evidence)
+            Write-Host ""
+        }
+    }
+
+    # 第三档永远只打印。它不占编号,也不出现在选择里 —— 这里没有它的修复入口。
+    if ($manual.Count -gt 0) {
+        Write-Host "  以下项不自动修复:"
+        Write-Host ""
+        foreach ($it in $manual) {
+            Write-Host ("  * " + $it.Title)
+            foreach ($line in $it.Manual) { Write-Note $line }
+            Write-Host ""
+        }
+    }
+
+    if ($fixable.Count -eq 0) { return }
+
+    # ---------------- 选择与执行 ----------------
+    while ($true) {
+        Write-Host "  输入编号修复(多项用逗号分隔,如 1,3);[A] 全部;[0] 退出:"
+        Write-Host -NoNewline "  > "
+        $text = Read-MenuLine -Redirected $InputRedirected -TimeoutMs $InputTimeoutMs -Reader $StdinReader
+        # 提示行是用 -NoNewline 写的,回车由终端回显补上;重定向时没有回显,
+        # 自己把这一行收尾,否则后续输出会黏在 "> " 后面。
+        if ($null -eq $text -or $InputRedirected) { Write-Host "" }
+        if ($null -eq $text) {
+            Write-Note "输入结束(或等待输入超时),退出修复菜单。已写好的报告不受影响。"
+            return
+        }
+        $sel = ConvertTo-MenuSelection -Text $text -Max $fixable.Count
+        if ($sel.Quit) {
+            Write-Note "已选择退出,未做任何改动。"
+            return
+        }
+        if (-not $sel.Ok) {
+            Write-Note ("无效输入「" + $text.Trim() + "」(" + $sel.Reason + ")。")
+            Write-Note ("请输入 1 到 " + $fixable.Count + " 之间的编号、逗号分隔的多个编号、A 或 0。")
+            continue
+        }
+
+        $chosen = @()
+        if ($sel.All) {
+            for ($i = 1; $i -le $fixable.Count; $i++) { $chosen += $i }
+        } else {
+            $chosen = @($sel.Indices)
+        }
+
+        # 设计 §7 的前置校验,不可省:修复前必须确认 eNSP 已关闭。
+        # 未通过时只把命令列出来,一步都不执行。
+        $pre = $null
+        try { $pre = Test-RepairPreconditions } catch { $pre = $null }
+
+        foreach ($idx in $chosen) {
+            $it = $fixable[$idx - 1]
+            Write-Host ""
+            Write-Host ("  ---- [" + $idx + "] " + $it.Title + " ----")
+
+            # 先跑一遍 -DryRun。既是「显示将要执行的命令」那条约束的落点
+            # (fix.ps1 的约定:调用方先 -DryRun 显示、再去掉开关执行),也顺带
+            # 确认每一步的前置条件都成立 —— 前置不成立就不该动手。
+            $planned = @()
+            $planOk = $true
+            $planReason = ""
+            $alreadyDone = @()
+            foreach ($step in $it.Steps) {
+                if (-not (Get-Command $step.Fn -ErrorAction SilentlyContinue)) {
+                    $planOk = $false
+                    $planReason = ("修复原语缺失:找不到 " + $step.Fn + "(整合包不完整)")
+                    break
+                }
+                $argMap = $step.Args
+                try {
+                    $r = & $step.Fn @argMap -DryRun
+                } catch {
+                    $planOk = $false
+                    $planReason = ($step.Fn + " 计划阶段出错: " + $_.Exception.Message)
+                    break
+                }
+                if (-not $r.Ok) {
+                    $planOk = $false
+                    $planReason = ($step.Fn + ": " + $r.Reason)
+                    break
+                }
+                if ($r.Skipped) { $alreadyDone += $step.Fn }
+                $planned += @($r.Commands)
+            }
+
+            Write-Note ("步骤: " + (@($it.Steps | ForEach-Object { $_.Fn }) -join " -> "))
+            if ($planned.Count -gt 0) {
+                Write-Note "将要执行的命令:"
+                foreach ($c in $planned) { Write-Host ("      " + $c) }
+            } else {
+                Write-Note "计划阶段没有产生任何命令。"
+            }
+            if ($alreadyDone.Count -gt 0) {
+                Write-Note ("计划阶段判定已满足(真正执行时会再确认一次): " + ($alreadyDone -join ", "))
+            }
+
+            if (-not $planOk) {
+                Write-Note ("[跳过] 前置条件不成立,未执行: " + $planReason)
+                continue
+            }
+
+            if ($pre -and (-not $pre.Ok)) {
+                Write-Host ""
+                Write-Note ("eNSP 正在运行(" + ($pre.Running -join ", ") + ")。按设计约定,修复前必须关闭")
+                Write-Note "eNSP —— 网络组件重绑会打断正在运行的设备。本次只显示上面的命令,不执行。"
+                Write-Note "关闭 eNSP 后重跑本菜单即可。"
+                continue
+            }
+
+            # 第二档:与「选择」分开的第二次确认。
+            if ($it.Tier -eq "confirm") {
+                Write-Host ""
+                Write-Note "!! 这一项属于「有损但必需」—— 执行前请先看清影响:"
+                foreach ($line in $it.Impact) { Write-Note ("   " + $line) }
+                Write-Host ""
+                Write-Host -NoNewline "  确认执行?输入 YES 继续,其他任何输入都跳过这一项: "
+                $ans = Read-MenuLine -Redirected $InputRedirected -TimeoutMs $InputTimeoutMs -Reader $StdinReader
+                if ($null -eq $ans -or $InputRedirected) { Write-Host "" }
+                if ($null -eq $ans) {
+                    Write-Note "输入结束,跳过这一项。"
+                    continue
+                }
+                if ($ans.Trim() -ne "YES") {
+                    Write-Note "未确认(输入不是 YES),已跳过这一项。"
+                    continue
+                }
+            }
+
+            # 执行。顺序是硬依赖:中间一步失败就停下 —— fix.ps1 明确写过,
+            # 前面的步骤没成就去建接口,会留下「接口在、栈不通」的状态,
+            # 症状与完全没修一模一样,是最难查的一种「修了没用」。
+            $failed = $false
+            foreach ($step in $it.Steps) {
+                $argMap = $step.Args
+                try {
+                    $r = & $step.Fn @argMap
+                } catch {
+                    Write-Note ("[失败] " + $step.Fn + " 抛出异常: " + $_.Exception.Message)
+                    $failed = $true
+                    break
+                }
+                if (-not $r.Ok) {
+                    Write-Note ("[失败] " + $step.Fn + ": " + $r.Reason)
+                    if ($r.Commands -and $r.Commands.Count -gt 0) {
+                        Write-Note "  该步的命令行(可手动执行):"
+                        foreach ($c in @($r.Commands)) { Write-Host ("      " + $c) }
+                    }
+                    $failed = $true
+                    break
+                }
+                if ($r.Skipped) {
+                    Write-Note ("[跳过] " + $step.Fn + ": 已满足,无需执行")
+                } elseif ($r.Changed) {
+                    Write-Note ("[完成] " + $step.Fn)
+                } else {
+                    Write-Note ("[完成] " + $step.Fn + "(没有需要改动的项)")
+                }
+            }
+            if ($failed) {
+                Write-Note "后续步骤依赖前一步,已停下。排掉上面这条原因后重跑本菜单。"
+            }
+        }
+
+        Write-Host ""
+        Write-Note "可继续选择其它编号,或输入 0 退出。修完重跑一次环境检查即可核对结果。"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 菜单总入口
+# ---------------------------------------------------------------------------
+
+# -Fix(跳过报告)与默认路径(报告之后)共用这一段。
+function Invoke-RepairMenuEntry {
+    param(
+        [string]$EnspDir = "",
+        [string]$VBoxDir = "",
+        [string]$ReportPath = "",
+        [bool]$TranscriptActive = $false
+    )
+
+    if ($TranscriptActive) {
+        Write-Host ""
+        Write-Host "[提示] 报告转录仍在进行,为避免把交互内容写进报告,跳过修复菜单。"
+        return
+    }
+    if (-not (Get-Command Repair-InstallNetAdp -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        Write-Host "[提示] 未加载 fix.ps1(修复原语),本次只出报告、不做修复。"
+        Write-Host "       整合包不完整时重新解压即可;只读诊断不受影响。"
+        return
+    }
+
+    # 菜单在报告转录之外,所以它自己起一段转录:否则整个交互过程在磁盘上不留任何
+    # 记录,「修了没用」这类问题就无从复查。写不进去也不影响菜单本身。
+    $repairLog = ""
+    $menuTranscript = $false
+    try {
+        if ($ReportPath) {
+            $repairLog = [IO.Path]::ChangeExtension($ReportPath, ".repair.txt")
+        } else {
+            $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+            $repairLog = Join-Path (Join-Path $env:ProgramData "ensp-vbox-shim") ("repair-" + $stamp + ".txt")
+        }
+        $repairDir = Split-Path -Parent $repairLog
+        if ($repairDir -and -not (Test-Path $repairDir)) {
+            New-Item -ItemType Directory -Path $repairDir -Force | Out-Null
+        }
+        Start-Transcript -Path $repairLog -Force | Out-Null
+        $menuTranscript = $true
+    } catch {
+        $menuTranscript = $false
+        $repairLog = ""
+    }
+
+    $items = @()
+    try { $items += @(Get-RepairFindings -VBoxDir $VBoxDir -EnspDir $EnspDir) } catch { }
+
+    # 第三档:虚拟化冲突类。只打印,永不给出修复入口 —— 见 Get-HypervisorNotes 的说明。
+    try {
+        $hvLines = @(Get-HypervisorNotes)
+        if ($hvLines.Count -gt 0) {
+            $items += [pscustomobject]@{
+                Id       = "hypervisor"
+                Tier     = "manual"
+                Title    = "Hyper-V / VBS / 内核隔离 正在运行(第三档:有损且非必需)"
+                Symptom  = ""
+                Evidence = ""
+                Impact   = @()
+                Steps    = @()
+                Manual   = $hvLines
+            }
+        }
+    } catch { }
+
+    try {
+        # 读取器按「输入是否被重定向」二选一:键盘终端走 [Console]::ReadLine(),
+        # 重定向走一个整场复用的 StreamReader(理由见 Read-MenuLine)。
+        $redirected = Test-ConsoleInputRedirected
+        $stdinReader = $null
+        if ($redirected) { $stdinReader = New-MenuStdinReader }
+
+        # 修复步骤连同各自的参数都挂在 finding 上(见 Get-RepairFindings),
+        # 所以菜单不需要 VBoxDir / EnspDir。
+        Show-RepairMenu -Items $items -InputRedirected $redirected -InputTimeoutMs 15000 -StdinReader $stdinReader
+    } catch {
+        Write-Host ""
+        Write-Host ("[提示] 修复菜单自身出错,已中止交互(报告与已完成的改动都不受影响): " + $_.Exception.Message)
+    }
+
+    if ($menuTranscript) { try { Stop-Transcript | Out-Null } catch { } }
+
+    if ($repairLog) { Write-Host ("  修复过程记录: " + $repairLog) }
+}
+
 # ---------------------------------------------------------------------------
 # 路径定位(只读)
 #
@@ -125,6 +765,34 @@ function Invoke-Probe {
 # 这也是本文件绝不能 dot-source install.ps1 的原因:那个文件有顶层副作用,
 # 一旦被 source 就会真的跑一遍安装。
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# -Fix:跳过报告,直接进菜单
+#
+# 报告那一整段是只读的,这里提前离开就不会产出报告文件 —— 用户要的是修,不是再看
+# 一遍已经看过的报告。菜单本身会把它发现的项、以及将要执行的命令完整打印出来。
+# 放在这里(而不是包住整段报告)是为了不打乱只读路径:报告那一节一行都不用改,
+# 也就不存在「加了菜单之后报告坏了」这种风险。
+# ---------------------------------------------------------------------------
+if ($Fix) {
+    Write-Host ("=" * 64)
+    Write-Host "  eNSP x VirtualBox 环境诊断 —— 修复模式(-Fix)"
+    Write-Host "  已跳过诊断报告,直接进入修复菜单。"
+    Write-Host "  需要报告请改跑 环境检查.bat(不带参数)或 diag.ps1 -NoMenu。"
+    Write-Host ("=" * 64)
+
+    $FixEnspDir = Find-EnspDir -Override $EnspDir
+    $FixVBoxDir = Find-VBoxDir -Override $VBoxDir
+
+    try {
+        Invoke-RepairMenuEntry -EnspDir $FixEnspDir -VBoxDir $FixVBoxDir -ReportPath "" -TranscriptActive $false
+    } catch {
+        Write-Host ""
+        Write-Host ("[提示] 修复菜单出错: " + $_.Exception.Message)
+        exit 1
+    }
+    exit 0
+}
 
 # ---------------------------------------------------------------------------
 # 报告落盘
@@ -315,6 +983,24 @@ Write-Note "分流怎么看: 宿主侧设备(S5700 等)是普通用户态进程,
 Write-Note "  宿主侧可用、AR 不可用  -> 故障在 VirtualBox 层,往下看第 3 节。"
 Write-Note "  宿主侧也不可用          -> 先看 eNSP 本体(安装、性能计数器、防火墙、端口)。"
 Write-Note "  上表只说明设备包在不在,不代表设备能起来;它用来缩小范围,不用于下结论。"
+
+# 虚拟化后端(Hyper-V / VBS / 内核隔离)。这一段是【信息】,不是故障判定:
+# 它们把 VirtualBox 7.x 推到 WHP 后端,代价只是设备启动变慢。此处只报事实,
+# 绝不给「关闭」建议 —— 见 Get-HypervisorNotes 的说明与设计 §7.1 第三档。
+Write-Host ""
+Write-Note "虚拟化后端(信息,不是故障判定):"
+try {
+    $hvFacts = Get-HypervisorFacts
+    if (-not $hvFacts.Known) {
+        Write-Note "  未能探测(读取 Win32_ComputerSystem 失败),此处不做判断。"
+    } elseif (-not $hvFacts.Any) {
+        Write-Note "  未探测到运行中的 hypervisor —— VirtualBox 拿得到原生 VT-x。"
+    } else {
+        foreach ($line in @(Get-HypervisorNotes -Facts $hvFacts)) { Write-Note ("  " + $line) }
+    }
+} catch {
+    Write-Fail "虚拟化后端" $_.Exception.Message
+}
 
 # ===========================================================================
 # 第 3 节  host-only 网络(六层)
@@ -888,14 +1574,20 @@ if ($script:DiagFailCount -eq 0) {
 }
 Write-Host ""
 Write-Host "  本报告只覆盖上面列出的这些节,不表示环境完全无问题:"
-Write-Host "  未覆盖的还有抓包驱动(WinPcap / Npcap)、交互式修复,以及安装器自身的校验。"
+Write-Host "  未覆盖的还有抓包驱动(WinPcap / Npcap),以及安装器自身的校验。"
 Write-Host "  报告里没报错,只说明已覆盖的这些项没发现问题。"
+Write-Host ""
+Write-Host "  本报告全程为只读采集,不含任何交互内容 —— 修复菜单在转录停止之后才运行,"
+Write-Host "  它那一段另写一份 <报告名>.repair.txt,不会混进本文件。"
 Write-Host ""
 Write-Host ("  报告文件: " + $ReportPath)
 
 if ($transcriptOn) {
     try { Stop-Transcript | Out-Null } catch { }
 }
+# 转录已停。把它记成事实而不是假设:下面的菜单靠这个变量决定能不能读输入 ——
+# 交互提示写进报告,报告就不再是「只读采集」,也没法直接附进 issue。
+$transcriptOn = $false
 
 # 这一行在 Stop-Transcript 之后,只出现在屏幕上、不进报告 ——
 # 文件大小必须等落盘停下才算得出来,放进报告只会是半截数字。
@@ -904,4 +1596,20 @@ try {
     Write-Host ("  报告大小: " + $reportSize + " 字节 (" + [math]::Round($reportSize / 1KB, 1) + " KB)")
 } catch {
     Write-Host ("  [提示] 报告文件大小取不到: " + $_.Exception.Message)
+}
+
+# ---------------------------------------------------------------------------
+# 修复菜单(报告之后)
+#
+# -NoMenu 在自动化里用:报告写完就结束,一个键都不读。
+# 菜单整段包 try/catch:它是报告之后的附加动作,出错不许影响已经落盘的报告,
+# 也不许让调用方(环境检查.bat / 脚本)拿到一个假的失败退出码。
+# ---------------------------------------------------------------------------
+if (-not $NoMenu) {
+    try {
+        Invoke-RepairMenuEntry -EnspDir $EnspDir -VBoxDir $VBoxDir -ReportPath $ReportPath -TranscriptActive $transcriptOn
+    } catch {
+        Write-Host ""
+        Write-Host ("[提示] 修复菜单出错,已中止交互(报告已写好,不受影响): " + $_.Exception.Message)
+    }
 }
