@@ -774,7 +774,14 @@ function Invoke-RepairMenuEntry {
 # 放在这里(而不是包住整段报告)是为了不打乱只读路径:报告那一节一行都不用改,
 # 也就不存在「加了菜单之后报告坏了」这种风险。
 # ---------------------------------------------------------------------------
-if ($Fix) {
+# 两个开关互相矛盾时以 -NoMenu 为准。-NoMenu 是自动化用的「绝不读输入」保证,
+# 不该被另一个开关悄悄推翻;这里明说一句,而不是沉默地挑一个执行。
+if ($Fix -and $NoMenu) {
+    Write-Host ""
+    Write-Host "[提示] -NoMenu 与 -Fix 同时给出,按 -NoMenu 处理:只出报告,不进修复菜单。"
+    Write-Host ""
+}
+if ($Fix -and (-not $NoMenu)) {
     Write-Host ("=" * 64)
     Write-Host "  eNSP x VirtualBox 环境诊断 —— 修复模式(-Fix)"
     Write-Host "  已跳过诊断报告,直接进入修复菜单。"
