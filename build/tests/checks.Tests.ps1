@@ -612,8 +612,8 @@ Write-Host "=== Task 12: the menu's repair primitives exist ==="
 # The menu refers to repair primitives by NAME, as a string inside Steps. A typo
 # or a renamed function therefore fails at the worst possible moment: when a
 # user picks that item on a machine that is already broken, and the only thing
-# they see is "[跳过] 修复原语缺失". Neither file's syntax check can catch it --
-# both parse perfectly, and the string is just data.
+# they see is the "repair primitive missing" skip line. Neither file's syntax
+# check catches it: both parse perfectly, and the string is just data.
 #
 # This walks diag.ps1 for Fn = "..." and requires each name to be defined in
 # fix.ps1. It is the guard that would have caught Repair-BounceAdapter sitting
@@ -636,5 +636,98 @@ if ($missingFns.Count -gt 0) {
     $missingFns | ForEach-Object { Write-Host ("        not defined in fix.ps1: " + $_) -ForegroundColor Red }
 }
 Assert-Equal $missingFns.Count 0 "repair steps: every Fn named by the menu exists in fix.ps1"
+
+Write-Host "=== Task 13: shim registration (CLSID hijack + plugin hashes) ==="
+
+# --- path identity -----------------------------------------------------------
+# The stored InprocServer32 value is compared against the shim path rather than
+# merely tested for presence, so the comparison has to tolerate everything the
+# registry legitimately does to a path: different casing, doubled separators,
+# a trailing separator.
+Assert-True  (Test-SameRegPath "C:\a\b\VBox52.dll" "c:\A\B\vbox52.dll")   "regpath: case is not significant"
+Assert-True  (Test-SameRegPath "C:\\a\\b\\VBox52.dll" "C:\a\b\VBox52.dll") "regpath: doubled separators collapse"
+Assert-True  (Test-SameRegPath "C:\a\b\VBox52.dll\" "C:\a\b\VBox52.dll")  "regpath: trailing separator ignored"
+Assert-False (Test-SameRegPath "C:\a\b\VBox52.dll" "C:\a\b\other.dll")    "regpath: different files do not match"
+Assert-False (Test-SameRegPath "" "C:\a\b\VBox52.dll")                    "regpath: empty side never matches"
+Assert-False (Test-SameRegPath "C:\a\b\VBox52.dll" "")                    "regpath: empty side never matches (reversed)"
+
+# A stale absolute path left behind by an install at some earlier location is
+# present, non-empty, and wrong. Presence alone would call that healthy, which
+# is why the comparison above exists and why it is asserted here.
+Assert-False (Test-SameRegPath "D:\old\eNSP\tools\VBox52.dll" "C:\eNSP\tools\VBox52.dll") "regpath: a stale path does not match"
+
+# --- no CLSID constant means nothing is guessed ------------------------------
+$noClsid = Get-ClsidHijackFacts -ClsidVbox "" -ExpectedDll "C:\x\VBox52.dll"
+Assert-False $noClsid.Checked  "clsid: an empty CLSID reports not-checked"
+Assert-Equal @($noClsid.Views).Count 0 "clsid: an empty CLSID yields no views"
+Assert-False $noClsid.PrimaryShim "clsid: an empty CLSID is not a passing 32-bit check"
+
+# --- both views are reported, and 32-bit is the one that decides -------------
+# eNSP is a 32-bit process, so the view it reads is the WOW6432Node one. If this
+# ever collapses into a single merged verdict the report can no longer say WHICH
+# view is wrong -- and calling a machine fine because the 64-bit view happens to
+# match is exactly the false-green this check was added to prevent.
+$otherClsid = "{00000000-0000-0000-0000-000000000000}"
+$anyClsid = Get-ClsidHijackFacts -ClsidVbox $otherClsid -ExpectedDll "C:\x\VBox52.dll"
+Assert-True $anyClsid.Checked "clsid: a CLSID yields a check"
+Assert-Equal @($anyClsid.Views).Count 2 "clsid: both registry views are reported"
+Assert-Equal @($anyClsid.Views | Where-Object { $_.Primary }).Count 1 "clsid: exactly one view is primary"
+$clsidPrimary = @($anyClsid.Views | Where-Object { $_.Primary })[0]
+Assert-True  ($clsidPrimary.Key -like "*WOW6432Node*") "clsid: the primary view is the 32-bit one"
+Assert-False $clsidPrimary.PointsAtShim "clsid: an unregistered CLSID does not point at the shim"
+foreach ($v in $anyClsid.Views) {
+    Assert-True ($v.Key -like "*\$otherClsid\*") "clsid: each view addresses the CLSID it was given"
+}
+
+# --- file facts degrade instead of throwing ----------------------------------
+# Every probe in this file has to survive the environments the report is meant
+# for, which is wherever eNSP is currently broken -- missing directories, no
+# permission, half-installed trees.
+$absent = Get-TreeFileFact -EnspDir "C:\definitely-not-here-9f3a" -Rel "plugin\ar1000v\VAR_Plugin.dll"
+Assert-False $absent.Present "treefile: a missing file reports absent"
+Assert-Equal $absent.Hash ""  "treefile: a missing file has no hash"
+Assert-Equal $absent.Error "" "treefile: absence is not an error"
+
+$noDir = Get-TreeFileFact -EnspDir "" -Rel "plugin\ar1000v\VAR_Plugin.dll"
+Assert-False $noDir.Present "treefile: no eNSP dir reports absent, not a throw"
+Assert-Equal $noDir.Path ""    "treefile: no eNSP dir yields no path"
+
+# --- the wiring this task exists for ------------------------------------------
+# Section 1 used to verify the four deployed DLL files and stop there. That
+# proves the files are on disk; it does not prove anything loads them. A machine
+# whose CLSID still pointed at Oracle's own proxy/stub therefore produced a
+# report containing no failures and still could not start a device -- eNSP got a
+# real IVirtualBox, read 7.2.x, and refused the version before ever reaching
+# device startup.
+#
+# These assertions keep the check wired: delete the call, rename the function,
+# or drop the definition and they fail. Neither file's syntax check can do that,
+# because a missing call parses perfectly.
+$checksText = Get-Content -Path (Join-Path $repoRoot "installer\checks.ps1") -Raw
+Assert-True ($checksText -match '(?m)^function\s+Get-ClsidHijackFacts\b') "clsid: the probe is defined in checks.ps1"
+Assert-True ((Get-Content -Path $diagPath -Raw) -match 'Get-ClsidHijackFacts') "clsid: diag.ps1 actually calls the probe"
+Assert-True ((Get-Content -Path $diagPath -Raw) -match 'VAR_Plugin\.dll') "plugins: diag.ps1 reports the AR plugin state"
+
+# --- the constants diag.ps1 reads out of install.ps1 --------------------------
+# diag.ps1 must not dot-source install.ps1 (that file has top-level side effects
+# and would really run an install), so it reads these constants by text. Reform
+# that constant block -- switch to single quotes, wrap a value across lines --
+# and the read returns empty, which makes the check SKIP silently rather than
+# fail.
+#
+# That is the same shape of hole this task was written to close, so the shape of
+# the read is pinned from the installer's side too.
+$installerText = Get-Content -Path (Join-Path $repoRoot "installer\install.ps1") -Raw
+foreach ($constName in @("DLL_SHA256", "DLL_NAME", "CLSID_VBOX", "VARP_SHA256",
+                         "NGFW_PRISTINE_SHA256", "NGFW_PATCHED_SHA256", "NGFW_LEGACY_SHA256")) {
+    $cm = [regex]::Match($installerText, ('\$' + [regex]::Escape($constName) + '\s*=\s*"([^"]*)"'))
+    Assert-True ($cm.Success -and ($cm.Groups[1].Value.Length -gt 0)) ("const: install.ps1 still yields " + $constName)
+}
+
+# The shim path diag.ps1 compares against is built as <eNSP>\tools\<DLL_NAME>.
+# That is the location install.ps1's step 3 writes into the CLSID, so the two
+# files have to agree on it or every healthy machine reads as a mismatch.
+$dllNameConst = [regex]::Match($installerText, '\$DLL_NAME\s*=\s*"([^"]*)"').Groups[1].Value
+Assert-Equal $dllNameConst "VBox52.dll" "const: the CLSID target filename is unchanged"
 
 Complete-TestRun

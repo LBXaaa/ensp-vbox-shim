@@ -1497,3 +1497,121 @@ function Find-VBoxLogMarkers {
     }
     return $out
 }
+
+# --- shim registration: the CLSID hijack ------------------------------------
+#
+# This is the fact that decides who eNSP ends up talking to, and nothing here
+# checked it until now. The four VBox52.dll hashes in the report only prove the
+# files were copied; they say nothing about whether anything ever loads them.
+#
+# When CLSID_VirtualBox's InprocServer32 points at the shim, COM activation
+# inside the eNSP process is served by the shim and get_version answers 5.2.x.
+# When it still points at Oracle's own proxy/stub, eNSP gets a genuine
+# IVirtualBox, get_version answers 7.2.x, and that value is not one eNSP
+# accepts -- it raises "VirtualBox version is not supported." and never reaches
+# device startup at all.
+#
+# So the spoofer's registry Version value is a decoy. It is a string eNSP reads
+# at one point; this key decides the object behind every call afterwards. Spoof
+# the version and leave this key on Oracle's DLL, and the symptom is the same
+# as not having spoofed anything -- which is exactly how a machine can produce
+# a report with no failures and still refuse to start a device.
+#
+# eNSP is 32-bit, so the view it reads is the WOW6432Node one; the 64-bit view
+# serves other callers. Both are returned, each with its own verdict, rather
+# than being merged into one -- a reader needs to know which view is wrong.
+#
+# The stored value is compared against the shim path, not merely tested for
+# presence. A stale absolute path left by an earlier install elsewhere is
+# present, non-empty, and wrong.
+function Test-SameRegPath {
+    param([string]$A, [string]$B)
+    if (-not $A -or -not $B) { return $false }
+    # Same rules as register_vms.ps1's Norm: a stored path may carry doubled
+    # separators, a trailing separator, and any casing.
+    $na = ($A.Trim() -replace '\\+', '\').TrimEnd('\').ToLower()
+    $nb = ($B.Trim() -replace '\\+', '\').TrimEnd('\').ToLower()
+    return ($na -eq $nb)
+}
+
+function Get-ClsidHijackFacts {
+    param(
+        [string]$ClsidVbox = "",
+        [string]$ExpectedDll = ""
+    )
+    if (-not $ClsidVbox) {
+        return [pscustomobject]@{ Checked = $false; Views = @(); ExpectedDll = $ExpectedDll; AnyShim = $false; PrimaryShim = $false }
+    }
+    $views = @()
+    foreach ($v in @(
+        @{ Name = "64"; Key = "HKLM:\SOFTWARE\Classes\CLSID\$ClsidVbox\InprocServer32"; Primary = $false },
+        @{ Name = "32"; Key = "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$ClsidVbox\InprocServer32"; Primary = $true }
+    )) {
+        $present = $false
+        $server = ""
+        $threading = ""
+        $err = ""
+        try {
+            if (Test-Path $v.Key) {
+                $p = Get-ItemProperty -Path $v.Key -ErrorAction Stop
+                $present = $true
+                $server = [string]$p.'(default)'
+                $threading = [string]$p.ThreadingModel
+            }
+        } catch {
+            $err = $_.Exception.Message
+        }
+        $points = $false
+        if ($present -and $ExpectedDll -and $server) {
+            $points = Test-SameRegPath -A $server -B $ExpectedDll
+        }
+        $views += [pscustomobject]@{
+            Name           = $v.Name
+            Key            = $v.Key
+            Primary        = $v.Primary
+            Present        = $present
+            Server         = $server
+            ThreadingModel = $threading
+            PointsAtShim   = $points
+            Error          = $err
+        }
+    }
+    $any = (@($views | Where-Object { $_.Present -and $_.PointsAtShim }).Count -gt 0)
+    $pri = (@($views | Where-Object { $_.Primary -and $_.PointsAtShim }).Count -gt 0)
+    return [pscustomobject]@{
+        Checked     = $true
+        Views       = $views
+        ExpectedDll = $ExpectedDll
+        AnyShim     = $any
+        PrimaryShim = $pri
+    }
+}
+
+# --- hash of one file under the eNSP tree -----------------------------------
+#
+# Facts only: presence and hash. Which hash means which state is the caller's
+# business, because those constants live in install.ps1 and keeping a second
+# copy here is how the two drift apart -- the same reason the shim's own hash
+# is read from install.ps1 rather than duplicated.
+#
+# A hash failure (file locked, permission) is returned as an error string
+# rather than thrown: the report is worth more with one blank line in it than
+# it is cut short.
+function Get-TreeFileFact {
+    param([string]$EnspDir = "", [string]$Rel = "")
+    if ((-not $EnspDir) -or (-not $Rel)) {
+        return [pscustomobject]@{ Rel = $Rel; Path = ""; Present = $false; Hash = ""; Error = "" }
+    }
+    $p = Join-Path $EnspDir $Rel
+    $present = Test-Path $p
+    $h = ""
+    $err = ""
+    if ($present) {
+        try {
+            $h = (Get-FileHash -Path $p -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
+        } catch {
+            $err = $_.Exception.Message
+        }
+    }
+    return [pscustomobject]@{ Rel = $Rel; Path = $p; Present = $present; Hash = $h; Error = $err }
+}

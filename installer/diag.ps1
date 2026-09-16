@@ -1588,17 +1588,27 @@ if ($nonAsciiRoots.Count -eq 0) {
 }
 
 # 垫片 DLL 的四个投放位置。期望值按文本从 install.ps1 里取,不执行该文件。
-$expectedSha = ""
-try {
-    $installerText = Get-Content -Raw -Path (Join-Path $ScriptDir "install.ps1") -ErrorAction Stop
-    if ($installerText -match '\$DLL_SHA256\s*=\s*"([0-9a-fA-F]{64})"') {
-        $expectedSha = $Matches[1].ToLower()
-    }
-} catch { }
+$installerText = ""
+try { $installerText = Get-Content -Raw -Path (Join-Path $ScriptDir "install.ps1") -ErrorAction Stop } catch { }
+
+# 从 install.ps1 的文本里取一个字符串常量。取不到返回空串,由调用方决定怎么降级。
+function Get-InstallerConst {
+    param([string]$Name)
+    if (-not $installerText) { return "" }
+    if ($installerText -match ('\$' + [regex]::Escape($Name) + '\s*=\s*"([^"]*)"')) { return [string]$Matches[1] }
+    return ""
+}
+
+$expectedSha = ([string](Get-InstallerConst "DLL_SHA256")).ToLower()
+$varpSha     = ([string](Get-InstallerConst "VARP_SHA256")).ToLower()
+$clsidVbox   = Get-InstallerConst "CLSID_VBOX"
+$dllName     = Get-InstallerConst "DLL_NAME"
+if (-not $dllName) { $dllName = "VBox52.dll" }
+
 if ($expectedSha) {
     Write-Fact "垫片期望哈希" $expectedSha
 } else {
-    Write-Note "[提示] 未能从 install.ps1 读出 $DLL_SHA256,下面只报实际哈希、不判定匹配。"
+    Write-Note "[提示] 未能从 install.ps1 读出 DLL_SHA256,下面只报实际哈希、不判定匹配。"
 }
 
 if (-not $EnspDir) {
@@ -1629,6 +1639,105 @@ if (-not $EnspDir) {
             Write-Fail $rel $_.Exception.Message
         }
     }
+}
+
+# --- CLSID 劫持 -------------------------------------------------------------
+# 上面那四个哈希只说明文件放对了,不说明有人会去加载它们。真正把 eNSP 接到垫片上
+# 的是 CLSID_VirtualBox 的 InprocServer32。
+#
+# 它仍指着 Oracle 原版 proxy/stub 时,eNSP 进程内激活出来的是真接口,get_version
+# 回 7.2.x;eNSP 拿这个值去比它认的 4.2 / 4.3 / 5.0 / 5.1 / 5.2,都不符,于是弹
+# 「VirtualBox version is not supported.」并停在启动设备之前。
+#
+# 所以注册表里那个 5.2.44 只是个幌子:它是 eNSP 在某一处读到的字符串,而这个键
+# 决定的是此后每一次调用落到谁身上。版本号改对了、这个键没改,现象与完全没改一样 ——
+# 一台机器因此可以跑出一份没有任何失败项的报告,却依然起不来设备。
+try {
+    Write-Host ""
+    Write-Host "  -- CLSID 劫持 (决定 eNSP 连到谁) --"
+    if (-not $clsidVbox) {
+        Write-Note "[跳过] 未能从 install.ps1 读出 CLSID 常量,无法核对这一项。"
+    } elseif (-not $EnspDir) {
+        Write-Note "[跳过] 未定位到 eNSP 目录,无法与垫片路径比对。请用 -EnspDir 指定。"
+    } else {
+        $shimDll = Join-Path (Join-Path $EnspDir "tools") $dllName
+        $cj = Get-ClsidHijackFacts -ClsidVbox $clsidVbox -ExpectedDll $shimDll
+        Write-Note ("应指向: " + $shimDll)
+        foreach ($v in $cj.Views) {
+            $vn = "64 位视图"
+            if ($v.Name -eq "32") { $vn = "32 位视图" }
+            if (-not $v.Present) {
+                Write-Host ("  [缺失] " + $vn + " : 没有 InprocServer32 项")
+            } elseif ($v.PointsAtShim) {
+                Write-Host ("  [ OK  ] " + $vn + " : " + $v.Server)
+            } else {
+                Write-Host ("  [不符] " + $vn + " : " + $v.Server)
+            }
+        }
+        if (-not $cj.PrimaryShim) {
+            Write-Note "  !! eNSP 是 32 位进程,读的正是上面那个 32 位视图。它不指向垫片时,"
+            Write-Note "     eNSP 拿到的是 Oracle 的真接口,版本号报 7.x,于是弹那句"
+            Write-Note "     「VirtualBox version is not supported.」,设备走不到启动这一步。"
+            Write-Note "     修法: 重跑 安装.bat —— 它会重写这两个键。"
+        }
+    }
+} catch {
+    Write-Fail "CLSID 劫持" $_.Exception.Message
+}
+
+# --- 插件 DLL 的补丁状态 ----------------------------------------------------
+# 这两份由安装器决定投放或保留,状态只能靠哈希分辨:它们没有能区分版本的版本资源,
+# 时间戳在文件被复制过之后也不再说明任何事。
+#
+# VAR_Plugin.dll 是 AR 路由器的承重补丁(IVirtualBox 5.2 -> 7.2 的 vtable 重映射)。
+# 少了它 AR 一拉就报 40,而垫片日志是干净的 —— 补丁不在,那些调用根本没发出来,
+# 报告里除了这一处没有别的地方看得出来。
+#
+# NGFW_Plugin.dll 安装器不动它,这里只报状态:非原版说明有人手工打过补丁,
+# 排查 USG6000V 时需要知道这一点。
+try {
+    Write-Host ""
+    Write-Host "  -- 插件 DLL --"
+    if (-not $EnspDir) {
+        Write-Note "[跳过] 未定位到 eNSP 目录,无法核对插件。请用 -EnspDir 指定。"
+    } else {
+        # VAR_Plugin 的出厂哈希是外部产物的哈希(不是本项目发布的东西),install.ps1
+        # 里也是一个字面量,没有可解析的常量名,这里只能各存一份。它与我们的构建
+        # 无关,不会随本项目的版本漂移。
+        $varFactorySha = "5ae6817a9f2f05cfbb5f1f89af910007c22988c22bc02fdf2c44a67a9ff26eb5"
+        $varFact = Get-TreeFileFact -EnspDir $EnspDir -Rel "plugin\ar1000v\VAR_Plugin.dll"
+        if (-not $varFact.Present) {
+            Write-Host "  [缺失] VAR_Plugin.dll : 未找到(没装 AR 包)"
+        } elseif ($varFact.Hash -and $varpSha -and ($varFact.Hash -eq $varpSha)) {
+            Write-Host "  [ OK  ] VAR_Plugin.dll : 已补丁"
+        } elseif ($varFact.Hash -and ($varFact.Hash -eq $varFactorySha)) {
+            Write-Host "  [ !!  ] VAR_Plugin.dll : 出厂原版,未打补丁 —— AR 一拉就报 40"
+            Write-Note "     修法: 重跑 安装.bat。"
+        } elseif ($varFact.Hash) {
+            Write-Host ("  [  ?  ] VAR_Plugin.dll : 非标准版本  " + $varFact.Hash)
+            Write-Note "     既不是我们的补丁版也不是出厂版,可能被别的工具改过。"
+        }
+        if ($varFact.Error) { Write-Fail "VAR_Plugin.dll" $varFact.Error }
+
+        $ngfwFact = Get-TreeFileFact -EnspDir $EnspDir -Rel "plugin\ngfw\NGFW_Plugin.dll"
+        $ngfwPristine = ([string](Get-InstallerConst "NGFW_PRISTINE_SHA256")).ToLower()
+        $ngfwPatched  = ([string](Get-InstallerConst "NGFW_PATCHED_SHA256")).ToLower()
+        $ngfwLegacy   = ([string](Get-InstallerConst "NGFW_LEGACY_SHA256")).ToLower()
+        if (-not $ngfwFact.Present) {
+            Write-Host "  [缺失] NGFW_Plugin.dll : 未找到(没装 USG6000V 包)"
+        } elseif ($ngfwFact.Hash -and $ngfwPristine -and ($ngfwFact.Hash -eq $ngfwPristine)) {
+            Write-Host "  [ OK  ] NGFW_Plugin.dll : 出厂原版(安装器不动它)"
+        } elseif ($ngfwFact.Hash -and $ngfwPatched -and ($ngfwFact.Hash -eq $ngfwPatched)) {
+            Write-Host "  [  !  ] NGFW_Plugin.dll : 被手工打过 22 站点补丁"
+        } elseif ($ngfwFact.Hash -and $ngfwLegacy -and ($ngfwFact.Hash -eq $ngfwLegacy)) {
+            Write-Host "  [  !  ] NGFW_Plugin.dll : 被手工打过旧 28 站点补丁"
+        } elseif ($ngfwFact.Hash) {
+            Write-Host ("  [  ?  ] NGFW_Plugin.dll : 非标准版本  " + $ngfwFact.Hash)
+        }
+        if ($ngfwFact.Error) { Write-Fail "NGFW_Plugin.dll" $ngfwFact.Error }
+    }
+} catch {
+    Write-Fail "插件 DLL" $_.Exception.Message
 }
 
 # --- x86 VC++ 运行时 --------------------------------------------------------
