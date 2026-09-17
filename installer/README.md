@@ -1,293 +1,243 @@
-# 一键整合包 · installer/
+# 整合包 · installer/
 
-让原版华为 eNSP 直接跑在 VirtualBox 7.x 上。**解压 → 双击 → 搞定**,自动检测 eNSP / VirtualBox 安装位置,无需手动改注册表或拷文件。
+用途:在原版华为 eNSP 上运行 VirtualBox 7.x。eNSP 与 VirtualBox 的安装位置自动检测,无需手工修改注册表或复制文件。
 
 ## 目录内容
 
 | 文件 | 作用 |
 |------|------|
-| `安装.bat` | 安装入口。双击即可:打补丁 + 自动注册设备 + 运行时环境检测,一次搞定 |
-| `卸载.bat` | 卸载/还原入口。双击即可,自动提权 |
-| `环境检查.bat` | **设备起不来时先双击它**:只读采集本机环境,产出一份报告,可直接附进 issue。要动手修就再跑一次并加 `-Fix`,见下方"设备起不来时" |
-| `注册设备.bat` | **后备**:仅当自动注册被跳过(右键用了别的管理员账户)时,用平时启动 eNSP 的账户双击它补做 |
-| `清理残留.bat` | **兜底**:关闭 eNSP 后收掉没退干净的 VirtualBox 进程。见下方"关闭设备后的残留进程" |
-| `install_all.ps1` | 编排器(被 `安装.bat` 调用):提权打补丁,再以登录用户身份注册设备,最后跑一次运行时检测 |
-| `install.ps1` | 实际打补丁的脚本(被 `install_all.ps1` 提权调用,也被 `卸载.bat` 调用) |
-| `register_vms.ps1` | 注册脚本(被 `install_all.ps1` 和 `注册设备.bat` 调用) |
-| `cleanup_orphans.ps1` | 清理脚本(被 `清理残留.bat` 调用)。eNSP 已关则清全部残留,eNSP 在跑则只清孤儿 |
-| `diag.ps1` | 诊断与修复的实现(被 `环境检查.bat` 调用)。诊断只读;修复只在命令行点名后才动手 |
-| `fix.ps1` | 修复原语库,由 `diag.ps1` 引入。每步先校验前置条件、失败会回显实际跑过的命令 |
-| `checks.ps1` | 只读探测库,`install.ps1` / `diag.ps1` / `fix.ps1` 共用同一份事实 |
-| `payload/VBox52.dll` | 预编译好的 COM/vtable 垫片,安装时拷进 eNSP 树的四个加载位置 |
-| `payload/VAR_Plugin.dll` | 预编译好的 AR 插件补丁(IVirtualBox 5.2 → 7.2 的 vtable 重映射) |
-| `payload/msvcrt-x86/*.dll` | x86 版 VC++ 运行时,安装时补进 `VBox\x86\`(修 `0x800700C1`) |
+| `安装.bat` | 安装入口。部署补丁、注册设备 VM、运行时环境检测 |
+| `卸载.bat` | 卸载入口。还原版本字符串与插件文件 |
+| `环境检查.bat` | 只读采集本机环境并生成报告。`-Fix` 参数进入修复流程 |
+| `注册设备.bat` | 后备入口。仅在自动注册被跳过时使用 |
+| `清理残留.bat` | 结束未退出的 VirtualBox 进程 |
+| `install_all.ps1` | 编排器,被 `安装.bat` 调用。提权部署补丁,以登录账户身份注册,最后执行运行时检测 |
+| `install.ps1` | 补丁部署脚本,被 `install_all.ps1` 与 `卸载.bat` 调用 |
+| `register_vms.ps1` | VM 注册脚本,被 `install_all.ps1` 与 `注册设备.bat` 调用 |
+| `cleanup_orphans.ps1` | 残留进程清理脚本,被 `清理残留.bat` 调用 |
+| `diag.ps1` | 诊断与修复实现,被 `环境检查.bat` 调用。默认只读 |
+| `fix.ps1` | 修复原语库,由 `diag.ps1` 引用 |
+| `checks.ps1` | 只读探测库,由 `install.ps1` / `diag.ps1` / `fix.ps1` 共用 |
+| `payload/VBox52.dll` | COM/vtable 垫片,部署至 eNSP 树的四个加载位置 |
+| `payload/VAR_Plugin.dll` | AR 插件补丁(IVirtualBox 5.2 → 7.2 vtable 重映射) |
+| `payload/msvcrt-x86/*.dll` | x86 VC++ 运行时,部署至 `VBox\x86\` |
 
-## 怎么用
+## 使用
 
 ### 安装
 
-1. 先装好**原版** eNSP 和**官方** VirtualBox 7.2.x(本仓库不附带它们)。
-2. 双击 **`安装.bat`**。
-3. 弹出 UAC 窗口点"是"(打补丁要写注册表 + 改 Program Files,需要管理员权限)。
-4. 看窗口里的三步:第 1 步部署垫片、AR 补丁和运行时,第 2 步自动注册基础设备 VM,
-   第 3 步再采一遍环境事实、把它查出的问题修掉。结束后启动 eNSP 拉一台设备试试。
+前置条件:eNSP 与 VirtualBox 7.2.x 均已由各自的官方安装程序安装。本包不包含这两者。
 
-`安装.bat` 一次把三件事都做了:**打补丁**(提权)、**注册设备 VM**(以登录账户身份)、
-**运行时环境检测并按档修复**。全程只需双击一次;UAC 通常弹一次,只有第 3 步确实查出
-可修项时才会再弹一次去执行修复 —— 查不出东西就不弹,也不动系统。
+运行 `安装.bat`,UAC 窗口选择"是"。窗口输出三个步骤的结果:
 
-第 3 步有可修项时会先把影响说清楚再问,无损的直接修、有损的(会短暂断网那类)要点一下头。
+1. 部署垫片、AR 插件补丁与 x86 运行时(需要管理员权限);
+2. 注册基础设备 VM(以登录账户身份);
+3. 运行时环境检测,并执行检测结果中标记为可修的项。
 
-### 设备起不来时:先跑 `环境检查.bat`
+结束后启动 eNSP,创建设备验证。
 
-双击 **`环境检查.bat`**,它会只读采集一遍本机环境,产出一份报告落到
-`%ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt`。**报告可以直接附进 issue** ——
-该有的事实都在里面了:系统版本与构建号、四个垫片投放点的哈希、CLSID 劫持指向、
-host-only 六层、基础 VM 注册与 `<VM>_Link` 快照、以及最近一次启动的
-`VBox.log` / `VBoxHardening.log` 尾部。不必再手工拼凑。
+整个流程触发两次 UAC:第 1 次用于部署补丁;第 2 次仅在第 3 步检出可修项时触发,无检出时不触发、不修改系统。
 
-**用平时启动 eNSP 的那个账户双击它。** 它读的是该账户的 `%USERPROFILE%\.VirtualBox\`;
-换别的管理员账户跑,读到的不是 eNSP 实际用的那一份,结论会对不上。
+第 3 步检出可修项时先列出影响范围再请求确认。无损项直接执行;有损项(执行期间网络中断)逐条确认。
 
-全程只读:不启动任何虚拟机、不改任何系统设置。报告里也不含交互记录,所以可以原样附出去。
+### 环境检查(`环境检查.bat`)
 
-报告共 10 节。**第 [9] 节「本机发现」是重点** —— 本机查出了什么、影响是什么、每一项对应的
-确切命令是什么,连同可以直接复制执行的调用行。要动手就再跑一次:
+只读采集本机环境事实,生成报告至 `%ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt`。报告可原样附入 issue。
+
+报告内容:系统版本与构建号、四个垫片投放点的哈希、CLSID 指向、host-only 网络六层状态、基础 VM 注册状态与 `<VM>_Link` 快照、最近一次启动的 `VBox.log` 与 `VBoxHardening.log` 尾部。
+
+执行账户必须与启动 eNSP 的账户相同。报告读取该账户的 `%USERPROFILE%\.VirtualBox\`;其他账户下的内容与 eNSP 实际使用的不一致。
+
+采集阶段不启动虚拟机、不修改系统设置。报告不含交互记录。
+
+报告共 10 节,第 [9] 节列出检出项及其对应命令。修复通过以下形式执行:
 
 ```bat
-环境检查.bat                     :: 只出报告(只读)
-环境检查.bat -Fix                :: 执行全部【无损】档
-环境检查.bat -Fix all            :: 含需确认档,逐条确认后执行
-环境检查.bat -Fix firewall       :: 只做指定项(id 见报告第 [9] 节)
-环境检查.bat -Fix all -DryRun    :: 只列计划,不执行
-环境检查.bat -Fix all -Yes       :: 跳过逐条确认(无人值守)
+环境检查.bat                     :: 只生成报告
+环境检查.bat -Fix                :: 执行全部无损项
+环境检查.bat -Fix all            :: 含需确认项,逐条确认
+环境检查.bat -Fix firewall       :: 仅执行指定项(id 见报告第 [9] 节)
+环境检查.bat -Fix all -DryRun    :: 列出计划,不执行
+环境检查.bat -Fix all -Yes       :: 跳过逐条确认
 ```
 
-**每条实际执行过的命令都会回显**,并另写一份 `<报告名>.repair.txt`。这个工具会装驱动、
-改注册表、劫持 COM,只留一句"完成"的话事后没法核对它做过什么。
+执行过的命令逐条回显,并写入 `<报告名>.repair.txt`。
 
-**读不到输入时不执行。** 有损档的放行提示如果撞上输入结束(无人值守、输入被重定向),
-一律按"不执行"处理 —— 要跳过确认请显式写 `-Yes`。修复需要管理员权限,未提权时会提示。
+需确认项在读取不到输入时(无人值守、输入被重定向)一律不执行。跳过确认需显式指定 `-Yes`。修复需要管理员权限,未提权时脚本给出提示。
 
-> 健康机器上第 [9] 节是空的,菜单也不会列任何条目、不改动任何设置。
+第 [9] 节在无检出项的机器上为空,此时不列出条目、不修改设置。
 
-### 注册被跳过时(后备:`注册设备.bat`)
+### 注册设备(`注册设备.bat`)
 
-正常情况下 `安装.bat` 已自动完成注册,**不需要**再单独点 `注册设备.bat`。
+`安装.bat` 默认自动完成注册,正常流程无需单独运行本脚本。
 
-只有一种情况会跳过自动注册:**右键用了"别的管理员账户"**运行安装(此时进程身份不
-是平时启动 eNSP 的那个登录用户,自动注册会写进错误的用户配置、eNSP 反而看不到)。这时
-安装窗口会黄字提示,请**用平时启动 eNSP 的账户**(不要用管理员)双击 **`注册设备.bat`**
-补做。它扫 `vboxserver\` 下的基础盘(`AR_Base`、`WLAN_*_Base`),未注册的注册、已注册的
-先注销再重注册一遍(清掉半坏的注册状态)。幂等、可逆——注销不加 `--delete`,不动磁盘。
+自动注册被跳过的条件:以"其他管理员账户"运行安装。此时进程身份与启动 eNSP 的登录用户不一致,注册写入错误的用户配置,eNSP 无法读取。安装窗口对此给出提示。处理方式:以启动 eNSP 的账户(非管理员)运行 `注册设备.bat`。
 
-这些基础设备 VM 是拖设备时的克隆源,没注册上设备就起不来——所以注册是必要的,只是现在默认
-已被 `安装.bat` 自动做掉。
+脚本扫描 `vboxserver\` 下的基础盘(`AR_Base`、`WLAN_*_Base`),未注册的执行注册,已注册的先注销再注册。操作幂等、可逆;注销不带 `--delete`,不修改磁盘内容。
 
-只想看会做什么、不改动:
+这些基础设备 VM 是创建设备时的克隆源,未注册时设备无法启动。
+
+仅查看操作内容不执行:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File register_vms.ps1 -Check
 ```
 
-为什么注册这步不提权:VM 注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,必须与启动 eNSP
-的账户一致;用管理员跑可能写进别的账户、eNSP 反而看不到。`install_all.ps1` 正是为此设计——
-打补丁那段提权,注册那段退回登录账户身份来跑。
-### 需要另行导入设备包的设备
+注册阶段不提升权限。VM 注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,该文件必须与启动 eNSP 的账户一致。`install_all.ps1` 按此划分权限:补丁阶段提权,注册阶段使用登录账户身份。
 
-eNSP 有一批设备要外挂磁盘镜像,镜像不随安装程序提供。判断依据是各插件的目录:
-凡带 `Database\` 子目录、且其中的模板指向该目录下某个镜像的,就是这一类。全新安装时
-这些 `Database\` 全是空的。
+### 需要导入设备包的设备
 
-| 插件目录 | 设备面板上的型号 | 需要的镜像 | 对应的 VM 模板 |
+部分设备需要外挂磁盘镜像,镜像不随安装程序提供。判定依据:插件目录下含 `Database\` 子目录,且其中的模板指向该目录下的镜像文件。全新安装时这些 `Database\` 为空。
+
+| 插件目录 | 设备型号 | 镜像 | VM 模板 |
 |---|---|---|---|
 | `plugin\ngfw` | USG6000V | `Database\vfw_usg.vdi`(约 940 MB) | `tools\ngfw\vfw_usg_for_vbox5.0.vbox` |
-| `plugin\svrp` | **CE6800、CE12800** | `Database\CE.img` | `Tools\svrp\CE.xml` |
+| `plugin\svrp` | CE6800、CE12800 | `Database\CE.img` | `Tools\svrp\CE.xml` |
 | `plugin\cx` | CX200 | `Database\CX.img` | `Tools\svrp\CX.xml` |
 | `plugin\ne` | NE40E | `Database\NE40E.img` | `Tools\svrp\NE40E.xml` |
 | `plugin\ne5ke` | NE5000E | `Database\NE5000E.img` | `Tools\svrp\NE5KE.xml` |
 | `plugin\ne9k` | NE9000 | `Database\NE9000.img` | `Tools\svrp\NE9K.xml` |
 
-七台设备、六个包 —— CE6800 与 CE12800 共用 `CE.img`(`plugin\svrp` 下只有这一份模板)。
-镜像一律落在各自插件的 `Database\` 下,文件名与模板里 `location="../../Database/..."`
-写死的一致,改名会认不出。
+七台设备对应六个包;CE6800 与 CE12800 共用 `CE.img`(`plugin\svrp` 下只有一份模板)。镜像位于各自插件的 `Database\` 下,文件名与模板中 `location="../../Database/..."` 的值一致,不可改名。
 
-eNSP 界面上的「导入设备包」对话框是**通用**的(提示文案是 `请导入%s的设备包`),但它给
-的说明只举了 USG6000V 为例。整合包**不附带**上述任何镜像。
+eNSP 的「导入设备包」对话框为通用实现(提示文案为 `请导入%s的设备包`),其内置说明仅以 USG6000V 为例。本包不附带上述任何镜像。
 
-启动一台缺镜像的设备时,eNSP 会弹出这个对话框:标题「导入设备包」,正文
-`说明:请导入<型号>的设备包。`,带「包路径」输入框和「浏览…/导入/取消」。2026-09-11
-在全新 Win10 上实测(以缺 `CE.img` 的 CE12800 为例),对话框正常弹出、eNSP 不卡死。
-**同一场景在旧版垫片下是另一副样子**:VBox 服务进程直接退出,界面上没有任何提示,
-只看到进度条不走 —— 这处差别是垫片修掉的,不是 eNSP 的问题。
+导入方式:在对话框的「包路径」填入镜像文件完整路径,点击「导入」,复制完成后再次点击启动。对话框只接受镜像文件本身,输入为 zip 包时需先解压。
 
-**导入方式:直接用 eNSP 自带的「导入设备包」对话框。** 启动缺镜像的设备时会弹出它,
-在"包路径"里填上镜像文件的完整路径,点「导入」,等拷贝完成后再点一次启动即可。
+六种设备包(含 `vfw_usg.vdi`)均使用此路径,无需额外脚本。对话框将文件复制到该插件自身的 `Database\` 下,后续注册由 eNSP 与垫片完成:
 
-**六种设备包(含 `vfw_usg.vdi`)都支持这条路径,无需任何额外脚本。** 对话框只做一件事:
-把文件复制到该插件自己的 `Database\`。后续的注册由 eNSP 与垫片自动完成:
+- **CE / CX / NE40E / NE5000E / NE9000** —— 插件发出 `VBoxManage registervm "<插件>\Tools\svrp\<型号>.xml"`,随后以 `startvm <VM名> --type headless` 原地启动,不克隆、不创建快照。
+- **USG6000V** —— 插件使用链接克隆,需要已注册的 `vfw_usg` 与一个 `vfw_usg_Link` 快照。垫片在插件探测该设备时自动完成注册与快照创建,随后 eNSP 执行 `clonevm vfw_usg --snapshot vfw_usg_Link ...`。
 
-- **CE / CX / NE40E / NE5000E / NE9000**:插件自己发
-  `VBoxManage registervm "<插件>\Tools\svrp\<型号>.xml"`,然后 `startvm <VM名> --type headless`
-  原地启动这台 VM(不克隆、不要快照)。
-- **USG6000V**:插件走**链接克隆**,需要一台已注册的 `vfw_usg` 加一个 `vfw_usg_Link`
-  快照。垫片在插件探测该设备时**自动补上这两步**(注册 + 建快照),之后 eNSP 照常
-  `clonevm vfw_usg --snapshot vfw_usg_Link ...`。用户不需要做任何额外操作。
+`vfw_usg.vdi` 约 940 MB,复制耗时一两分钟,进度条结束后对话框自动关闭。
 
-> 若拿到的是 **zip 包**,需先自行解压出里面的镜像文件再选择 —— 对话框只接受镜像本身,
-> 不认 zip。
+**资源需求**:上述五台设备直接启动 VM 本身,不克隆。CE / CX / NE40E / NE5000E / NE9000 的模板各分配 4 GB 内存,内存不足时系统换页,可能导致整机无响应(实测在分配 2 GB 的客户机上,一台 CE12800 即可使其失去响应)。模板各分配 1 个 vCPU,嵌套环境下启动明显变慢,NE 系列等大框式设备启动时间可超过十分钟。
 
-`vfw_usg.vdi` 约 940 MB,拷贝要一两分钟,进度条走完对话框会自行关闭。
+权限划分与 `安装.bat` 相同:写入 `Program Files` 的阶段提权,注册阶段使用登录账户身份。
 
-> **这五台是完整虚拟机,先确认内存够。** eNSP 是**直接启动这台 VM 本身**(不克隆),
-> 所以开一台就等于开一台完整虚拟机:模板里 CE / CX / NE40E / NE5000E / NE9000
-> 各要 **4 GB** 内存。内存不够时会一路换页抖动到整机失去响应 —— 实测在一台只给了
-> 2 GB 的客户机上,一台 CE12800 就能把它拖死。开之前先看内存,一次别拉太多台。
-> (另外这些模板只给 1 个 vCPU,嵌套环境里启动会明显偏慢,NE 这类大框式设备等上十几
-> 分钟属正常。)
+### 设备关闭后的残留进程(CE / CX / NE 系列)
 
-与 `安装.bat` 一样分两段权限:写 `Program Files` 那段提权,注册那段退回登录账户身份
-(注册写入当前用户的 `.VirtualBox\VirtualBox.xml`,必须与启动 eNSP 的账户一致)。
+**现象**:关闭这些设备或关闭 eNSP 后,`VBoxHeadless.exe` 不立即退出,每个进程占用 1.2–1.5 GB 内存。设备图标可能显示「异常退出」,或弹出 `VBoxHeadless.exe - 应用程序错误`(`0x...24 该内存不能为 read`)。
 
+**2026-09-12 实测**:
 
-### 关闭设备后的残留进程(CE / CX / NE 系列)
+- 关闭 eNSP 时,eNSP 为每台设备发出 `VBoxManage controlvm <VM名> poweroff`(硬断电)。
+- 这些设备的客户机为 Linux,硬断电后收尾耗时较长,实测超过五分钟才陆续退出,期间内存不释放。
+- 部分进程在收尾时因访问空指针崩溃并弹出「应用程序错误」对话框。该对话框未关闭时进程不释放内存。
+- 全部退出后内存正常归还(实测由 18.0 GB 恢复至 24.8 GB),不属于永久泄漏。
 
-**现象**:关闭这几台(以及关掉整个 eNSP)之后,VirtualBox 的后台进程
-`VBoxHeadless.exe` 不会立刻消失,每台仍占 **1.2–1.5 GB** 内存。设备图标可能显示
-**「异常退出」**,甚至弹出 `VBoxHeadless.exe - 应用程序错误`(`0x...24 该内存不能为 read`)。
+**处理**:
 
-**2026-09-12 实测结论**:
+1. 出现「应用程序错误」对话框时点击【确定】关闭。
+2. 或运行 `清理残留.bat`。清理范围按 eNSP 运行状态区分:
+   - eNSP 已关闭:所有 `VBoxHeadless` 均为残留,列出后确认即全部结束;
+   - eNSP 运行中:仅结束 VirtualBox 记录中已不在运行的孤儿进程,使用中的设备不受影响。
 
-- 关闭 eNSP 时,它会为每台设备补发 `VBoxManage controlvm <VM名> poweroff`(硬断电)。
-- 这几台的客户机是 **Linux 系统**,硬断电后的收尾**很慢** —— 实测要 **5 分钟以上**
-  才陆续退完;期间内存一直不释放,看起来就像"关不掉"。
-- 其中个别进程会在收尾时**崩溃**(访问空指针),弹出「应用程序错误」框;
-  **不点掉那个框,它就一直挂着不放内存。**
-- **全部退完后内存会正常归还**(实测从 18.0 GB 回到 24.8 GB),不是永久泄漏。
+   脚本先列出待清理进程(含 VM 名与内存占用量),确认后执行。实测强制结束后 VirtualBox 的记账自动恢复,不产生幽灵条目。
 
-**处理办法**:
+> 该问题属于 VirtualBox 7.x 在硬断电收尾时的行为,与本垫片无关:垫片为 32 位,仅加载进 32 位 eNSP 进程,而 `VBoxHeadless.exe` 为 64 位。记录待后续版本处理。
 
-1. 弹出「应用程序错误」框时**点【确定】**把它关掉,进程才会结束;
-2. 不想等的话,双击 **`清理残留.bat`**,它会立刻找出并结束这些残留进程。
-   清理范围按 eNSP 是否还在运行区分:
-   - **eNSP 已关闭**(最常见):所有 `VBoxHeadless` 都是残留,列出后确认即全部结束;
-   - **eNSP 仍在运行**:只结束"VirtualBox 账本上已不在运行"的孤儿进程,
-     正在使用的设备不会被动。
+**启动进度条**:上述设备为完整虚拟机(模板各分配 4 GB 内存),同时启动多台时 eNSP 的进度条可能长时间静止。进度条静止不代表设备未启动。可通过双击设备进入控制台确认,或检查 `plugin\<插件>\LogFile\infolog*.txt` 中是否出现 `Received run ok msg`。启动过程中终止 eNSP 会一并终止正在引导的设备。
 
-   脚本会先把待清理的进程列出来(含 VM 名和占用内存),确认后才动手。实测强杀后
-   VirtualBox 的记账会自动恢复,不会留下幽灵条目。
+### 卸载
 
-> 这是 VirtualBox 7.x 自身在硬断电收尾时的问题,与垫片无关 —— 垫片是 32 位、
-> 只加载进 32 位的 eNSP 进程,而 `VBoxHeadless.exe` 是 64 位,两者不在同一个进程里。
-> 已记录,留待后续版本处理。
+运行 `卸载.bat`。该脚本还原版本字符串,并从 `.orig.bak` 还原 AR/NGFW 插件与垫片 DLL。
 
-**顺带一提**:这几台是**完整虚拟机**(模板各配 4 GB 内存),同时拉多台时 eNSP 的启动
-进度条可能长时间不动甚至看起来卡死 —— **这不代表设备没起来**。可以双击设备试进控制台,
-或看 `plugin\<插件>\LogFile\infolog*.txt` 里有没有 `Received run ok msg`。
-**别因为进度条不动就强杀 eNSP**,那会把正在引导的设备一并杀掉。
+`tools\`、`plugin\ngfw\tools\ngfw\` 两处存在华为原文件备份,还原为原版。eNSP 根目录、`vboxserver\` 两处的垫片为安装时新建,无备份文件,卸载时跳过。
 
-### 卸载还原
-
-双击 **`卸载.bat`**,会还原版本字符串、从 `.orig.bak` 还原 AR/NGFW 插件与垫片 DLL。其中 `tools\`、`plugin\ngfw\tools\ngfw\` 两处有华为原文件的备份,会被还原回原版;eNSP 根目录、`vboxserver\` 两处的垫片是安装时新建的、无原文件备份,卸载时直接跳过(属正常)。CLSID 项需要手动跑一次 VBox 修复(见下方"卸载的最后一步")。
+CLSID 项需手动处理,见下方「卸载的最后一步」。
 
 ### 只检测不改动
 
-想先看看当前机器是什么状态,不做任何改动:
+查看当前机器状态,不执行修改:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1 -Check
 ```
 
-会打印 eNSP/VBox 路径、垫片 DLL 是否就位、注册表版本号、CLSID 指向、VAR_Plugin.dll 和 NGFW_Plugin.dll 的补丁状态，并附一段**环境检测**（见下）。
+输出内容:eNSP/VBox 路径、垫片 DLL 部署状态、注册表版本值、CLSID 指向、`VAR_Plugin.dll` 与 `NGFW_Plugin.dll` 补丁状态,以及环境快照。
 
-### 安装窗口里打印的环境快照
+### 环境快照
 
-安装时(以及 `-Check` 时)会自动打印一段环境快照,聚焦设备启动失败(error 40)的几类常见成因,**只读取、不改动系统**:
+安装期间与 `-Check` 期间输出一段环境快照,内容为设备启动失败(error 40)的常见成因,只读取不修改:
 
-- **CPU / VT-x** —— 固件虚拟化是否开启、VMX 扩展是否可用（开了 Hyper-V/WSL 时固件项常报"未启用"，这是 hypervisor 接管所致，属正常）；
-- **Hyper-V / WHP / 内存完整性(HVCI) / 虚拟机平台** —— 任一启用，VBox 7.x 会走 WHP 后端运行（eNSP 原配的 VBox 5 与 Hyper-V 冲突起不来，7.x 靠 WHP 才能与 Hyper-V/WSL/WSA 共存）。代价只是设备启动变慢（单台 3-5 分钟），**不是故障，无需关闭 Hyper-V**；
-- **x86 VCRT** —— `VBox\x86\` 下的 `VCRUNTIME140.dll` / `MSVCP140.dll` 是否就位（缺它 → `0x800700C1` → error 40，安装步骤会补上）；
-- **版本伪装** —— 注册表 `Oracle\VirtualBox\Version` 当前值。
+- **CPU / VT-x** —— 固件虚拟化开关状态、VMX 扩展可用性。启用 Hyper-V/WSL 时固件项通常显示"未启用",此为 hypervisor 接管所致。
+- **Hyper-V / WHP / 内存完整性(HVCI)/ 虚拟机平台** —— 任一项启用时,VBox 7.x 使用 WHP 后端运行。eNSP 原配的 VBox 5 与 Hyper-V 冲突,无法启动;7.x 通过 WHP 与 Hyper-V/WSL/WSA 共存,代价是设备启动时间增加(单台 3–5 分钟)。此为后端差异,不是故障,无需关闭 Hyper-V。
+- **x86 VCRT** —— `VBox\x86\` 下 `VCRUNTIME140.dll` / `MSVCP140.dll` 的存在性。缺失时产生 `0x800700C1`,进而导致 error 40;安装步骤会补入这两个文件。
+- **版本伪装** —— 注册表 `Oracle\VirtualBox\Version` 的当前值。
 
-这段同时显示在窗口里、也写进安装日志（`%ProgramData%\ensp-vbox-shim\install.log`），设备无法启动时先看它。
+该快照同时写入安装日志 `%ProgramData%\ensp-vbox-shim\install.log`。
 
-### 自动检测失败时手动指定路径
+### 手动指定路径
+
+自动检测失败时指定路径:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1 -EnspDir "D:\Program Files\Huawei\eNSP" -VBoxDir "D:\Program Files\Oracle\VirtualBox"
 ```
 
-## 它到底改了什么(安装的 6 步)
+## 安装执行的操作
 
-1. **部署垫片 DLL** —— 把 `payload\VBox52.dll` 覆盖到 eNSP 树内**全部 4 个加载位置**:`tools\`、`vboxserver\`、eNSP 根目录、`plugin\ngfw\tools\ngfw\`。每个位置先查 hash:已经是同一版本就跳过,否则备份原文件为 `.orig.bak` 后覆盖。
+1. **部署垫片 DLL** —— 将 `payload\VBox52.dll` 写入 eNSP 树的四个加载位置:`tools\`、`vboxserver\`、eNSP 根目录、`plugin\ngfw\tools\ngfw\`。每个位置先比对哈希:一致则跳过;不一致则备份原文件为 `.orig.bak` 后覆盖。
+2. **写入版本伪装** —— 将 `HKLM\SOFTWARE\Oracle\VirtualBox` 的 `Version` 值改为 `5.2.44`(64 位视图与 WOW6432Node 视图均写入)。eNSP 启动时读取该值,检测到 7.x 时拒绝运行。
+3. **重定向 CLSID InprocServer32** —— 将 `CLSID\{B1A7A4F2-...}\InprocServer32` 的默认值指向 `tools\VBox52.dll` 的实际路径。路径按 eNSP 安装位置生成。
+4. **覆盖 AR 插件** —— 以 `payload\VAR_Plugin.dll`(预构建补丁版)覆盖 `plugin\ar1000v\VAR_Plugin.dll`,原文件备份为 `.orig.bak`。不在运行时执行字节补丁。
+5. **部署 x86 VC++ 运行时** —— 将 `VCRUNTIME140.dll` / `MSVCP140.dll` 写入 VirtualBox 的 `x86\` 子目录。
+6. **授予权限** —— 为登录用户授予 `vboxserver\` 的运行时写权限。
 
-2. **写版本伪装** —— 注册表 `HKLM\SOFTWARE\Oracle\VirtualBox` 的 `Version` 改成 `5.2.44`(64 位 + 32 位 WOW6432Node 两个视图都写)。eNSP 启动时检查这个值,装的是 7.x 它会拒跑。
+详细原理见仓库 `docs/architecture.md`。
 
-3. **劫持 CLSID InprocServer32** —— 把 `CLSID\{B1A7A4F2-...}\InprocServer32` 的默认值指向 `tools\VBox52.dll` 的实际路径。路径随 eNSP 安装位置动态生成。
-
-4. **覆盖 AR 插件** —— 用 `payload\VAR_Plugin.dll`(预构建的已补丁版)直接覆盖 `plugin\ar1000v\VAR_Plugin.dll`,备份原文件为 `.orig.bak`。不再运行时打字节补丁。
-
-5. **部署 x86 VC++ 运行时** —— 把 `VCRUNTIME140.dll` / `MSVCP140.dll` 放进 VirtualBox 的 `x86\` 子目录。
-
-6. **授权 vboxserver\** —— 给登录用户授予运行期写权限。
-
-六步详细原理见仓库 `docs/architecture.md`。
-
-> **`NGFW_Plugin.dll` 不在这六步里。** 2026-09-10 的受控 A/B 实测显示,出厂原版与
-> 22 站点 vtable 补丁版在启动结果上没有任何差异(失败签名相差不到 1 毫秒),且出厂
-> 原版即可正常启动 USG6000V。补丁器仍留在 `patches/` 下备查,安装器不碰该文件。
-> `-Check` 仍会报告它的当前状态(出厂原版 / 被手工打过补丁),仅供排查。
+> `NGFW_Plugin.dll` 不包含在上述六步内。2026-09-10 的 A/B 实测显示,出厂原版与 22 站点 vtable 补丁版的启动结果无差异(失败签名相差小于 1 毫秒),出厂原版可正常启动 USG6000V。补丁器保留在 `patches/` 下,安装器不修改该文件。`-Check` 仍报告其当前状态(出厂原版 / 已打补丁)。
 
 ## 自动检测逻辑
 
-**eNSP 目录** —— 先读卸载注册表里 DisplayName 含 `eNSP` 的项的 `InstallLocation`;找不到再回退到 `Program Files (x86)\Huawei\eNSP` 与 `Program Files\Huawei\eNSP`。最终都会校验该目录下确实有 `tools\` 子目录才算数。
+**eNSP 目录** —— 读取卸载注册表中 DisplayName 含 `eNSP` 的项的 `InstallLocation`;未找到时回退至 `Program Files (x86)\Huawei\eNSP` 与 `Program Files\Huawei\eNSP`。两种来源均校验目录下存在 `tools\` 子目录。
 
-**VirtualBox 目录** —— 读 `HKLM\SOFTWARE\Oracle\VirtualBox` 的 `InstallDir`(32/64 位视图都试),回退默认安装路径。
+**VirtualBox 目录** —— 读取 `HKLM\SOFTWARE\Oracle\VirtualBox` 的 `InstallDir`(32 位与 64 位视图均尝试);未找到时使用默认安装路径。
 
-任一项检测失败,用 `-EnspDir` / `-VBoxDir` 手动指定即可。
+任一项检测失败时使用 `-EnspDir` / `-VBoxDir` 指定。
 
-## 卸载的最后一步(CLSID 需手动)
+## 卸载的最后一步(CLSID)
 
-卸载脚本**不会**擅自改写 CLSID 项 —— 因为它指向的"正确原始值"随每个 VirtualBox 构建而异,猜错反而会弄坏 VBox 的 COM 注册。正确做法:
+卸载脚本不修改 CLSID 项。该项的正确原始值随 VirtualBox 构建版本变化,推测值可能破坏 VBox 的 COM 注册。恢复方式:
 
-> 设置 → 应用 → 找到 VirtualBox → 修改 → **修复(Repair)**
+> 设置 → 应用 → VirtualBox → 修改 → **修复(Repair)**
 
-VBox 自己的安装器会把这个 CLSID 改回 Oracle 原生的 proxy/stub。其余三项(版本号、AR 插件、垫片 DLL)卸载脚本已自动还原。
+VirtualBox 安装器将该 CLSID 恢复为 Oracle 原生的 proxy/stub。其余三项(版本号、AR 插件、垫片 DLL)由卸载脚本自动还原。
 
-## 覆盖的安全性
+## 覆盖的可逆性
 
-所有覆盖都是**可逆**的:每个被替换的文件,脚本先把原文件备份为 `原文件名.orig.bak`,卸载时(双击 `卸载.bat`)自动从 `.orig.bak` 恢复。
+所有覆盖均可逆。被替换的文件先备份为 `原文件名.orig.bak`,卸载时由 `卸载.bat` 从 `.orig.bak` 恢复。
 
-完整性:
-1. `payload\VBox52.dll` 和 `payload\VAR_Plugin.dll` 部署前先校验 SHA256,确保整合包未被篡改;
-2. 目标位置如果已是相同版本(same hash),直接跳过,不重复覆盖;
-3. 覆盖完成后才算成功,不写半截。
+完整性保证:
+
+1. `payload\VBox52.dll` 与 `payload\VAR_Plugin.dll` 部署前校验 SHA256;
+2. 目标位置哈希一致时跳过覆盖;
+3. 覆盖完成后才记录成功状态。
 
 ## 排错
 
-> **装完之后设备起不来(报 40 或别的)** —— 别在这一节里逐条对,先双击 **`环境检查.bat`**
-> 采一份报告。它会按分层把该看的都看一遍并给出结论,比人肉对照下面这些条目快且准。
-> 用法见上方「设备起不来时」。
+> 安装后设备无法启动时,先运行 `环境检查.bat` 生成报告。该报告按分层给出结论,优先于本节逐条比对。
 
-**双击没反应 / 一闪而过** —— 多半是 UAC 被拒。直接**双击**(不要右键)`安装.bat` 重试,UAC 弹窗点"是"。注意:别用"右键 → 以管理员身份运行"去选*另一个*管理员账户,那会让自动注册被跳过(需再手动点 `注册设备.bat`);正常双击即可,提权由脚本内部处理。
+**运行无反应 / 窗口一闪而过** —— UAC 被拒。双击(不使用右键菜单)`安装.bat` 重试,UAC 窗口选择"是"。使用"右键 → 以管理员身份运行"并选择其他管理员账户会跳过自动注册,需另行运行 `注册设备.bat`。
 
-**提示"需要管理员权限"** —— 没经 `安装.bat` 直接跑了 `install.ps1`。请双击 `安装.bat`(它会让 `install.ps1` 提权打补丁、再用登录账户注册)。
+**提示"需要管理员权限"** —— 未经 `安装.bat` 直接运行了 `install.ps1`。运行 `安装.bat`。
 
-**打补丁那步失败、提权窗口一闪而过看不清** —— 日志留在 `%ProgramData%\ensp-vbox-shim\install.log`,打开看具体报错。
+**补丁阶段失败、提权窗口一闪而过** —— 日志位于 `%ProgramData%\ensp-vbox-shim\install.log`。
 
-**"未能自动定位 eNSP 安装目录"** —— 用 `-EnspDir` 手动指定(见上)。
+**"未能自动定位 eNSP 安装目录"** —— 使用 `-EnspDir` 指定。
 
-**窗口中文乱码** —— `.bat` 已按 GBK + `chcp 936` 编码,正常不会乱;若仍乱码,通常是把文件用别的编辑器另存改了编码。
+**窗口中文乱码** —— `.bat` 按 GBK + `chcp 936` 编码。出现乱码通常表示文件被其他编辑器另存修改了编码。
 
-**装完 eNSP 仍报版本错误** —— 跑一次 `-Check`,确认注册表 `Version` 是否已是 `5.2.44`、CLSID 是否指向 tools 下的 DLL。
+**安装后 eNSP 仍报版本错误** —— 运行 `-Check`,确认注册表 `Version` 为 `5.2.44`、CLSID 指向 `tools` 下的 DLL。
 
-**设备启动很慢(单台 3-5 分钟)** —— 正常现象,不是卡死。本机开了 WSL2/Hyper-V 时,VirtualBox 7.x 用不了 VT-x 硬件加速,只能跑在 Hyper-V 之上,虚拟机启动会明显变慢。点完"开始"耐心等,设备最终会起来。
+**设备启动耗时 3–5 分钟** —— 后端差异,非卡死。本机启用 WSL2/Hyper-V 时,VirtualBox 7.x 无法使用 VT-x 硬件加速,运行在 Hyper-V 之上,启动时间增加。
 
-**设备启动报 error 40 / 起不来** —— 先看安装日志(`%ProgramData%\ensp-vbox-shim\install.log`)开头的**环境检测**段,或重跑一次 `-Check`。installer 覆盖的几层成因都在那里:`VBox\x86\` 缺 x86 VCRT(`0x800700C1`)、`vboxserver\` 写权限不足(`VERR_FILE_NOT_FOUND`)、版本伪装未写入。注意:**开着 Hyper-V/WSL/WSA 不是 error-40 的成因**——VBox 7.x 会走 WHP 后端正常运行,只是启动慢(见上一条),不要为此去关 Hyper-V。
+**设备启动报 error 40** —— 查看安装日志开头的环境快照段,或重新运行 `-Check`。installer 覆盖的成因包括:`VBox\x86\` 缺少 x86 VCRT(`0x800700C1`)、`vboxserver\` 写权限不足(`VERR_FILE_NOT_FOUND`)、版本伪装未写入。启用 Hyper-V/WSL/WSA 不在 error-40 的成因内:VBox 7.x 通过 WHP 后端运行,代价仅为启动速度。
 
-**升级 VirtualBox 之后报 error 40,且垫片日志全绿** —— 多半出在 VirtualBox 的 **host-only 网络**。它有两类**独立**故障,现象相近但**修法不通用**(D1 的修法对 D2 无效),先按下面分清是哪一类。
+**升级 VirtualBox 后报 error 40,且垫片日志无异常记录** —— 检查 VirtualBox 的 host-only 网络。该组件有两类独立故障,现象相近,处理方式不通用(D1 的处理方式对 D2 无效)。
 
-**D1:host-only 过滤驱动绑定失效(适配器还在)** —— 看 eNSP 自己的命令日志 `eNSP\vboxserver\log\VBoxManage.log`,若出现
+**D1:host-only 过滤驱动绑定失效(适配器存在)** —— 检查 eNSP 的命令日志 `eNSP\vboxserver\log\VBoxManage.log`,出现以下内容即为 D1:
 
 ```
 Failed to open/create the internal network
@@ -295,65 +245,64 @@ Failed to open/create the internal network
 Failed to attach the network LUN (VERR_INTNET_FLT_IF_NOT_FOUND)
 ```
 
-即为 D1。此时**网络连接里能看到 VirtualBox Host-Only Ethernet Adapter 这块适配器**(状态 Up),`VBoxDrvInst.exe list` 也能列出 `VBoxNetAdp6` / `VBoxNetLwf`,只是绑定的效果没了。**这与垫片无关**——垫片的 `findMachine` / `clonevm` / `modifyvm` 全部成功,失败发生在随后的 `startvm`,VBox 因为建不出 host-only 网络而拒绝启动虚拟机。
+此时网络连接中存在 VirtualBox Host-Only Ethernet Adapter(状态 Up),`VBoxDrvInst.exe list` 可列出 `VBoxNetAdp6` / `VBoxNetLwf`,但绑定失效。垫片与此无关:其 `findMachine` / `clonevm` / `modifyvm` 均成功,失败发生在随后的 `startvm`,VBox 因无法创建 host-only 网络而拒绝启动。
 
-修法(两步):
+处理:
 
-1. 控制面板 → 网络连接 → 右键 **VirtualBox Host-Only Ethernet Adapter** → **禁用**,等几秒 → 再**启用**;
-2. 任务管理器里结束 **`VBoxSVC.exe`** 和 **`VBoxSDS.exe`**(会自动重启),然后**完全关闭并重开 eNSP**。
+1. 控制面板 → 网络连接 → 右键 VirtualBox Host-Only Ethernet Adapter → 禁用,等待数秒 → 启用;
+2. 任务管理器中结束 `VBoxSVC.exe` 与 `VBoxSDS.exe`(自动重启),然后完全关闭并重新启动 eNSP。
 
-若无效,再确认适配器属性里 **VirtualBox NDIS6 Bridged Networking Driver** 是勾选状态。
+无效时确认适配器属性中 VirtualBox NDIS6 Bridged Networking Driver 为勾选状态。
 
-**D2:host-only 网络驱动包从未注册(适配器根本不存在)** —— 网络连接里**找不到** VirtualBox Host-Only Ethernet Adapter;`VBoxDrvInst.exe list` **一个 VBox 驱动包都没有**;`VBoxManage hostonlyif create` 报
+**D2:host-only 网络驱动包未注册(适配器不存在)** —— 网络连接中不存在 VirtualBox Host-Only Ethernet Adapter;`VBoxDrvInst.exe list` 不列出任何 VBox 驱动包;`VBoxManage hostonlyif create` 报:
 
 ```
 Could not find Host Interface Networking driver! Please reinstall
 ```
 
-**D1 那套「禁用→启用」在这里没有任何作用**——没有适配器可禁用,也没有绑定可刷新,必须先把驱动包装上。顺序是硬依赖:
+D1 的"禁用→启用"处理方式对 D2 无效(无适配器可禁用,无绑定可刷新),必须先安装驱动包。顺序为硬依赖:
 
 ```
 VBoxDrvInst.exe install --inf-file "<VBoxDir>\drivers\network\netadp6\VBoxNetAdp6.inf"
 netcfg.exe -v -l "<VBoxDir>\drivers\network\netlwf\VBoxNetLwf.inf" -c s -i oracle_VBoxNetLwf
 ```
 
-第 2 条只能用 `netcfg.exe`,换成 `VBoxDrvInst.exe` 不行——对 NDIS 过滤驱动,`VBoxDrvInst install` 只把驱动包预装进驱动库,不会创建 NetService 组件。两条都装完后**禁用→启用**一次适配器,再 `VBoxManage hostonlyif create`,配合 `ipconfig` 配地址、重建 dhcpserver。
+第 2 条只能使用 `netcfg.exe`:对 NDIS 过滤驱动,`VBoxDrvInst install` 仅将驱动包预装进驱动库,不创建 NetService 组件。两条均安装完毕后禁用并启用适配器一次,然后执行 `VBoxManage hostonlyif create`,配合 `ipconfig` 配置地址并重建 dhcpserver。
 
-> **注意一个不报错的坑**:只装第 1 条(`netadp6`)不装第 2 条(`netlwf`)时,`hostonlyif create` **会成功**,但网卡被建成 **`VirtualBox Host-Only Ethernet Adapter #2`**。eNSP 的设备模板按**精确名字**绑定,认不出带 `#2` 的名字,症状与「驱动一个都没装」**一模一样**,看起来就像"修了没用"。补上 `netlwf` 后 `#2` 后缀会自行消失。
+> **不报错的失败模式**:仅安装第 1 条(`netadp6`)而未安装第 2 条(`netlwf`)时,`hostonlyif create` 成功,但适配器被创建为 `VirtualBox Host-Only Ethernet Adapter #2`。eNSP 的设备模板按精确名称绑定,无法识别带 `#2` 后缀的名称,现象与"驱动未安装"相同。
 
-报错消失顺序可当进度标尺:`hostonlyif create` 的 `Could not find Host Interface Networking driver!` 与 VBoxSVC 日志的 `HostWrap: ... could not be found` 在装完 `netadp6` 后消失,`VERR_INTNET_FLT_IF_NOT_FOUND` 要装完 `netlwf` 才消失。
+报错消失顺序可作为进度判据:`hostonlyif create` 的 `Could not find Host Interface Networking driver!` 与 VBoxSVC 日志的 `HostWrap: ... could not be found` 在安装 `netadp6` 后消失;`VERR_INTNET_FLT_IF_NOT_FOUND` 在安装 `netlwf` 后消失。
 
-**预防**:升级或重装 VirtualBox 后,先建一台带 host-only 网卡的虚拟机启动一次验证网络栈,再开 eNSP;安装包不完整(手工解包 / 绿色部署)是 D2 的常见来源,走官方安装器可避免。完整诊断记录见仓库 [`docs/troubleshooting-error40.md`](../docs/troubleshooting-error40.md) 根因 D1 / D2。
+**预防** —— 升级或重装 VirtualBox 后,先创建一台含 host-only 网卡的虚拟机并启动,验证网络栈,然后启动 eNSP。安装包不完整(手工解包、绿色部署)是 D2 的常见来源。完整诊断记录见 [`docs/troubleshooting-error40.md`](../docs/troubleshooting-error40.md) 根因 D1 / D2。
 
-**在 Windows Sandbox / WDAG 里报 error 40** —— **不受支持,无法修复**。Windows Sandbox 通过 VSMB 共享挂载系统盘(`\Device\vmsmb\...`),而 VirtualBox 的进程加固要求 `kernel32.dll`/`ntdll.dll` 从普通磁盘卷(`\Device\HarddiskVolume`)加载,二者冲突,VM 进程在启动阶段就被加固终止(加固日志 `VBoxHardening.log` 里是 `rc=-5632` / `rc=-610`)。这是 Windows Sandbox 与 VirtualBox 的固有冲突,**非本垫片可修复**——原版 VBox 在沙箱内同样起不来。请改用普通虚拟机或物理机。
+**Windows Sandbox / WDAG 中报 error 40** —— 不支持,无法修复。Windows Sandbox 通过 VSMB 挂载系统盘(`\Device\vmsmb\...`),而 VirtualBox 的进程加固要求 `kernel32.dll` / `ntdll.dll` 从普通磁盘卷(`\Device\HarddiskVolume`)加载,两者冲突,VM 进程在启动阶段被加固终止(`VBoxHardening.log` 记录 `rc=-5632` / `rc=-610`)。该冲突为 Windows Sandbox 与 VirtualBox 的固有冲突,与本垫片无关;原版 VBox 在沙箱内同样无法启动。改用普通虚拟机或物理机。
 
 ## 已知限制:嵌套虚拟化
 
-在**虚拟机内**运行本套件时(宿主机开 Hyper-V、再在 Win10/Win11 客户机里跑 eNSP——三层嵌套),网络设备可能显示"正在运行"却**不出 `####` 进度条、始终进不到 `<Huawei>` 命令行**。
+在虚拟机内运行本套件时(宿主机启用 Hyper-V,在 Win10/Win11 客户机内运行 eNSP,共三层嵌套),网络设备可能显示"正在运行"但不输出 `####` 进度条,无法进入 `<Huawei>` 命令行。
 
-成因:客户机内 VBox 若拿到裸 VT-x,会选原生 HM(unrestricted guest)后端;二级嵌套下
-该后端跑 VRP 32 位内核的实模式→分页早期引导有缺陷,客户机内核固定地址 panic(`c013e501`)。
-深层变量是**谁拿到裸 VT-x、走哪个后端**;而客户机 OS 默认决定走哪个:**Win10 客户机**默认
-暴露 VT-x → 走原生 HM → 崩,**Win11 客户机**报告 VT-x 不可用 → 自动回退 NEM → 正常。
-所以这问题实际只在 **Win10 客户机**上出现,Win11 客户机一般天然规避。
+成因:客户机内 VBox 在获得裸 VT-x 时选择原生 HM(unrestricted guest)后端;二级嵌套下该后端运行 VRP 32 位内核的实模式→分页早期引导存在缺陷,客户机内核在固定地址 panic(`c013e501`)。决定因素是 VT-x 的归属与后端选择。客户机 OS 决定默认行为:Win10 客户机默认暴露 VT-x,选择原生 HM,崩溃;Win11 客户机报告 VT-x 不可用,回退 NEM,正常。该问题仅在 Win10 客户机上出现。
 
-解决(在客户机内执行,需管理员):
+处理方式(在客户机内执行,需管理员):
 
 ```powershell
-# 启用 Windows 虚拟机监控程序平台(WHP),夺走 VBox 的裸 VT-x、逼它走 NEM
+# 启用 Windows 虚拟机监控程序平台(WHP),使 VBox 无法获得裸 VT-x,回退至 NEM
 Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All
-# 重启客户机(让 WHP 运行时上线,必须重启)
+# 重启客户机
 ```
 
-WHP 是**全局后端选择**,重启后每台新克隆自动走 NEM,**无需**逐台设 `UseNEMInstead`。
-仅当 VT-x 对 VBox 仍可见(没被 WHP 强制接管)时,才需要补一句
-`VBoxManage setextradata <vm> "VBoxInternal/HM/UseNEMInstead" "1"`。
+WHP 是全局后端选择,重启后新克隆的设备自动使用 NEM,无需逐台设置 `UseNEMInstead`。仅当 VT-x 对 VBox 仍可见时,才需要补充:
+
+```powershell
+VBoxManage setextradata <vm> "VBoxInternal/HM/UseNEMInstead" "1"
+```
+
 判定与验证细节见 [docs/troubleshooting-error40.md 根因 C](../docs/troubleshooting-error40.md)。
 
-物理机(非嵌套)不受此限制,无需任何额外配置。
+物理机(非嵌套)不受此限制。
 
 ## 系统要求
 
-- Windows(脚本用系统自带 PowerShell 5.1,无需额外装运行时);
+- Windows,使用系统自带 PowerShell 5.1;
 - 已安装原版 eNSP 与官方 VirtualBox 7.2.x;
-- 管理员权限(`.bat` 会自动申请)。
+- 管理员权限(`.bat` 自动申请)。
