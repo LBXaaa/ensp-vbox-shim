@@ -203,11 +203,52 @@ Error relaunching VirtualBox VM process: 5
 - 加固日志的锚点是 `-104` 而非 `-5657`;
 - 诊断报告里「被拒的模块」为空。
 
-**修复**:本项目无法修复,也没有配置开关 —— VirtualBox 官方构建里加固是有意不可关闭的。同机换 VirtualBox 版本不解决:issue #8 实测 7.2.8 与 7.2.18 均复现,只是失败在 spawn 链上更早或更晚一步。可尝试的方向只有 VirtualBox 或系统层面,例如等 VirtualBox 后续版本修复,或回滚疑似引入该问题的系统更新。
+**修复**:本项目无法修复,也没有配置开关 —— VirtualBox 官方构建里加固是有意不可关闭的。同机换 VirtualBox 版本不解决:issue #8 实测 7.2.8 与 7.2.18 均复现,只是失败在 spawn 链上更早或更晚一步。能改的只有系统侧。
+
+**结局(2026-09-17,已解决)**:该问题由 **2026-09 累积更新**修复。报告者装上 KB5129195 + KB5124007 后,build 由 `26200.9168` 升至 `26200.9457`,`VBoxManage startvm <VM名> --type headless` 直接成功、VM 稳定运行,未改动 VirtualBox,也未改动本垫片。
+
+出问题与恢复都在系统侧:8 月的 KB5123304 + KB5121003 之后开始复现,9 月的累积更新之后消失。
+
+> **一处需要说明的混杂**:报告者恢复的那一轮里同时还修了三处降级遗留(见下节)。那三处都在驱动与网络层,而 `-104` 发生在任何驱动参与之前,因此不构成该症状的成因 —— 但严格说,他在同一轮里动了两个变量,单看记录无法完全分离。
 
 **诊断记录(2026-09-17,issue #8)**:Windows 11 专业版 25H2 build 26200.9168(ntdll / kernel32 / KernelBase 10.0.26100.8972,8 月 KB5123304 + KB5121003 之后)。VBox 7.2.8 与 7.2.18 均复现。`supR3HardenedWinFindAdversaries: 0x0`;Defender 实时保护与攻击面减少规则、CI 策略 / HVCI、AppInit_DLLs、第三方注入均无;系统盘路径是正常的 `\Device\HarddiskVolume3` 而非 `\Device\vmsmb`,不是沙箱。
 
 同一份 VBox 7.2.8 在另一台机器(Windows 11 Dev 分支)上正常。两台机器的 eNSP 与 VirtualBox 安装逐条一致,差别只在系统侧。
+
+---
+
+## 降级遗留:VBoxSup / VBoxNetAdp6 / host-only 网卡
+
+**适用范围**:在这台机器上尝试过**降级 VirtualBox**(例如 7.2.18 → 7.2.8)且降级失败之后。降级卸载会移除注册项与 PnP INF,而回装时未必补回。三个症状互不相同,修法也各自独立。
+
+**诊断记录(2026-09-17,issue #8,Windows 11 25H2)**:三处报错依次出现,逐一修好后 `startvm` 恢复。顺序即依赖顺序。
+
+**1. VBoxSup 内核驱动服务丢失** —— 报错:
+
+```
+NtCreateFile(\Device\VBoxDrvStub) → STATUS_OBJECT_NAME_NOT_FOUND
+```
+
+修法:
+
+```
+VBoxDrvInst.exe install --inf-file "<VBoxDir>\drivers\vboxsup\VBoxSup.inf"
+sc start vboxsup
+```
+
+**2. VBoxNetAdp6 的 PnP INF 丢失** —— 报错 `Could not find Host Interface Networking driver! Please reinstall`。修法与根因 D2 的第 1 条相同:
+
+```
+VBoxDrvInst.exe install --inf-file "<VBoxDir>\drivers\network\netadp6\VBoxNetAdp6.inf"
+```
+
+**3. 宿主机 host-only 网卡不存在** —— 报错 `Nonexistent host networking interface 'VirtualBox Host-Only Ethernet Adapter'`。修法:
+
+```
+VBoxManage hostonlyif create
+```
+
+> 三条都属于**安装不完整**这一类,与根因 D2 同源。区别只在触发方式:D2 来自手工解包或绿色部署,这里来自一次失败的回装。三者修完不必然解决设备启动问题 —— 若加固层同时报 `-104`,那是独立的一件事,见根因 E。
 
 ---
 
@@ -220,4 +261,5 @@ Error relaunching VirtualBox VM process: 5
 | 嵌套环境 AR 进度条卡满屏 `####`,headless 空转满核,内核 `c013e501` panic | VBox 走原生 VT-x,二级嵌套下崩 | 根因 C,启用 WHP 让 VBox 走 NEM |
 | 升级 VBox 后 40,垫片日志全绿,`VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND`,**适配器存在**且 `VBoxDrvInst.exe list` 有 `VBoxNetAdp6`/`VBoxNetLwf` | host-only 过滤驱动绑定失效 | 根因 D1,禁用→启用 host-only 网卡 + 重启 VBoxSVC |
 | 40,`hostonlyif create` 报 `Could not find Host Interface Networking driver!`,`VBoxDrvInst.exe list` 一个 VBox 驱动包都没有,**适配器不存在** | host-only 网络驱动包从未注册 | 根因 D2,装 `netadp6` + 注册 `netlwf` 后重建接口 |
-| 40,**绕开 eNSP 直接 `VBoxManage startvm` 也失败**,加固日志 `Error -104 ... (enmWhat=5)`,无被拒模块 | 加固无法创建 VM 子进程 | 根因 E,本项目无法修复 |
+| 40,**绕开 eNSP 直接 `VBoxManage startvm` 也失败**,加固日志 `Error -104 ... (enmWhat=5)`,无被拒模块 | 加固无法创建 VM 子进程 | 根因 E,**已由 2026-09 累积更新修复** |
+| 降级 VBox 后 `\Device\VBoxDrvStub` 找不到,或 `Could not find Host Interface Networking driver!`,或 `Nonexistent host networking interface` | 降级卸载留下的三处缺失 | 降级遗留,按序补 VBoxSup → netadp6 → `hostonlyif create` |
