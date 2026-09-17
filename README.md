@@ -120,6 +120,12 @@ NE9000 这几台跑在完整虚拟机里、各配 4 GB 内存，同时拉起多�
 分层细节与排错步骤见 [installer/README.md](installer/README.md) 与
 [docs/troubleshooting-error40.md](docs/troubleshooting-error40.md)。
 
+## 反馈与交流
+
+**QQ 群：`1121410843`** —— 交流群,聊配置、聊踩过的坑。群文件里放了整合包,与 Releases 同步;国内直连 GitHub 经常中断,群文件不受影响。
+
+设备起不来的问题仍建议走 [Issues](../../issues) —— 定位依赖 `环境检查.bat` 产出的报告,群里凭文字描述判断不了。拓扑与配置经验分享见 [Discussions](../../discussions)。
+
 ## 仓库结构
 
 | 目录 | 内容 |
