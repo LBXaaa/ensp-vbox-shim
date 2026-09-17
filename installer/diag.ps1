@@ -2287,6 +2287,7 @@ try {
             -5657 = "被加载的模块没有用与 VirtualBox 相同的证书签名 —— 原版 VBox 遇到非 Oracle 签名的 DLL 就是这样。"
             -5640 = "进程里出现了第二个线程,通常是第三方软件注入所致(安全软件 / DLP / 反作弊驱动)。"
             -5607 = "镜像大小与预期不符。"
+            -104  = "加固无法创建 VM 子进程 —— CreateProcessW 被系统拒绝(ERROR_ACCESS_DENIED)。失败在校验任何模块之前,本次不会有模块被拒。"
         }
 
         if (-not $hp.Failed) {
@@ -2303,8 +2304,14 @@ try {
                 if ($note) { Write-Note ("          -> " + $note) }
             }
             Write-Note "     加固是 VirtualBox 自身的行为,不是本垫片引入的;原版 VBox 同样会拒绝。"
-            Write-Note "     它无法由本工具修复 —— 要动的是【被拒的那个模块】(卸载它 / 换签名版),"
-            Write-Note "     或用 VirtualBox 认可的方式加载。"
+            if (@($hp.RejectedModules).Count -gt 0) {
+                Write-Note "     它无法由本工具修复 —— 要动的是【被拒的那个模块】(卸载它 / 换签名版),"
+                Write-Note "     或用 VirtualBox 认可的方式加载。"
+            } else {
+                Write-Note "     本次没有任何模块被拒 —— 加固在加载模块之前就终止了,所以没有可卸载"
+                Write-Note "     的对象。加固在官方构建里不可关闭,本工具无从绕过;改动只能落在"
+                Write-Note "     VirtualBox 或系统层面。"
+            }
         }
 
         if (@($hp.RejectedModules).Count -gt 0) {

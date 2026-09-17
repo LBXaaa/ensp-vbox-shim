@@ -1293,16 +1293,18 @@ function Get-VBoxProcessFacts {
 # never matching. Anything that legitimately lives in both places is matched on
 # the symbolic name instead.
 
-# Names for the hardening codes worth naming at all. Source: include/VBox/err.h,
-# where -5600..-5679 is the VERR_SUP_VP_* block. Only three are listed because
-# only three have a known cause; an unrecognised code is reported as its bare
-# number rather than guessed at.
+# Names for the hardening codes worth naming at all. Source: include/VBox/err.h.
+# -5600..-5679 is the VERR_SUP_VP_* block; -104 sits outside it -- it is IPRT's
+# generic VERR_ACCESS_DENIED, and it lands in this log when the hardened child
+# cannot be spawned at all (CreateProcessW refuses before any module is opened).
+# An unrecognised code is reported as its bare number rather than guessed at.
 function Get-HardeningCodeMeaning {
     param([int]$Code)
     switch ($Code) {
         -5657 { return "VERR_SUP_VP_NOT_SIGNED_WITH_BUILD_CERT" }
         -5640 { return "VERR_SUP_VP_THREAD_NOT_ALONE" }
         -5607 { return "VERR_SUP_VP_BAD_IMAGE_SIZE" }
+        -104  { return "VERR_ACCESS_DENIED" }
         default { return "" }
     }
 }

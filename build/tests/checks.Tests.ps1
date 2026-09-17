@@ -530,6 +530,18 @@ Assert-True  $hpUnk.Failed "hardening: an unknown code still counts as a failure
 Assert-Equal @($hpUnk.Errors)[0].Symbol "" "hardening: an unknown code gets no invented name"
 Assert-Match @($hpUnk.Errors)[0].Step 'Driver' "hardening: enmWhat=3 reads as Driver"
 
+# Issue #8: the hardened child could not be spawned at all -- CreateProcessW was
+# refused before a single module was opened. The anchor line has the same shape
+# as the -5657 case, so the verdict has to come from the code, not the shape.
+# The empty RejectedModules list is the part diag.ps1 branches on when choosing
+# between "unload the rejected module" and "nothing was rejected".
+$hpDenied = Parse-HardeningLog -Lines @('Error -104 in supR3HardenedWinReSpawn! (enmWhat=5)')
+Assert-True  $hpDenied.Failed "hardening: a spawn refusal counts as a failure"
+Assert-Equal @($hpDenied.Errors)[0].Code -104 "hardening: the access-denied code is read"
+Assert-Equal @($hpDenied.Errors)[0].Symbol "VERR_ACCESS_DENIED" "hardening: access-denied is named"
+Assert-Equal @($hpDenied.RejectedModules).Count 0 `
+             "hardening: a spawn refusal names no rejected module"
+
 # The "%x.%x: " pid.thread prefix is optional for the parser.
 Assert-True (Parse-HardeningLog -Lines @('Error -5657 in supR3HardenedWinReSpawn! (enmWhat=5)')).Failed `
             "hardening: matches with no pid.thread prefix"
