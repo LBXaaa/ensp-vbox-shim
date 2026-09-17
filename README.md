@@ -6,8 +6,6 @@
 > 本工具开源于 https://github.com/LBXaaa/ensp-vbox-shim
 > 若是付费获得，则为他人倒卖，请到上述地址免费下载。
 
-> **QQ 群：`1121410843`** —— 交流群,群文件里放了整合包(国内直连 GitHub 经常中断,群文件不受影响)。
-
 ## 为什么做这个
 
 我在备考广东省职业技能等级认定《信息通信网络运行管理员》中级工，考试要求在
@@ -248,6 +246,10 @@ icacls "C:\Program Files\Huawei\eNSP\vboxserver" /grant "%USERNAME%:(OI)(CI)M" /
 然后启动 eNSP，拉起一台设备即可。要还原，见
 [registry/README.md](registry/README.md) 以及
 `python patches\patch_var_plugin.py --restore …`。
+
+## 交流群
+
+**`1121410843`** —— 群文件里放了整合包(国内直连 GitHub 经常中断,群文件不受影响)。
 
 ## 仓库包含与不包含的内容
 
