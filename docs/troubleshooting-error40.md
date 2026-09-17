@@ -184,6 +184,33 @@
 
 ---
 
+## 根因 E:加固层无法创建 VM 子进程(`-104`,系统侧问题,本项目无法修复)
+
+**现象**:设备报 40,且**绕开 eNSP 直接 `VBoxManage startvm <VM名> --type headless` 同样失败**。`VBoxHardening.log` 末尾是:
+
+```
+Error -104 in supR3HardenedWinReSpawn! (enmWhat=5)
+Error relaunching VirtualBox VM process: 5
+```
+
+**根因**:VirtualBox 的加固机制会用一个受限的进程安全描述符再拉起一个子进程,最终那个子进程才运行 VM。这一步的 `CreateProcessW` 被系统拒绝 —— Win32 错误 5(`ERROR_ACCESS_DENIED`),对应 `-104`(`VERR_ACCESS_DENIED`)。
+
+**失败发生在校验任何模块之前。** 日志里不会有 `rejecting '<path>'`,报告里「被拒的模块」为空。这与根因 A 的第二层(加固拒绝非 Oracle 签名的 DLL,`rc=-5657`)不是一回事:那一层已经走到模块校验并拒绝了某个具体文件,有卸载对象;这一层没有。
+
+**辨别**:
+
+- 绕开 eNSP 直接 `VBoxManage startvm` 仍失败 → 与 eNSP、与垫片都无关;
+- 加固日志的锚点是 `-104` 而非 `-5657`;
+- 诊断报告里「被拒的模块」为空。
+
+**修复**:本项目无法修复,也没有配置开关 —— VirtualBox 官方构建里加固是有意不可关闭的。同机换 VirtualBox 版本不解决:issue #8 实测 7.2.8 与 7.2.18 均复现,只是失败在 spawn 链上更早或更晚一步。可尝试的方向只有 VirtualBox 或系统层面,例如等 VirtualBox 后续版本修复,或回滚疑似引入该问题的系统更新。
+
+**诊断记录(2026-09-17,issue #8)**:Windows 11 专业版 25H2 build 26200.9168(ntdll / kernel32 / KernelBase 10.0.26100.8972,8 月 KB5123304 + KB5121003 之后)。VBox 7.2.8 与 7.2.18 均复现。`supR3HardenedWinFindAdversaries: 0x0`;Defender 实时保护与攻击面减少规则、CI 策略 / HVCI、AppInit_DLLs、第三方注入均无;系统盘路径是正常的 `\Device\HarddiskVolume3` 而非 `\Device\vmsmb`,不是沙箱。
+
+同一份 VBox 7.2.8 在另一台机器(Windows 11 Dev 分支)上正常。两台机器的 eNSP 与 VirtualBox 安装逐条一致,差别只在系统侧。
+
+---
+
 ## 速查表
 
 | 现象 | 根因 | 去看 |
@@ -193,3 +220,4 @@
 | 嵌套环境 AR 进度条卡满屏 `####`,headless 空转满核,内核 `c013e501` panic | VBox 走原生 VT-x,二级嵌套下崩 | 根因 C,启用 WHP 让 VBox 走 NEM |
 | 升级 VBox 后 40,垫片日志全绿,`VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND`,**适配器存在**且 `VBoxDrvInst.exe list` 有 `VBoxNetAdp6`/`VBoxNetLwf` | host-only 过滤驱动绑定失效 | 根因 D1,禁用→启用 host-only 网卡 + 重启 VBoxSVC |
 | 40,`hostonlyif create` 报 `Could not find Host Interface Networking driver!`,`VBoxDrvInst.exe list` 一个 VBox 驱动包都没有,**适配器不存在** | host-only 网络驱动包从未注册 | 根因 D2,装 `netadp6` + 注册 `netlwf` 后重建接口 |
+| 40,**绕开 eNSP 直接 `VBoxManage startvm` 也失败**,加固日志 `Error -104 ... (enmWhat=5)`,无被拒模块 | 加固无法创建 VM 子进程 | 根因 E,本项目无法修复 |
