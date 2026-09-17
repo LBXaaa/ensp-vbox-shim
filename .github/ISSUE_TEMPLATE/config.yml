@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 提问 / 讨论 / 分享拓扑
+    url: https://github.com/LBXaaa/ensp-vbox-shim/discussions
+    about: 不是报障的 —— "这设备怎么配"、"我这边跑起来了"、想法和建议,请到 Discussions
