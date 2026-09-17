@@ -4,6 +4,14 @@
 捕获于 2026-09-15 与 2026-09-16，机器状态为 VirtualBox 7.2.16 安装完好
 （网络驱动已正确注册、eNSP 1.3.00.100 已装、垫片已装）。
 
+> **形如 `{aaaaaaaa-0001-4001-8001-000000000001}` 的标识符都是合成值。**
+> 抓取时机器上的真实 VM / 快照 / 镜像 UUID 已整体替换，替换在同一夹具组内保持一致
+> （同一个 VM 在各文件里仍是同一个 UUID）。解析器只看形状，不看具体值。
+>
+> 未替换的两类：`vboxdrvinst_*.txt` 里的 `{DD8E82AE-…}` / `{084F01FA-…}` 是微软
+> 与 Intel 写在 INF 里的固定硬件 ID，每台机器都一样；`checks.ps1` 注释里的
+> `{0f3e5d1c-…}` 是文档示例。
+
 | 文件 | 来源 | 说明 |
 |---|---|---|
 | `vboxdrvinst_healthy.txt` | `VBoxDrvInst.exe list` | 健康基线。含 `VBoxNetAdp6.NTAMD64` 与 `VBoxNetLwf.NTAMD64` 两类型号行，共 76 个驱动包 |
@@ -83,7 +91,7 @@
 真机 `AR_Base.vbox`（2026-09-16 实测）：
 
 ```
-行 24   <Snapshot uuid="{acff2bbe-…}" name="AR_Base_Link" …>   ← 快照
+行 24   <Snapshot uuid="{aaaaaaaa-0002-…}" name="AR_Base_Link" …>   ← 快照
 行 25     <Hardware>
 行 73     </Hardware>
 行 74   </Snapshot>
