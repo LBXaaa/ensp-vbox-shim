@@ -1,6 +1,5 @@
 name: 其他（提问 / 建议 / 文档纠错）
 description: 不适合上面两类的 —— 提问、建议、文档写错的地方，或者只是想说点什么
-title: ''
 body:
   - type: markdown
     attributes:
