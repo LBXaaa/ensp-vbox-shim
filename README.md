@@ -247,9 +247,7 @@ icacls "C:\Program Files\Huawei\eNSP\vboxserver" /grant "%USERNAME%:(OI)(CI)M" /
 [registry/README.md](registry/README.md) 以及
 `python patches\patch_var_plugin.py --restore …`。
 
-## 交流群
-
-**`1121410843`** —— 群文件里放了整合包(国内直连 GitHub 经常中断,群文件不受影响)。
+**交流群:`1121410843`** 欢迎来玩,群文件里也放了安装包。
 
 ## 仓库包含与不包含的内容
 
