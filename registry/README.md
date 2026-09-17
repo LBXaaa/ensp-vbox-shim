@@ -16,9 +16,9 @@ reg import 02_clsid_inprocserver.reg
 
 | 文件 | 作用 |
 |------|------|
-| `01_version_spoof.reg`      | 在 64 位和 32 位两个视图里，把 `Oracle\VirtualBox` 的 `Version` 设为 5.2.44、`VersionExt` 设为 5.2.44r139111，好让 eNSP 的 5.2.x 版本闸门放行（机器实际跑的是 7.2.8） |
+| `01_version_spoof.reg`      | 在 64 位和 32 位两个视图里，把 `Oracle\VirtualBox` 的 `Version` 设为 5.2.44、`VersionExt` 设为 5.2.44r139111，好让 eNSP 的 5.2.x 版本闸门放行（机器实际跑的是 7.2.x） |
 | `02_clsid_inprocserver.reg` | 在两个视图里把 `CLSID_VirtualBox` `{B1A7A4F2-…}` 的 InprocServer32 重指到 `…\Huawei\eNSP\tools\VBox52.dll`，这样 eNSP 的 32 位 `CoCreateInstance` 加载的是垫片，而不是 VBox 自带的 proxy/stub |
-| `99_uninstall.reg`          | 把真实版本字符串还原回去（7.2.8 r173730）。它**不**撤销 CLSID 劫持——见下文 |
+| `99_uninstall.reg`          | 把真实版本字符串还原回去（7.2.x）。它**不**撤销 CLSID 劫持——见下文 |
 
 ## 路径
 
@@ -36,10 +36,10 @@ reg import 02_clsid_inprocserver.reg
 
 ## 卸载
 
-1. `reg import 99_uninstall.reg` —— 把版本字符串放回 7.2.8。
+1. `reg import 99_uninstall.reg` —— 把版本字符串放回真实的 7.2.x。
 2. 还原 VirtualBox 自带的 COM 注册。垫片覆盖了 `CLSID_VirtualBox` 的
    InprocServer32，而这个键归 Oracle 的安装程序所有。把正确的值放回去，权威的
-   做法是在「应用和功能」里对 VirtualBox 7.2.8 跑一次**修复**（或重装）。它会
+   做法是在「应用和功能」里对 VirtualBox 7.2.x 跑一次**修复**（或重装）。它会
    替你把这个 CLSID 改回 VBox 自己的 32 位 proxy/stub
    （`…\Oracle\VirtualBox\x86\VBoxProxyStub-x86.dll`）。
 

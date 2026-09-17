@@ -1,7 +1,7 @@
 # 架构
 
 `ensp-vbox-shim` 如何让华为 eNSP（为 VirtualBox **5.2** 而编译）在底层驱动一套
-原封不动的真实 VirtualBox **7.2.8**。
+原封不动的真实 VirtualBox **7.2.x**。
 
 ## 问题所在
 
@@ -27,7 +27,7 @@ eNSP_Client.exe
             └─ GetVBoxInstance()                  ← 我们的导出
                  └─ CoCreateInstance(CLSID_VirtualBox, CLSCTX_LOCAL_SERVER,
                                       IID_VBox7_IVirtualBox)
-                      └─ VBoxSVC.exe              (真实的进程外 7.2.8 服务器)
+                      └─ VBoxSVC.exe              (真实的进程外 7.2.x 服务器)
 ```
 
 eNSP 是 **32 位**的，所以它底下的一切都跑在 WOW64 里，读的是 `WOW6432Node`
@@ -41,13 +41,13 @@ eNSP 是 **32 位**的，所以它底下的一切都跑在 WOW64 里，读的是
 ### 1. 版本伪装（注册表）
 
 `HKLM\SOFTWARE\[WOW6432Node\]Oracle\VirtualBox` 的 `Version`/`VersionExt` 被设为
-`5.2.44` / `5.2.44r139111`。二进制其实是 `7.2.8.173730`；只有这些字符串在撒谎。
+`5.2.44` / `5.2.44r139111`。二进制其实是 `7.2.x`；只有这些字符串在撒谎。
 这让 eNSP 通过它在 COM 之前的版本闸门。见
 [`registry/01_version_spoof.reg`](../registry/01_version_spoof.reg)。
 
 垫片内部还有**第二处、进程内**的版本伪装：代理的 `get_version` /
 `get_versionNormalized` / `get_revision` 这几个 vtable 槽位返回写死的
-`5.2.22`，而不转发给真实对象（真对象会回答 `7.2.8`）。见
+`5.2.22`，而不转发给真实对象（真对象会回答 `7.2.x`）。见
 `src/spoof_thunks.cpp`。注册表那处是在 COM *之前*读的；进程内这处是在 eNSP 已
 握住 `IVirtualBox` 指针*之后*读的。
 
@@ -138,8 +138,8 @@ thunk。**注意**：当前 `map[N]` 是一刀切的 `N+4`（`vbox52_proxy.cpp` 
 ## 可选：VBoxManage.exe 包装器
 
 一份能工作的安装里可能还有一个 `VBoxManage.exe` 垫片，它记录每次调用，再原样
-转发给 `VBoxManage_real.exe`（真实的 7.2.8 命令行工具）。它是**诊断件，非承重
-件**——eNSP 的 `clonevm` / `modifyvm` / `startvm` 都是原生 7.2.8 命令，对着真实
+转发给 `VBoxManage_real.exe`（真实的 7.2.x 命令行工具）。它是**诊断件，非承重
+件**——eNSP 的 `clonevm` / `modifyvm` / `startvm` 都是原生 7.2.x 命令，对着真实
 二进制跑得好好的。它的源码**不**在本仓库，这里也没有任何东西依赖它。
 
 ## 装什么、不装什么

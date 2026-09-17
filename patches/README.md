@@ -50,7 +50,7 @@ python patch_var_plugin.py --restore "C:\Program Files\Huawei\eNSP\plugin\ar1000
 > | B | 出厂原版 | error 40 | **5546 ms** |
 >
 > 失败签名逐字相同（`startvm` 后约 4 秒插件超时 → `controlvm poweroff` +
-> `unregistervm --delete`），相差不到 1 毫秒。而在 host（VBox 7.2.8）上，
+> `unregistervm --delete`），相差不到 1 毫秒。而在 host（VBox 7.2.x）上，
 > **出厂原版即可正常启动 USG6000V**，进到 `Login authentication / Username:`。
 >
 > 也就是说：这个补丁既非充分，也未见必要。留在这里只为备查。

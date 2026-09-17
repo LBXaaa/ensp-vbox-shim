@@ -16,7 +16,7 @@
 |---|------|------|------|-----------|
 | 1 | `VBox52.dll` | REPLACED | `…\Huawei\eNSP\tools\VBox52.dll` | COM/vtable 垫片。eNSP_VBoxServer.exe 加载它并调用 `GetVBoxInstance()`；它在真实 7.2 对象之上呈现一个 5.2 `IVirtualBox`。同时也充当 COM InprocServer32 类厂。 |
 | 2 | `VAR_Plugin.dll`（ar1000v） | PATCHED | `…\Huawei\eNSP\plugin\ar1000v\VAR_Plugin.dll` | AR 路由器插件通过写死的 5.2 vtable 偏移去调用真实的 7.2 `IVirtualBox`。没有这处 28 站点重映射补丁，AR 会打到错误的方法、一启动就崩。独立于 #1——AR 两者都需要。 |
-| 3 | 版本伪装 | REGISTRY | `HKLM\…\Oracle\VirtualBox` `Version`/`VersionExt`（两个视图） | eNSP 在 COM 之前的版本闸门拒绝任何非 `5.2.x` 的版本。字符串读作 `5.2.44`；二进制其实是 `7.2.8.173730`。 |
+| 3 | 版本伪装 | REGISTRY | `HKLM\…\Oracle\VirtualBox` `Version`/`VersionExt`（两个视图） | eNSP 在 COM 之前的版本闸门拒绝任何非 `5.2.x` 的版本。字符串读作 `5.2.44`；二进制其实是 `7.2.x`。 |
 | 4 | CLSID InprocServer32 | REGISTRY | `CLSID\{B1A7A4F2-…}\InprocServer32`（两个视图） | 把 `CLSID_VirtualBox` 的 32 位进程内服务器重指到 `VBox52.dll`，这样 eNSP 的 `CoCreateInstance` 加载的是我们的类厂，而非 VBox 原生的 proxy/stub。 |
 四项都已对照一份活的、能工作的安装核验过（AR 起到 `<Huawei>`，AC6605 起到
 `<AC6605>`）。
@@ -32,7 +32,7 @@
 
 两次失败签名完全相同（`startvm` 后约 4 秒插件超时 → `controlvm poweroff` +
 `unregistervm --delete`），相差不到 1 毫秒 —— 补丁版本对结果没有影响。
-而在 host（VBox 7.2.8）上，**出厂原版即可正常启动 USG6000V**，进到
+而在 host（VBox 7.2.x）上，**出厂原版即可正常启动 USG6000V**，进到
 `Login authentication / Username:`。
 
 结论：这个补丁既非充分也未见必要，对第三方二进制做字节改写却不带来可验证的收益，
@@ -69,7 +69,7 @@ VBoxHeadless 便不会创建那个 COM2 命名管道；eNSP 随后
 |------|------|----------|
 | 子进程命令行日志 | `VBox52.dll` 内部 | 把每个子进程命令行记到 `%ProgramData%\ensp-vbox-shim\vboxmanage_wrapper.log`。纯记录，可省略。 |
 | VEH 崩溃记录器 | `VBox52.dll` 内部 | 只观察的向量化异常处理器。记录异常；从不改变控制流。 |
-| `VBoxManage.exe` 包装器 | `…\Oracle\VirtualBox\`（一份能工作的安装里可能有一个） | 可选的透传，记录调用并原样转发给 `VBoxManage_real.exe`。eNSP 的 `clonevm`/`modifyvm`/`startvm` 都是原生 7.2.8 命令，对着真实二进制跑得好好的。**源码不在本仓库，这里也没有任何东西依赖它。** |
+| `VBoxManage.exe` 包装器 | `…\Oracle\VirtualBox\`（一份能工作的安装里可能有一个） | 可选的透传，记录调用并原样转发给 `VBoxManage_real.exe`。eNSP 的 `clonevm`/`modifyvm`/`startvm` 都是原生 7.2.x 命令，对着真实二进制跑得好好的。**源码不在本仓库，这里也没有任何东西依赖它。** |
 
 这些拿掉都不影响 eNSP 能否运行。它们存在只是为了在调试启动期间让启动链路可
 观察。

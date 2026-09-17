@@ -1,7 +1,7 @@
 # ensp-vbox-shim
 
 让原版 **华为 eNSP** 直接跑在 **VirtualBox 7.x** 上，底层是真实vbox
-7.2.8 虚拟机引擎，全程不降级组件。
+7.2.x 虚拟机引擎，全程不降级组件。
 
 > 本工具开源于 https://github.com/LBXaaa/ensp-vbox-shim
 > 若是付费获得，则为他人倒卖，请到上述地址免费下载。
@@ -20,9 +20,9 @@
 
 于是我写了这套二进制 COM 垫片：让原版 eNSP 直接运行在 VirtualBox 7.x 上，既不
 降级任何组件，也不动本机的 WSL2/Hyper-V——对 eNSP 假装成 5.2，背地里把调用
-翻译给真正的 7.2.8。
+翻译给真正的 7.2.x。
 
-![eNSP 的 SW 设备运行在真实的 VirtualBox 7.2.8 上，拓扑连通](docs/images/ensp-running-on-vbox72.png)
+![eNSP 的 SW 设备运行在真实的 VirtualBox 7.2.x 上，拓扑连通](docs/images/ensp-running-on-vbox72.png)
 
 ## 工作原理
 
@@ -32,12 +32,12 @@
    `IVirtualBox` vtable，把每个槽位转发到重映射后的 7.2 方法；eNSP 经
    `GetVBoxInstance()` 或 COM 类厂拿到它。
 2. **版本伪装** —— 注册表和进程内都把版本报成 `5.2.x`，放行 eNSP 的版本闸门
-   （二进制实为 `7.2.8`）。
+   （二进制实为 `7.2.x`）。
 3. **`VAR_Plugin.dll` 补丁** —— AR 插件按写死的 5.2 偏移直接调 `IVirtualBox`，
    一个 28 站点的可逆补丁把偏移重映射到 7.2。
 
 ```
-eNSP_Client.exe → eNSP_VBoxServer.exe → VBox52.dll (垫片) → VBoxSVC.exe 7.2.8
+eNSP_Client.exe → eNSP_VBoxServer.exe → VBox52.dll (垫片) → VBoxSVC.exe 7.2.x
 ```
 
 细节见 [架构](docs/architecture.md)、[vtable 映射表](docs/vtable-mapping.md)、[组件清单](docs/manifest.md)。
