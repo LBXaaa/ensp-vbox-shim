@@ -1,0 +1,95 @@
+name: 兼容性反馈（跑通了 / 没跑通）
+description: 报告某台机器上的运行结果，无论成功或失败
+title: '[兼容性] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这一版新增的诊断与修复层只在有限环境上验证过，**真实机器上的结果比什么都值钱**。
+        没跑通当然要报，**跑通了同样值得报** —— 那正是判断「覆盖到哪了」的依据。
+
+  - type: dropdown
+    id: result
+    attributes:
+      label: 结果
+      options:
+        - 跑通了，设备能起来并进入 CLI
+        - 跑通了，但某类设备不行
+        - 没跑通
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 系统版本与构建号
+      description: |
+        `winver`。请写到小数点后那几位，不要只写「Win11 最新」—— 同一个分支的相邻 build
+        表现可能完全不同（issue #8 就是 26200.8457 能用、26200.9168 不能用）。
+      placeholder: 例：Windows 11 专业版 25H2，26200.9457
+    validations:
+      required: true
+
+  - type: input
+    id: vbox_version
+    attributes:
+      label: VirtualBox 版本
+      placeholder: 例：7.2.8r173730
+    validations:
+      required: true
+
+  - type: input
+    id: shim_version
+    attributes:
+      label: 垫片版本
+      placeholder: 例：v0.2.0-beta（看 zip 文件名）
+    validations:
+      required: true
+
+  - type: input
+    id: ensp_version
+    attributes:
+      label: eNSP 版本
+      placeholder: 例：1.3.00.100
+    validations:
+      required: false
+
+  - type: dropdown
+    id: hyperv
+    attributes:
+      label: Hyper-V / WSL2
+      options:
+        - 都启用
+        - 只启用了 Hyper-V
+        - 只启用了 WSL2
+        - 都没启用
+        - 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: 物理机还是虚拟机
+      placeholder: 虚拟机的话，宿主是什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: devices
+    attributes:
+      label: 试过的设备
+      description: 哪些型号起来了、哪些没起来。几台就够，不用全列。
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 其他
+      description: |
+        装的过程中有没有卡壳、报错、看不懂的提示；有没有哪一步你觉得说明写得不清楚。
+
+        这类反馈和 bug 一样有用 —— **说明没说清的地方，通常就是下一个人会踩的地方。**
+    validations:
+      required: false

@@ -1,0 +1,83 @@
+name: 设备起不来 / 报错
+description: 设备启动失败、报「错误 40」、卡进度条、进不了 CLI
+title: '[报障] '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        第一项的诊断报告是关键 —— 报告里已经包含系统版本与构建号、四个垫片投放点的哈希、
+        CLSID 指向、host-only 网络六层、基础 VM 注册与 `<VM>_Link` 快照、以及最近一次启动的
+        `VBox.log` / `VBoxHardening.log` 尾部。**有了它,后面就不用再抄一遍环境。**
+
+  - type: textarea
+    id: report
+    attributes:
+      label: 诊断报告
+      description: |
+        把 `环境检查.bat` 产出的报告文件拖进这个框:
+
+        `%ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt`
+
+        运行它请用**平时启动 eNSP 的那个账户** —— 它读的是该账户的 `.VirtualBox\`,
+        换别的管理员账户跑,读到的不是 eNSP 实际用的那一份,结论会对不上。
+
+        报告全程只读、不含交互记录,可以原样附出来。
+      placeholder: 把报告文件拖到这里
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 出问题的设备
+      placeholder: 例:AR2220、USG6000V、CE12800
+    validations:
+      required: true
+
+  - type: input
+    id: shim_version
+    attributes:
+      label: 垫片版本
+      placeholder: 例:v0.2.0-beta(看 zip 文件名)
+    validations:
+      required: true
+
+  - type: input
+    id: machine
+    attributes:
+      label: 物理机还是虚拟机
+      placeholder: 虚拟机的话,宿主是什么(Hyper-V / VMware / VirtualBox)
+    validations:
+      required: true
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: |
+        设备在 eNSP 里显示什么?进度条停在哪?有没有弹框?
+
+        什么时候开始的、之前能用吗?全新安装还是从旧版升上来的?每次都复现吗?
+      placeholder: 越具体越好
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: 已经排除过的
+      description: 试过什么、结果如何。列出来能省掉大量来回问。
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 补充日志
+      description: |
+        有就先贴。提示一条:`VBoxHardening.log` 的**开头**比末尾有用 —— 末尾只写最终失败,
+        进程启动时对 token / SID / 权限的枚举在前面。
+      render: text
+    validations:
+      required: false

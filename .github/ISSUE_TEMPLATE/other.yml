@@ -1,0 +1,28 @@
+name: 其他（提问 / 建议 / 文档纠错）
+description: 不适合上面两类的 —— 提问、建议、文档写错的地方，或者只是想说点什么
+title: ''
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠ **设备起不来 / 报错请用「设备起不来 / 报错」那个模板。**
+
+        那个模板要的诊断报告能省掉大量来回，写在这里等于绕过了它。
+
+        这一条不要求诊断报告，也不要求环境信息，写清楚就行。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 你想说什么
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 系统版本与构建号
+      description: 和某台机器有关的话填一下，无关可以留空。
+      placeholder: 例：Windows 11 专业版 25H2，26200.9457
+    validations:
+      required: false
