@@ -308,6 +308,31 @@ function Compare-HostOnlyName {
 #
 # The connection name is LOCALIZED (observed as the Chinese for "Ethernet 11"),
 # so it must never be matched on. InterfaceDescription is the stable key.
+function Get-HostOnlyRouteVerdict {
+    # Decides, from the route table alone, whether the host-only subnet has a
+    # usable direct route. The route table is the only input on purpose: it is
+    # a fact. Find-NetRoute is not used here because it was measured answering
+    # wrongly on a machine whose routing was correct -- asked about two hosts in
+    # the same subnet, it returned the /24 route for one (.100) and the default
+    # route for the other (.2). A verdict built on it flags healthy machines.
+    #
+    # -Routes: objects with an InterfaceAlias, as Get-NetRoute returns them.
+    # -HostOnlyAlias: the connection name of the host-only adapter.
+    # Returns State = "ok" | "missing" | "elsewhere", plus the alias found.
+    param($Routes, [string]$HostOnlyAlias)
+    $rt = @($Routes)
+    if ($rt.Count -eq 0) {
+        return [pscustomobject]@{ State = "missing"; Alias = "" }
+    }
+    if ($HostOnlyAlias) {
+        $onHostOnly = @($rt | Where-Object { $_.InterfaceAlias -eq $HostOnlyAlias })
+        if ($onHostOnly.Count -eq 0) {
+            return [pscustomobject]@{ State = "elsewhere"; Alias = [string]$rt[0].InterfaceAlias }
+        }
+    }
+    return [pscustomobject]@{ State = "ok"; Alias = [string]$rt[0].InterfaceAlias }
+}
+
 function Get-HostOnlyNetAdapterFacts {
     $items = @()
     try {

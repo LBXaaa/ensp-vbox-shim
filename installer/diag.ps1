@@ -432,11 +432,8 @@ function Get-RepairFindings {
             $rt = @(Get-NetRoute -AddressFamily IPv4 -ErrorAction Stop |
                     Where-Object { $_.DestinationPrefix -eq ($probeNet + ".0/24") })
         } catch { }
-        $routeOk = $false
-        if ($rt.Count -gt 0) {
-            $routeOk = $true
-            if ($hoAlias -and -not (@($rt | Where-Object { $_.InterfaceAlias -eq $hoAlias }).Count)) { $routeOk = $false }
-        }
+        $rv = Get-HostOnlyRouteVerdict -Routes $rt -HostOnlyAlias $hoAlias
+        $routeOk = ($rv.State -eq "ok")
 
         $srcIp = ""
         if (Get-Command Find-NetRoute -ErrorAction SilentlyContinue) {

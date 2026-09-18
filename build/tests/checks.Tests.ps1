@@ -144,6 +144,32 @@ Assert-True  $c.Conflict    "conflict flagged"
 $c1 = Compare-SubnetOwners -Interfaces @(@{ Name = "Ethernet 11"; IPv4 = "192.168.56.1" }) -Prefix "192.168.56."
 Assert-False $c1.Conflict "single owner is fine"
 
+# The host-only route verdict has three states and they must not collapse into
+# one. "No route at all" and "a route that leaves by another adapter" are both
+# broken but need different advice; a route on the host-only adapter is healthy.
+# The verdict reads the route table only -- see the function for why
+# Find-NetRoute is deliberately not consulted.
+$rvOk = Get-HostOnlyRouteVerdict -HostOnlyAlias "Ethernet 11" -Routes @(
+    [pscustomobject]@{ InterfaceAlias = "Ethernet 11"; NextHop = "0.0.0.0" }
+)
+Assert-Equal $rvOk.State "ok" "route: a route on the host-only adapter is healthy"
+
+$rvMissing = Get-HostOnlyRouteVerdict -HostOnlyAlias "Ethernet 11" -Routes @()
+Assert-Equal $rvMissing.State "missing" "route: no route for the subnet reads as missing"
+
+$rvElse = Get-HostOnlyRouteVerdict -HostOnlyAlias "Ethernet 11" -Routes @(
+    [pscustomobject]@{ InterfaceAlias = "WLAN"; NextHop = "10.132.36.222" }
+)
+Assert-Equal $rvElse.State "elsewhere" "route: a route leaving by another adapter is not accepted"
+Assert-Equal $rvElse.Alias "WLAN" "route: the adapter actually carrying it is named"
+
+# With no alias to compare against, presence alone is what can be judged.
+# Refusing to answer would be worse than answering with what is known.
+$rvNoAlias = Get-HostOnlyRouteVerdict -HostOnlyAlias "" -Routes @(
+    [pscustomobject]@{ InterfaceAlias = "Whatever"; NextHop = "0.0.0.0" }
+)
+Assert-Equal $rvNoAlias.State "ok" "route: without an alias, presence is enough"
+
 # Raw Get-NetIPAddress shape: InterfaceAlias / IPAddress, plus a .Name property
 # that is mojibake. The alias must win over Name, and the address must be found
 # -- feeding this shape in unchanged used to report zero owners on a machine
