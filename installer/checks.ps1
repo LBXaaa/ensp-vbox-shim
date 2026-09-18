@@ -314,7 +314,10 @@ function Get-HostOnlyRouteVerdict {
     # a fact. Find-NetRoute is not used here because it was measured answering
     # wrongly on a machine whose routing was correct -- asked about two hosts in
     # the same subnet, it returned the /24 route for one (.100) and the default
-    # route for the other (.2). A verdict built on it flags healthy machines.
+    # route for the other (.2). Ground truth on that same machine: the live
+    # 192.168.56.2:56789 connection sourced from 192.168.56.1, which is exactly
+    # what the route table said and what Find-NetRoute contradicted. A verdict
+    # built on Find-NetRoute flags healthy machines.
     #
     # -Routes: objects with an InterfaceAlias, as Get-NetRoute returns them.
     # -HostOnlyAlias: the connection name of the host-only adapter.

@@ -463,15 +463,18 @@ function Get-RepairFindings {
                     "补一条静态路由也能临时恢复,但下次网卡变动后仍会丢。"
                 )
             } else {
-                $title = "疑似有软件接管 host-only 网段(待确认)"
+                $title = "疑似有软件接管 host-only 网段(仅为提示,未经证实)"
                 $manual = @(
-                    "原因: 路由表本身正常,但系统报出的出接口与它不一致 —— 这通常意味着有",
-                    "软件在路由层之上干预(TUN 模式的代理、VPN、多链路聚合工具)。",
+                    "【不确定】这是一条提示,不是结论。本项探测(Find-NetRoute)实测会误报:",
+                    "在一台路由表完全正确、设备也能正常启动的机器上,它对同一网段的两个地址",
+                    "给出了互相矛盾的答案,而该机真实的 56789 连接本端地址是正确的 host-only 地址。",
                     "",
-                    "注意: 本项探测(Find-NetRoute)已知会误报,所以这一条只是【疑似】,",
-                    "不作为判定依据。要确证,需在设备卡住时看真实的连接:",
+                    "触发条件: 路由表本身正常,但系统报出的出接口与它不一致。",
+                    "可能成因: 有软件在路由层之上干预 —— TUN 模式的代理、VPN、多链路聚合工具。",
+                    "",
+                    "唯一判据是设备卡住时那条真实连接的本端地址:",
                     "  Get-NetTCPConnection 里找 56789 端口那条,看 LocalAddress 是不是 host-only 那块。",
-                    ("若确证: 在那个软件的分流或绕过列表里排除 " + $probeNet + ".0/24。"),
+                    ("若确证被接管: 在那个软件的分流或绕过列表里排除 " + $probeNet + ".0/24。"),
                     "补静态路由与调高网卡跃点均无效 —— 它是在路由层之上截获的。"
                 )
             }
@@ -1560,12 +1563,13 @@ try {
             Write-Fact ("系统称去 " + $probeIp + " 会用的源地址") $src.IPAddress
             Write-Fact "系统称会用的出接口" $(if ($src.InterfaceAlias) { $src.InterfaceAlias } else { "(未读到)" })
             if ($hoIp -and ($src.IPAddress -ne $hoIp)) {
-                Write-Note ("  [参考] 系统称这条路径不走 host-only(" + $hoIp + "),与上面的路由表不一致。")
-                Write-Note "  可能是有软件在路由层之上干预(代理 / VPN / 多链路聚合),也可能是本项"
-                Write-Note "  探测自身的误报 —— 已知它会误报,故不据此下结论。"
-                Write-Note "  确证的方法是看设备卡住时的真实连接:"
+                Write-Note ("  [提示] 系统称这条路径不走 host-only(" + $hoIp + "),与上面的路由表不一致。")
+                Write-Note "  仅为提示,不作判定 —— 本项探测(Find-NetRoute)实测会骗人:在一台路由表"
+                Write-Note "  完全正确、设备也能正常启动的机器上,它对同一网段的两个地址给出了互相"
+                Write-Note "  矛盾的答案,而该机真实的 56789 连接本端地址是正确的 host-only 地址。"
+                Write-Note "  唯一判据是设备卡住时那条真实连接:"
                 Write-Note "    Get-NetTCPConnection 里找 56789 端口那条,看 LocalAddress 是不是 host-only 那块。"
-                Write-Note ("  若确证,修法是在那个软件的分流或绕过列表里排除 " + $probeNet + ".0/24。")
+                Write-Note ("  若确证被接管,修法是在那个软件的分流或绕过列表里排除 " + $probeNet + ".0/24。")
             } else {
                 Write-Host "  [ OK ] 系统称这条路径走 host-only 那块,与路由表一致。"
             }
