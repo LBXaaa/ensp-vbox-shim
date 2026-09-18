@@ -21,7 +21,7 @@ if (设备已存在) { log "Device has already existed."; return 0; }
 否则 { 删 baselink → 删 base → 建 base → 补 baselink }
 ```
 
-`import_device.ps1` 会预先注册 VM 并补快照,所以插件每次加载都走短路分支,
+`import_device.ps1`(辅助脚本,已于 v0.1.4 移除)会预先注册 VM 并补快照,所以插件每次加载都走短路分支,
 **后面四个函数从未被执行过**。用 eNSP 自带导入框只放镜像、不注册 VM,才第一次真正触发这条链。
 
 日志中出现 62 次 `Device has already existed.` 可印证短路的频率。

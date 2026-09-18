@@ -4,6 +4,8 @@
 
 > 共性前提:eNSP 的交换机(S 系列 LSW)、PC、AC 等是华为轻量模拟进程,**不走 VirtualBox**;只有 **AR 路由器、部分 FW/AC** 是真正的 VirtualBox 虚拟机。所以「错误 40」绝大多数只发生在 **AR 这类真 VM 设备**上,交换机/PC 不受影响。
 
+> **部分根因不报错误 40**,而是表现为进度条停滞(设备侧无任何报错)。根因 C 与根因 F 属于这一类,同样列在下面。
+
 ---
 
 ## 根因 A:缺 x86 VC++ 运行时 / 进程加固(干净机最常见)
@@ -217,6 +219,41 @@ Error relaunching VirtualBox VM process: 5
 
 ---
 
+## 根因 F:代理 / VPN / 多链路聚合工具接管 host-only 路由(只在 FW 上复现)
+
+**适用范围**:主机上运行 TUN 模式的代理、VPN 或多链路聚合工具时。设备表现为**卡在 `#` 进度条**,**不报错误 40**。
+
+**现象**:
+- **只有 USG6000V 防火墙起不来**,AR 与交换机正常。
+- 进度条停在少量 `#` 上不再前进(实测常见为 1 个)。不是根因 C 的满屏 `####`,任务管理器里 `VBoxHeadless` 的 CPU 也不打满。
+- `VBox.log` 显示虚拟机本身完全正常:BIOS 引导成功、客户机内核启动、`GIM: KVM` 时钟启用、持续 `RUNNING`。`VBoxHardening.log` 无 `Error -`。
+- `plugin\ngfw\LogFile\infolog0.txt` 走到 `ST_Booting: recv VBOX_MSG.` 之后报
+  `CAgent::ST_Booting - Failed to receive from control socket.10054`。
+- 关掉该工具后设备正常;重开复现。
+
+**根因**:USG6000V 插件在 `ST_Config` 阶段连接 `192.168.56.2:56789` 这条控制信道(反编译可见 `socket()` / `connect()`,端口硬编码 `0xddd5`)。该工具接管 `192.168.56.0/24` 的流量后,主机发往 `192.168.56.2` 的包不再经 host-only 网卡,源地址被判为物理网卡地址(如 `192.168.1.5`)。SYN 发出后无应答,连接停在 `SynSent`,插件的 `recv` 得到 `WSAECONNRESET`(10054)。
+
+AR 与交换机不走这条控制信道,因此不受影响。
+
+**如何确认**:设备卡住时执行
+
+```powershell
+Get-NetTCPConnection | ? { $_.LocalPort -eq 56789 -or $_.RemotePort -eq 56789 } | % { "$($_.State)  $($_.LocalAddress):$($_.LocalPort) -> $($_.RemoteAddress):$($_.RemotePort)" }
+```
+
+- 正常:`Established  192.168.56.1:* -> 192.168.56.2:56789`
+- 本根因:`SynSent  192.168.x.x:* -> 192.168.56.2:56789` —— **源地址不是 `192.168.56.1`**
+
+**修复**:在该工具中把 `192.168.56.0/24`(或整个 `192.168.0.0/16`)加入**绕过 / 直连**列表。
+
+补静态路由(`route add`)与提高网卡跃点(`Set-NetIPInterface -InterfaceMetric`)均无效 —— 该工具在路由层之上截获,不依赖路由优先级。两种方法均实测过。
+
+**不要删除 VBox 自身的直连路由**:`192.168.56.0/24` 那条路由由 host-only 网卡自动生成,是全部设备通信的基础。删除它会使**所有**设备无法启动,现象是进度条持续输出 `#`。恢复方法是禁用再启用该网卡。
+
+**预防**:启用此类工具时确认 host-only 网段在绕过列表中。诊断报告第 `[3]` 节的**第 7 层**专门检查这一点(`Find-NetRoute` 问 Windows 去该网段走哪块网卡、源地址是什么),并在源地址不是 host-only 那块时直接给出该加什么排除规则。
+
+---
+
 ## 降级遗留:VBoxSup / VBoxNetAdp6 / host-only 网卡
 
 **适用范围**:在这台机器上尝试过**降级 VirtualBox**(例如 7.2.18 → 7.2.8)且降级失败之后。降级卸载会移除注册项与 PnP INF,而回装时未必补回。三个症状互不相同,修法也各自独立。
@@ -263,3 +300,4 @@ VBoxManage hostonlyif create
 | 40,`hostonlyif create` 报 `Could not find Host Interface Networking driver!`,`VBoxDrvInst.exe list` 一个 VBox 驱动包都没有,**适配器不存在** | host-only 网络驱动包从未注册 | 根因 D2,装 `netadp6` + 注册 `netlwf` 后重建接口 |
 | 40,**绕开 eNSP 直接 `VBoxManage startvm` 也失败**,加固日志 `Error -104 ... (enmWhat=5)`,无被拒模块 | 加固无法创建 VM 子进程 | 根因 E,**已由 2026-09 累积更新修复** |
 | 降级 VBox 后 `\Device\VBoxDrvStub` 找不到,或 `Could not find Host Interface Networking driver!`,或 `Nonexistent host networking interface` | 降级卸载留下的三处缺失 | 降级遗留,按序补 VBoxSup → netadp6 → `hostonlyif create` |
+| **只有 FW 起不来**,进度条停在少量 `#`,VM 正常,`infolog0.txt` 报 `control socket.10054` | 代理/VPN/多链路聚合工具接管 host-only 路由 | 根因 F,查 `192.168.56.2:56789` 的源地址 |

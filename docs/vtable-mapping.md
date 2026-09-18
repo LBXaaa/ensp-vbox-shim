@@ -62,6 +62,14 @@ VBox 7.x **不是** 5.2 的统一平移：
 | 25 | get_extensionPackManager | 转发 | 30 |
 | 26 | get_internalNetworks | 转发 | 31 |
 | 27 | get_genericNetworkDrivers | 转发 | 33 |
+> **下表的方法区索引存在已知争议,使用前先读 [`docs/golden-vbox52-reference.md`](golden-vbox52-reference.md) 第 8 节。**
+>
+> 实测证据指向方法区从 `[48]` 起 —— 即**下表整体偏低 12**:`openMachine` = `[51]`、`registerMachine` = `[52]`。
+> 该值有运行时证据:垫片日志中 `openMachine[51]` 与 `registerMachine[52]` 均返回 `hr=0x00000000`。
+>
+> 而 `VAR_Plugin` 的补丁用的是**下表**的编号,且 AR 设备实测可用 —— 两者矛盾**尚未解决**。
+> **在弄清之前,不要依据下表修改任何补丁。**
+
 | 28 | composeMachineFilename | 转发 | 36 |
 | 29 | createAppliance | 转发 | 44 |
 | 30 | createDHCPServer | 转发 | 57 |

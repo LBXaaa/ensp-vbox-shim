@@ -44,7 +44,7 @@
 
 只读采集本机环境事实,生成报告至 `%ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt`。报告可原样附入 issue。
 
-报告内容:系统版本与构建号、四个垫片投放点的哈希、CLSID 指向、host-only 网络六层状态、基础 VM 注册状态与 `<VM>_Link` 快照、最近一次启动的 `VBox.log` 与 `VBoxHardening.log` 尾部。
+报告内容:系统版本与构建号、四个垫片投放点的哈希、CLSID 指向、host-only 网络七层状态、基础 VM 注册状态与 `<VM>_Link` 快照、最近一次启动的 `VBox.log` 与 `VBoxHardening.log` 尾部。
 
 执行账户必须与启动 eNSP 的账户相同。报告读取该账户的 `%USERPROFILE%\.VirtualBox\`;其他账户下的内容与 eNSP 实际使用的不一致。
 
@@ -137,7 +137,7 @@ eNSP 的「导入设备包」对话框为通用实现(提示文案为 `请导入
 
 > 该问题属于 VirtualBox 7.x 在硬断电收尾时的行为,与本垫片无关:垫片为 32 位,仅加载进 32 位 eNSP 进程,而 `VBoxHeadless.exe` 为 64 位。记录待后续版本处理。
 
-**启动进度条**:上述设备为完整虚拟机(模板各分配 4 GB 内存),同时启动多台时 eNSP 的进度条可能长时间静止。进度条静止不代表设备未启动。可通过双击设备进入控制台确认,或检查 `plugin\<插件>\LogFile\infolog*.txt` 中是否出现 `Received run ok msg`。启动过程中终止 eNSP 会一并终止正在引导的设备。
+**启动进度条**:上述设备为完整虚拟机(模板各分配 4 GB 内存),同时启动多台时 eNSP 的进度条可能长时间静止。进度条静止不代表设备未启动。可通过双击设备进入控制台确认,或检查 `plugin\<插件>\LogFile\infolog*.txt` 中是否出现 `CAgent::ST_STARTED`(设备进入运行态的标志)。启动过程中终止 eNSP 会一并终止正在引导的设备。
 
 ### 卸载
 
