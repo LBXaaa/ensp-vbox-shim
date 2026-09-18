@@ -220,9 +220,15 @@ function Get-PreInstallFacts {
     $fwCount = -1
     $fwAllow = $false
     try {
-        $fwLines = @(Get-FirewallRuleTextForEnsp)
-        $fwCount = $fwLines.Count
-        if ($fwCount -gt 0) { $fwAllow = [bool](Parse-FirewallRulesForEnsp -Lines $fwLines).HasAllowRule }
+        # -1 must mean "could not read". The reader swallows its own exceptions,
+        # so the catch below never fires; asking it directly is what makes the
+        # difference between "no rule" and "no answer" visible here.
+        $fwReadOk = $false
+        $fwLines = @(Get-FirewallRuleTextForEnsp -ReadOk ([ref]$fwReadOk))
+        if ($fwReadOk) {
+            $fwCount = $fwLines.Count
+            if ($fwCount -gt 0) { $fwAllow = [bool](Parse-FirewallRulesForEnsp -Lines $fwLines).HasAllowRule }
+        }
     } catch {
         $fwCount = -1
     }

@@ -412,6 +412,86 @@ function Get-RepairFindings {
             -Why ("探测出错 —— " + $_.Exception.Message)
     }
 
+    # --- host-only 网段被接管(对应第 7 层)-----------------------------------
+    # 第 1-6 层全绿也成立的成因:代理 / VPN / 多链路聚合工具把该网段的流量接管了。
+    # 本工具修不了它 —— 要改的是那个工具的配置,不是本机。但必须报出来,
+    # 否则用户手里只有一份全绿的报告,而设备确实起不来。
+    # 判定只用路由表(确定)。Find-NetRoute 只作旁证 —— 实测它在路由表完全正确的
+    # 机器上也会给错答案,单凭它会产生误报,所以两者分开措辞。
+    try {
+        $probeIp = "192.168.56.2"
+        $hoFact  = @(@(Get-HostOnlyNetAdapterFacts -ErrorAction SilentlyContinue) |
+                     Where-Object { $_.IPv4 } | Select-Object -First 1)
+        $hoIp    = $hoFact.IPv4
+        $hoAlias = $hoFact.InterfaceName
+        if ($hoIp -match '^(\d+\.\d+\.\d+)\.\d+$') { $probeIp = $Matches[1] + ".2" }
+        $probeNet = $probeIp.Substring(0, $probeIp.LastIndexOf('.'))
+
+        $rt = @()
+        try {
+            $rt = @(Get-NetRoute -AddressFamily IPv4 -ErrorAction Stop |
+                    Where-Object { $_.DestinationPrefix -eq ($probeNet + ".0/24") })
+        } catch { }
+        $routeOk = $false
+        if ($rt.Count -gt 0) {
+            $routeOk = $true
+            if ($hoAlias -and -not (@($rt | Where-Object { $_.InterfaceAlias -eq $hoAlias }).Count)) { $routeOk = $false }
+        }
+
+        $srcIp = ""
+        if (Get-Command Find-NetRoute -ErrorAction SilentlyContinue) {
+            $nr  = @(Find-NetRoute -RemoteIPAddress $probeIp -ErrorAction SilentlyContinue)
+            $src = @($nr | Where-Object { $_.IPAddress } | Select-Object -First 1)
+            if ($src.Count -gt 0) { $srcIp = [string]$src.IPAddress }
+        }
+        $nrDisagrees = ($hoIp -and $srcIp -and ($srcIp -ne $hoIp))
+
+        if ((-not $routeOk) -or $nrDisagrees) {
+            $evidence = @()
+            if (-not $routeOk) {
+                if ($rt.Count -eq 0) { $evidence += ("路由表里没有 " + $probeNet + ".0/24 这条直连路由") }
+                else                 { $evidence += ("该路由指向 " + $rt[0].InterfaceAlias + ",不是 host-only 那块(" + $hoAlias + ")") }
+            }
+            if ($nrDisagrees) { $evidence += ("系统称去 " + $probeIp + " 会用源地址 " + $srcIp + ",不是 " + $hoIp) }
+
+            # 两条触发条件的确定性完全不同,措辞必须分开 —— 把「存疑」写成
+            # 「确定」会让健康机器上也出现一条要用户去查的条目。
+            if (-not $routeOk) {
+                $title = "host-only 网段的直连路由缺失或指错"
+                $manual = @(
+                    "原因: 主机到 " + $probeNet + ".0/24 的路由不由 host-only 网卡承载。",
+                    "没有它,主机到该网段整个不通,所有设备都起不来(不只是防火墙)。",
+                    "",
+                    "修法: 禁用再启用那块 host-only 网卡,Windows 会自动重建这条直连路由。",
+                    "补一条静态路由也能临时恢复,但下次网卡变动后仍会丢。"
+                )
+            } else {
+                $title = "疑似有软件接管 host-only 网段(待确认)"
+                $manual = @(
+                    "原因: 路由表本身正常,但系统报出的出接口与它不一致 —— 这通常意味着有",
+                    "软件在路由层之上干预(TUN 模式的代理、VPN、多链路聚合工具)。",
+                    "",
+                    "注意: 本项探测(Find-NetRoute)已知会误报,所以这一条只是【疑似】,",
+                    "不作为判定依据。要确证,需在设备卡住时看真实的连接:",
+                    "  Get-NetTCPConnection 里找 56789 端口那条,看 LocalAddress 是不是 host-only 那块。",
+                    ("若确证: 在那个软件的分流或绕过列表里排除 " + $probeNet + ".0/24。"),
+                    "补静态路由与调高网卡跃点均无效 —— 它是在路由层之上截获的。"
+                )
+            }
+
+            $items += [pscustomobject]@{
+                Id      = "hostonly-route"
+                Tier    = "manual"
+                Title   = $title
+                Symptom = "只有 USG6000V 防火墙起不来,进度条停在少量 #;AR 与交换机正常"
+                Evidence = ($evidence -join "; ")
+                Impact  = @()
+                Steps   = @()
+                Manual  = $manual
+            }
+        }
+    } catch { }
+
     # --- 性能计数器 ---------------------------------------------------------
     try {
         $perf = Test-PerfCountersFunctional
@@ -434,10 +514,11 @@ function Get-RepairFindings {
 
     # --- 防火墙放行 ---------------------------------------------------------
     try {
-        $fwText = @(Get-FirewallRuleTextForEnsp)
+        $fwReadOk = $false
+        $fwText = @(Get-FirewallRuleTextForEnsp -ReadOk ([ref]$fwReadOk))
         $fw = Parse-FirewallRulesForEnsp -Lines $fwText
         if (-not $fw.HasAllowRule) {
-            if ($fwText.Count -eq 0) {
+            if (-not $fwReadOk) {
                 $items += [pscustomobject]@{
                     Id      = "firewall-unknown"
                     Tier    = "manual"
@@ -447,10 +528,8 @@ function Get-RepairFindings {
                     Impact  = @()
                     Steps   = @()
                     Manual  = @(
-                        "原因: 一条 eNSP / VBoxServer 规则都没读到 —— 既可能是确实没有,"
-                        "也可能是当前权限读不到防火墙配置,诊断不下结论。"
-                        "手动步骤: 用管理员身份重跑一次环境检查;确认确实没有规则之后,"
-                        "再回来让本工具放行。"
+                        "原因: 防火墙策略读取失败(COM 枚举抛出异常),本次无法判断有无放行规则。"
+                        "手动步骤: 用管理员身份重跑一次环境检查后再下结论。"
                     )
                 }
             } else {
@@ -1277,9 +1356,9 @@ try {
 }
 
 # ===========================================================================
-# 第 3 节  host-only 网络(六层)
+# 第 3 节  host-only 网络(七层)
 # ===========================================================================
-Write-Section "[3] host-only 网络(六层)"
+Write-Section "[3] host-only 网络(七层)"
 $sectionsOk += "3"
 
 # $vboxManageExe / $vboxDrvInstExe 已在第 1 节之前解析完毕,这里直接用。
@@ -1436,6 +1515,82 @@ try {
     Write-Fail "第 6 层" $_.Exception.Message
 }
 
+# --- 第 7 层:去 host-only 网段的路径与源地址 --------------------------------
+# 前六层查的都是「驱动 / 服务 / 接口 / 绑定 / 名字」这些静态事实。有一类成因
+# 完全不在这六层里 —— 六层可以全绿而设备照旧起不来:别的软件(TUN 模式的代理、
+# VPN、多链路聚合工具)接管了 host-only 网段的流量。网卡健在、绑定正常,
+# 但主机发往该网段的包不再从那块网卡出去,源地址落到物理网卡上,
+# SYN 发出去无人应答,设备永远等不到它要的那条控制连接。
+#
+# 这一层【陈述事实,不下判定】。判定的依据是路由表 —— 那是确定的;Find-NetRoute
+# 的答案只作参考,原因记在下面 (b) 处。
+try {
+    Write-Host ""
+    Write-Host "  -- 第 7 层:去 host-only 网段的路径与源地址 --"
+
+    # 探测目标取 host-only 网段的 .2(设备侧通常的地址)。读不到接口地址时退回默认网段。
+    $probeIp = "192.168.56.2"
+    $hoIp = @($adapters | Where-Object { $_.IPv4 } | Select-Object -First 1).IPv4
+    if ($hoIp -match '^(\d+\.\d+\.\d+)\.\d+$') { $probeIp = $Matches[1] + ".2" }
+    $probeNet = $probeIp.Substring(0, $probeIp.LastIndexOf('.'))
+
+    # (a) 路由表 —— 确定的事实,也是这一层唯一的判定依据
+    $rt = @()
+    try { $rt = @(Get-NetRoute -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.DestinationPrefix -eq ($probeNet + ".0/24") }) } catch { }
+    $hoAlias = @($adapters | Where-Object { $_.IPv4 } | Select-Object -First 1).InterfaceName
+    if ($rt.Count -eq 0) {
+        Write-Host ("  [ !! ] 路由表里没有 " + $probeNet + ".0/24 这条直连路由。")
+        Write-Note "  没有它,主机到该网段整个不通,所有设备都起不来(不只是防火墙)。"
+        Write-Note "  修法:禁用再启用那块 host-only 网卡,Windows 会自动把这条直连路由重建出来。"
+    } else {
+        foreach ($r in $rt) {
+            Write-Fact ($probeNet + ".0/24 的下一跳") ($r.InterfaceAlias + "    NextHop=" + $r.NextHop)
+        }
+        if ($hoAlias -and -not (@($rt | Where-Object { $_.InterfaceAlias -eq $hoAlias }).Count)) {
+            Write-Host ("  [ !! ] 这条路由指向的不是 host-only 那块(" + $hoAlias + ")。")
+        }
+    }
+
+    # (b) Find-NetRoute —— 只作参考,不作判定。
+    # 它读起来像个现成的神谕,但实测不可靠:在同一台路由表完全正确的机器上,
+    # 它对同网段的 .100 答对了(走 /24),对 .2 却答成走默认路由。据此判
+    # 「被接管」会产生误报,所以这里只把答案列出来、并在与路由表不一致时
+    # 提示「可能有软件在路由层之上干预」,判定留给设备现象与文档里的真判据。
+    if (Get-Command Find-NetRoute -ErrorAction SilentlyContinue) {
+        $nr  = @(Find-NetRoute -RemoteIPAddress $probeIp -ErrorAction SilentlyContinue)
+        $src = @($nr | Where-Object { $_.IPAddress } | Select-Object -First 1)
+        if ($src.Count -gt 0) {
+            Write-Fact ("系统称去 " + $probeIp + " 会用的源地址") $src.IPAddress
+            Write-Fact "系统称会用的出接口" $(if ($src.InterfaceAlias) { $src.InterfaceAlias } else { "(未读到)" })
+            if ($hoIp -and ($src.IPAddress -ne $hoIp)) {
+                Write-Note ("  [参考] 系统称这条路径不走 host-only(" + $hoIp + "),与上面的路由表不一致。")
+                Write-Note "  可能是有软件在路由层之上干预(代理 / VPN / 多链路聚合),也可能是本项"
+                Write-Note "  探测自身的误报 —— 已知它会误报,故不据此下结论。"
+                Write-Note "  确证的方法是看设备卡住时的真实连接:"
+                Write-Note "    Get-NetTCPConnection 里找 56789 端口那条,看 LocalAddress 是不是 host-only 那块。"
+                Write-Note ("  若确证,修法是在那个软件的分流或绕过列表里排除 " + $probeNet + ".0/24。")
+            } else {
+                Write-Host "  [ OK ] 系统称这条路径走 host-only 那块,与路由表一致。"
+            }
+        }
+    } else {
+        Write-Note "  [跳过] 本机没有 Find-NetRoute(NetTCPIP 模块缺失)。"
+    }
+
+    # 顺带列出非 VBox 的 TUN 类网卡 —— 开着这类工具的人往往不认为自己在「开代理」。
+    $tunish = @(Get-NetAdapter -ErrorAction SilentlyContinue |
+                Where-Object { $_.Status -eq 'Up' -and
+                               $_.InterfaceDescription -notlike '*VirtualBox*' -and
+                               ($_.Name -match 'Tun|TAP|Wintun|WireGuard|VPN' -or
+                                $_.InterfaceDescription -match 'Tun|TAP|Wintun') })
+    if ($tunish.Count -gt 0) {
+        Write-Fact "疑似接管类网卡" (($tunish | ForEach-Object { $_.Name }) -join " | ")
+        Write-Note "  上面这些不是 VirtualBox 的网卡。若第 7 层判定为接管,来源通常就在其中。"
+    }
+} catch {
+    Write-Fail "第 7 层" $_.Exception.Message
+}
+
 # --- DHCP 服务器 ------------------------------------------------------------
 # 设计 §10.1 把「host-only 的 DHCP 到底该不该启用」列为【待核实项】:社区资料称
 # 5.2 上「启用服务器」应不勾选,而本项目安装器主动创建并启用了它,两者场景不同
@@ -1526,21 +1681,31 @@ try {
     Write-Host ""
     Write-Host "  -- 防火墙放行规则 --"
     # 取文本再交给纯解析器:解析器按「整块规则」判断,不会被别的规则顶替满足。
-    $fwText = @(Get-FirewallRuleTextForEnsp)
+    $fwReadOk = $false
+    $fwText = @(Get-FirewallRuleTextForEnsp -ReadOk ([ref]$fwReadOk))
     $fw = Parse-FirewallRulesForEnsp -Lines $fwText
 
     # 规则覆盖哪些配置文件也要报出来。「已启用 + 允许」但只覆盖 Public 的规则,
     # 在加域机器上并不生效 —— 只报 HasAllowRule 会是假绿。
     $fwProfileText = $(if ($fw.Profile) { $fw.Profile } else { "(未读取到)" })
-    Write-Fact "eNSP 放行规则" $(if ($fw.HasAllowRule) { "存在(已启用 + 允许), 覆盖配置文件: " + $fwProfileText } else { "未找到" })
+    # 三种状态分开报:「读到且有放行」「读到但没有放行」「压根没读到」。
+    # 后两种的结论相反 —— 只报「未找到」会把读失败说成确凿的缺失。
+    $fwHeadline = $(if ($fw.HasAllowRule) {
+        "存在(已启用 + 允许), 覆盖配置文件: " + $fwProfileText
+    } elseif ($fwReadOk) {
+        "无(策略已成功读取, 其中没有 eNSP / VBoxServer 规则)"
+    } else {
+        "未知(策略读取失败)"
+    })
+    Write-Fact "eNSP 放行规则" $fwHeadline
 
     if ($fw.HasAllowRule) {
         Write-Note "  规则 eNSP_VBoxServer 存在,且处于「已启用 + 允许」状态。"
     } else {
-        if ($fwText.Count -eq 0) {
+        if (-not $fwReadOk) {
             Write-Host ""
-            Write-Note "  未取到任何与 eNSP / VBoxServer 相关的规则。这既可能是确实没有,"
-            Write-Note "  也可能是当前权限读不到防火墙配置 —— 请用管理员身份重跑本节确认后再下结论。"
+            Write-Note "  防火墙策略读取失败(COM 枚举抛出异常),本次无法判断。"
+            Write-Note "  请用管理员身份重跑本节后再下结论。"
         }
         Write-Host ""
         Write-Note "  !! eNSP 官方 FAQ 把这一条列为与性能计数器损坏相同的 '####' 卡死成因。"
@@ -2166,16 +2331,25 @@ function Find-NewestVmLog {
     if ($EnspDir)         { $roots += (Join-Path $EnspDir "vboxserver") }
     if ($env:LOCALAPPDATA){ $roots += (Join-Path $env:LOCALAPPDATA "eNSP") }
     if ($VBoxUserHome)    { $roots += (Join-Path $VBoxUserHome "VMs") }
+    # 按 Logs 目录定位,不按深度。原来这里是 -Recurse -File -Depth 4,而克隆的
+    # 日志在 <根>\VBoxServer\devices\<UUID>\<VM名>\Logs\ 下 —— 相对搜索根正好 5 层,
+    # -Depth 4 差一级够不着。基础盘(<根>\AR_Base\Logs\)只有 2 层所以一直能取到,
+    # 于是这个 bug 只在克隆上发作 —— 而 eNSP 跑的永远是克隆,基础盘只是克隆源。
+    # 改成「先找 Logs 目录、再在其中找文件」:锚点是语义的,层级再变也不失准。
     $best = ""
     $bestTime = [datetime]::MinValue
     foreach ($r in $roots) {
         if (-not (Test-Path $r)) { continue }
         try {
-            $f = Get-ChildItem -Path $r -Filter $FileName -Recurse -File -Depth 4 -ErrorAction SilentlyContinue |
-                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($f -and $f.LastWriteTime -gt $bestTime) {
-                $best = $f.FullName
-                $bestTime = $f.LastWriteTime
+            $logsDirs = Get-ChildItem -Path $r -Filter "Logs" -Directory -Recurse -Depth 8 -ErrorAction SilentlyContinue
+            foreach ($d in $logsDirs) {
+                $cand = Join-Path $d.FullName $FileName
+                if (-not (Test-Path -LiteralPath $cand)) { continue }
+                $t = (Get-Item -LiteralPath $cand).LastWriteTime
+                if ($t -gt $bestTime) {
+                    $best = $cand
+                    $bestTime = $t
+                }
             }
         } catch { }
     }
@@ -2210,7 +2384,11 @@ try {
 
     # ---- VBox.log ----
     if (-not $vboxLogPath) {
-        Write-Note "  没有 VBox.log —— 本机还没启动过任何设备时属正常,设备一启动就会有。"
+        Write-Note "  未找到 VBox.log。搜索范围:eNSP 的 vboxserver\、%LOCALAPPDATA%\eNSP、"
+        Write-Note "  %USERPROFILE%\.VirtualBox\VMs —— 以各 VM 目录下的 Logs\ 为准。"
+        Write-Note "  未找到不等于设备没启动过:eNSP 拆机时执行 unregistervm --delete,"
+        Write-Note "  会把克隆目录连同其中的 Logs\ 一并删除 —— 只有正在运行或卡住的设备"
+        Write-Note "  才留得下日志。设备启动过但已被正常清理时,这里同样是空的。"
     } else {
         $vl = @(Get-Content -Path $vboxLogPath -ErrorAction Stop)
         Write-Fact "VBox.log" ($vboxLogPath + "   (" + $vl.Count + " 行)")
@@ -2277,7 +2455,8 @@ try {
     # ---- VBoxHardening.log ----
     Write-Host ""
     if (-not $hardLogPath) {
-        Write-Note "  没有 VBoxHardening.log —— 本机从未启动过设备时属正常。"
+        Write-Note "  未找到 VBoxHardening.log(与 VBox.log 同目录,每次启动都会生成)。"
+        Write-Note "  同上:克隆被 --delete 清理时它会一起消失,未找到不等于从未启动过设备。"
     } else {
         $hl = @(Get-Content -Path $hardLogPath -ErrorAction Stop)
         Write-Fact "VBoxHardening.log" ($hardLogPath + "   (" + $hl.Count + " 行)")
@@ -2331,14 +2510,14 @@ try {
 # 每项带一个 Why:路径为空时用它解释原因。
 #
 # 原来只有一句「eNSP 目录未定位到」,那是当时唯一可能的原因;现在源变多了,
-# 再把"这台机器还没启动过设备"说成"eNSP 目录没找到"就是纯粹的误导 ——
+# 未找到的原因也变多了 —— 把其中一种说成另一种同样是误导,
 # 用户会去修一个根本不存在的路径问题。
 function Get-DiagLogSources {
     param([string]$EnspDir)
     $vbHome = $env:VBOX_USER_HOME
     if (-not $vbHome) { $vbHome = Join-Path $env:USERPROFILE ".VirtualBox" }
     $noEnsp  = "未定位到 eNSP 目录,请用 -EnspDir 指定。"
-    $noStart = "未找到该日志 —— 本机还没启动过任何 eNSP 设备时属正常(设备一启动就会有)。"
+    $noStart = "未在该搜索范围内找到(已查 eNSP\vboxserver、%LOCALAPPDATA%\eNSP、.VirtualBox\VMs 下各 VM 的 Logs\)。设备从未启动、或克隆已被 unregistervm --delete 清理,都会如此。"
     return @(
         @{ Label = "shim install";    Path = "$env:ProgramData\ensp-vbox-shim\install.log";            Tail = 200; Why = "路径未确定。" },
         @{ Label = "shim proxy";      Path = "$env:ProgramData\ensp-vbox-shim\vbox52_proxy.log";       Tail = 200; Why = "路径未确定。" },
@@ -2349,9 +2528,10 @@ function Get-DiagLogSources {
         # 起来";VBoxHardening.log 只在加固拒绝时才有内容,回答"是哪个 DLL 被拒的"。
         @{ Label = "VBox.log(最近一次启动)";     Path = (Find-NewestVmLog -FileName "VBox.log" -VBoxUserHome $vbHome -EnspDir $EnspDir);           Tail = 150; Why = $noStart },
         # 加固日志【每次启动都会生成】(MachineImpl::launchVMProcess 先删旧的再传
-        # --sup-hardening-log)。所以"文件不在"只说明这台机器还没启动过设备,
-        # 不代表加固没失败过 —— 判定看的是内容里有没有错误锚点,文件在不在说明不了。
-        @{ Label = "VBoxHardening.log(最近一次)"; Path = (Find-NewestVmLog -FileName "VBoxHardening.log" -VBoxUserHome $vbHome -EnspDir $EnspDir); Tail = 80;  Why = "未找到该日志 —— 本机还没启动过任何 eNSP 设备时属正常(该文件每次启动都会生成)。" }
+        # --sup-hardening-log)。但"文件不在"不能反推"没启动过设备" —— eNSP 拆机时
+        # 执行 unregistervm --delete,克隆目录连同其中的 Logs\ 一起没了。
+        # 判定看的是内容里有没有错误锚点,文件在不在说明不了。
+        @{ Label = "VBoxHardening.log(最近一次)"; Path = (Find-NewestVmLog -FileName "VBoxHardening.log" -VBoxUserHome $vbHome -EnspDir $EnspDir); Tail = 80;  Why = "未在该搜索范围内找到(该文件每次启动都会生成,但会随克隆被 --delete 一起清掉)。" }
     )
 }
 
@@ -2589,6 +2769,19 @@ if ($Fix) {
 } else {
     # 不带 -Fix 时到此为止,一个键都不读。指一句下一步就够 ——
     # 该修什么、怎么修,报告第 [9] 节已经逐条写清楚了。
+    #
+    # 这一句必须和第 [9] 节的「下一步」说同一件事。原来它无条件打印
+    # 「需要执行修复」,而同一份报告的第 [9] 节可能正写着「没有可自动修复的项,
+    # 不需要执行修复」—— 两句话直接打架,且真正掌握事实的是第 [9] 节。
     Write-Host ""
-    Write-Host "  需要执行修复:重跑 环境检查.bat -Fix(逐条见报告第 [9] 节)。"
+    if ($fxItems.Count -eq 0) {
+        if ($mnItems.Count -gt 0) {
+            # 有需要手工处置的项,也有什么都没有 —— 这两者不能都说成「不需要做什么」。
+            Write-Host "  没有可自动修复的项;报告第 [9] 节列出了需要手工处置的部分。"
+        } else {
+            Write-Host "  没有需要处置的项。"
+        }
+    } else {
+        Write-Host "  需要执行修复:重跑 环境检查.bat -Fix(逐条见报告第 [9] 节)。"
+    }
 }

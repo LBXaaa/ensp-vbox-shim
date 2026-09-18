@@ -933,4 +933,65 @@ Assert-True ($diagText -match '\$cliRes\.Refused') "exit: refusal is distinguish
 Assert-True ($diagText -match '\$cliRes\.Failed') "exit: partial failure is distinguished"
 Assert-True ($allText -match '\$fixProc\.ExitCode') "exit: install_all.ps1 reads the child's exit code"
 
+# --- log collection, and the firewall read/no-read split ---------------------
+# Three defects of the same shape: a probe that could not tell "I read it and
+# there is nothing" from "I could not read it", and reported the first when the
+# second was true.
+#
+# 1. Find-NewestVmLog searched with -Recurse -File -Depth <4>. Clone logs live
+#    at <root>\VBoxServer\devices\<uuid>\<vm>\Logs\ -- five levels below the
+#    search root -- so the limit missed every clone, while the base disks two
+#    levels down kept being found. eNSP only ever runs clones.
+# 2. Get-FirewallRuleTextForEnsp swallowed its own exception, so "read fine, no
+#    rule" and "could not read" both came back as an empty list. diag.ps1
+#    refused to repair on an empty list, which is precisely the machine that
+#    needs the repair -- the one with no eNSP rule at all.
+# 3. A missing VBox.log was reported as "this machine has never started a
+#    device". eNSP removes clone folders, and their Logs\, with
+#    unregistervm --delete, so that conclusion does not follow.
+$fnlIdx = $diagText.IndexOf('function Find-NewestVmLog')
+Assert-True ($fnlIdx -gt 0) "logs: Find-NewestVmLog exists"
+if ($fnlIdx -gt 0) {
+    $fnlEnd = $diagText.IndexOf("`n}", $fnlIdx)
+    $fnlBody = $diagText.Substring($fnlIdx, $fnlEnd - $fnlIdx)
+    # The body's own comment names the old value, so only live lines count.
+    $fnlLive = @([regex]::Split($fnlBody, '\r?\n') | Where-Object {
+        ($_ -match '-Depth\s*4\b') -and ($_.TrimStart() -notmatch '^#')
+    })
+    Assert-Equal $fnlLive.Count 0 "logs: the depth limit that missed every clone is gone"
+    Assert-True  ($fnlBody -match '-Filter "Logs"') "logs: it anchors on the Logs directories instead"
+}
+
+$gfrIdx = $checksText.IndexOf('function Get-FirewallRuleTextForEnsp')
+Assert-True ($gfrIdx -gt 0) "firewall: the reader exists"
+if ($gfrIdx -gt 0) {
+    $gfrEnd = $checksText.IndexOf("`n}", $gfrIdx)
+    $gfrBody = $checksText.Substring($gfrIdx, $gfrEnd - $gfrIdx)
+    Assert-True ($gfrBody -match '\[ref\]\$ReadOk') "firewall: the reader reports whether it could read"
+    Assert-True ($gfrBody -match '\$ReadOk\.Value = \$false') "firewall: it marks failure before trying"
+    Assert-True ($gfrBody -match '\$ReadOk\.Value = \$true')  "firewall: and marks success only after enumerating"
+}
+
+Assert-False ($diagText -match '\$fwText\.Count -eq 0') "firewall: an empty result is no longer read as a failure"
+Assert-True  ($diagText -match '\$fwReadOk') "firewall: the plan branches on the read result"
+Assert-True  ($allText  -match '\$fwReadOk') "firewall: install_all.ps1 does too, so its -1 means 'no answer'"
+# The old wording asserted that the machine had never started a device, which
+# the tool cannot know. Written as escapes so this file stays pure ASCII.
+Assert-False ($diagText -match '\u8fd8\u6ca1\u542f\u52a8\u8fc7') "logs: the unsupported conclusion is gone"
+
+# --- the seventh host-only layer ---------------------------------------------
+# Layers 1-6 are static facts: driver, service, interface, binding, name. They
+# can be green while the machine is unusable -- a TUN-mode proxy or VPN can take
+# over the host-only subnet, so packets leave by the wrong adapter and the
+# control connection the firewall plugin needs never completes.
+$ho7Idx = $diagText.IndexOf('Find-NetRoute')
+Assert-True ($ho7Idx -gt 0) "hostonly: layer 7 asks Windows which adapter it would use"
+Assert-True ($diagText -match 'Id\s*=\s*"hostonly-route"') "hostonly: the finding reaches the plan"
+# The route table is the verdict; Find-NetRoute is only corroboration. It was
+# measured answering wrongly on a machine whose routing was correct -- asking
+# the same destination in one subnet gave the right route (.100 -> /24) and the
+# wrong one for another (.2 -> default route). A check that trusts it alone
+# flags healthy machines.
+Assert-True ($diagText -match 'Get-NetRoute') "hostonly: the verdict is taken from the route table"
+
 Complete-TestRun

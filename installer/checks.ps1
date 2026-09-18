@@ -607,6 +607,15 @@ function ClassifyPacketDriver {
 # enabled allow rule exists", true and useless on a domain-joined machine
 # whose rule covers Public only.
 function Get-FirewallRuleTextForEnsp {
+    # Pass a [ref] to find out whether the policy was actually enumerated.
+    # An empty result has two very different meanings: "the policy was read,
+    # nothing matched" and "the policy could not be read at all". A caller that
+    # cannot tell them apart reports the wrong thing -- and, worse, a machine
+    # with no eNSP rule whatsoever is exactly the one that needs the repair,
+    # while an unreadable policy is the one where no judgement is possible.
+    # Callers that do not pass -ReadOk keep the old behaviour.
+    param([ref]$ReadOk)
+    if ($ReadOk) { $ReadOk.Value = $false }
     $lines = @()
     try {
         # COM (HNetCfg.FwPolicy2) rather than Get-NetFirewallRule. Measured
@@ -640,6 +649,7 @@ function Get-FirewallRuleTextForEnsp {
             $lines += "Profile      : " + ($profiles -join ", ")
             $lines += ""
         }
+        if ($ReadOk) { $ReadOk.Value = $true }
     } catch { }
     return $lines
 }
