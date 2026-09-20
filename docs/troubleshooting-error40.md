@@ -207,11 +207,26 @@ Error relaunching VirtualBox VM process: 5
 
 **修复**:本项目无法修复,也没有配置开关 —— VirtualBox 官方构建里加固是有意不可关闭的。同机换 VirtualBox 版本不解决:issue #8 实测 7.2.8 与 7.2.18 均复现,只是失败在 spawn 链上更早或更晚一步。能改的只有系统侧。
 
-**结局(2026-09-17,已解决)**:该问题由 **2026-09 累积更新**修复。报告者装上 KB5129195 + KB5124007 后,build 由 `26200.9168` 升至 `26200.9457`,`VBoxManage startvm <VM名> --type headless` 直接成功、VM 稳定运行,未改动 VirtualBox,也未改动本垫片。
+**它是偶发的,不由 Windows build 决定 —— 不要把它当成「已修复」。**
 
-出问题与恢复都在系统侧:8 月的 KB5123304 + KB5121003 之后开始复现,9 月的累积更新之后消失。
+时间线(全部来自报告者同一台机器的实测):
 
-> **一处需要说明的混杂**:报告者恢复的那一轮里同时还修了三处降级遗留(见下节)。那三处都在驱动与网络层,而 `-104` 发生在任何驱动参与之前,因此不构成该症状的成因 —— 但严格说,他在同一轮里动了两个变量,单看记录无法完全分离。
+| 时间 | 变化 |
+|---|---|
+| 2026-09-17 之前 | 8 月 KB5123304 + KB5121003 之后开始复现,build `26200.9168` |
+| 2026-09-17 | 装 2026-09 累积更新(KB5129195 + KB5124007),build 升至 `26200.9457` 后**消失**,端到端跑通(含 AR / WLAN 设备克隆启动) |
+| 2026-09-18 | 仅 Store / app 更新 |
+| **2026-09-20** | **同一 build `26200.9457` 上复发**,重启后依旧,连续 6 次稳定失败 |
+
+即:**该累积更新只是让问题暂时不出现,不是修复。** 本节的早期版本把它写成了「已解决」—— 那是拿一次自愈当结论,同一 build 上隔两天就复发了。
+
+报告者已逐项排除:安全软件(本机仅火绒,其 `hipsdaemon.log` 无任何 VBox 拦截记录,且消失期间火绒同样在场;SecurityCenter 里的 360 / 腾讯是卸载残留注册项)、Smart App Control / VBS / 内存完整性、文件 ACL(`VBoxHeadless.exe` 对 `Everyone` 有 ReadAndExecute)、ntdll 被更新、管理员 token(提权运行 `startvm` 同样失败)、Windows 与 VirtualBox 版本。
+
+> **已知的混杂**:报告者恢复的那一轮里同时还修了三处降级遗留(见下节)。那三处都在驱动与网络层,而 `-104` 发生在任何驱动参与之前,因此不构成该症状的成因 —— 但严格说,他在同一轮里动了两个变量,单看记录无法完全分离。
+
+**实际可用的应对**:既然它是偶发的,而失败时 VM 从未启动(没有副作用),**重复尝试即可** —— 再点一次「启动」。报告者两次复现中出现过重试后成功的记录。
+
+**关于「让垫片绕过」**:垫片在这一步帮不上忙。`-104` 发生在 `VBoxHeadless.exe` 自己的加固重生链里,而垫片运行在 `eNSP_VBoxServer.exe` 中,两者不是同一个进程;垫片虽然 hook 了 `CreateProcessW` 能看到 `VBoxManage startvm` 被发出,但它把进程句柄交还给 eNSP 后就不再介入,而 eNSP 是根据**那个句柄**的退出码判定成败的 —— 垫片即使私下重试成功,也改不了 eNSP 已经读到的那次结果。
 
 **诊断记录(2026-09-17,issue #8)**:Windows 11 专业版 25H2 build 26200.9168(ntdll / kernel32 / KernelBase 10.0.26100.8972,8 月 KB5123304 + KB5121003 之后)。VBox 7.2.8 与 7.2.18 均复现。`supR3HardenedWinFindAdversaries: 0x0`;Defender 实时保护与攻击面减少规则、CI 策略 / HVCI、AppInit_DLLs、第三方注入均无;系统盘路径是正常的 `\Device\HarddiskVolume3` 而非 `\Device\vmsmb`,不是沙箱。
 
@@ -311,6 +326,6 @@ VBoxManage hostonlyif create
 | 嵌套环境 AR 进度条卡满屏 `####`,headless 空转满核,内核 `c013e501` panic | VBox 走原生 VT-x,二级嵌套下崩 | 根因 C,启用 WHP 让 VBox 走 NEM |
 | 升级 VBox 后 40,垫片日志全绿,`VBoxManage.log` 报 `VERR_INTNET_FLT_IF_NOT_FOUND`,**适配器存在**且 `VBoxDrvInst.exe list` 有 `VBoxNetAdp6`/`VBoxNetLwf` | host-only 过滤驱动绑定失效 | 根因 D1,禁用→启用 host-only 网卡 + 重启 VBoxSVC |
 | 40,`hostonlyif create` 报 `Could not find Host Interface Networking driver!`,`VBoxDrvInst.exe list` 一个 VBox 驱动包都没有,**适配器不存在** | host-only 网络驱动包从未注册 | 根因 D2,装 `netadp6` + 注册 `netlwf` 后重建接口 |
-| 40,**绕开 eNSP 直接 `VBoxManage startvm` 也失败**,加固日志 `Error -104 ... (enmWhat=5)`,无被拒模块 | 加固无法创建 VM 子进程 | 根因 E,**已由 2026-09 累积更新修复** |
+| 40,**绕开 eNSP 直接 `VBoxManage startvm` 也失败**,加固日志 `Error -104 ... (enmWhat=5)`,无被拒模块 | 加固无法创建 VM 子进程 | 根因 E,**偶发,不由 build 决定**(2026-09 更新后曾消失,三天后同 build 复发);失败时 VM 从未启动,重复尝试即可 |
 | 降级 VBox 后 `\Device\VBoxDrvStub` 找不到,或 `Could not find Host Interface Networking driver!`,或 `Nonexistent host networking interface` | 降级卸载留下的三处缺失 | 降级遗留,按序补 VBoxSup → netadp6 → `hostonlyif create` |
 | **只有 FW 起不来**,进度条停在少量 `#`,VM 正常,`infolog0.txt` 报 `control socket.10054` | 代理/VPN/多链路聚合工具接管 host-only 路由 | 根因 F,查 `192.168.56.2:56789` 的源地址 |

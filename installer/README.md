@@ -279,7 +279,9 @@ netcfg.exe -v -l "<VBoxDir>\drivers\network\netlwf\VBoxNetLwf.inf" -c s -i oracl
 
 判别三条:绕开 eNSP 直接启动也失败;加固日志的锚点是 `-104` 而非 `-5657`;报告里没有被拒模块。`-5657` 是加固拒绝了一个具体文件,有卸载对象;`-104` 是 `CreateProcessW` 本身没成功,失败在任何模块被加载之前,没有可卸载的对象。
 
-该问题在 2026-08 更新之后出现、2026-09 累积更新之后消失 —— 停在该区间 build 上的机器装上最新累积更新即可,与 eNSP、与本垫片都无关。完整诊断记录见仓库 [`docs/troubleshooting-error40.md`](../docs/troubleshooting-error40.md) 根因 E。
+该问题**偶发,不由 Windows build 决定** —— 2026-08 更新之后出现、2026-09 累积更新之后消失,但三天后在同一 build(`26200.9457`)上复发。与 eNSP、与本垫片都无关。
+
+失败时 VM 从未启动,没有副作用:**再点一次「启动」即可。** 垫片在这一步帮不上忙 —— `-104` 发生在 `VBoxHeadless.exe` 自己的加固重生链里,与垫片所在的进程不是同一个。完整诊断记录见仓库 [`docs/troubleshooting-error40.md`](../docs/troubleshooting-error40.md) 根因 E。
 
 **Windows Sandbox / WDAG 中报 error 40** —— 不支持,无法修复。Windows Sandbox 通过 VSMB 挂载系统盘(`\Device\vmsmb\...`),而 VirtualBox 的进程加固要求 `kernel32.dll` / `ntdll.dll` 从普通磁盘卷(`\Device\HarddiskVolume`)加载,两者冲突,VM 进程在启动阶段被加固终止(`VBoxHardening.log` 记录 `rc=-5632` / `rc=-610`)。该冲突为 Windows Sandbox 与 VirtualBox 的固有冲突,与本垫片无关;原版 VBox 在沙箱内同样无法启动。改用普通虚拟机或物理机。
 

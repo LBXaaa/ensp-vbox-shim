@@ -2467,7 +2467,7 @@ try {
             -5657 = "被加载的模块没有用与 VirtualBox 相同的证书签名 —— 原版 VBox 遇到非 Oracle 签名的 DLL 就是这样。"
             -5640 = "进程里出现了第二个线程,通常是第三方软件注入所致(安全软件 / DLP / 反作弊驱动)。"
             -5607 = "镜像大小与预期不符。"
-            -104  = "加固无法创建 VM 子进程 —— CreateProcessW 被系统拒绝(ERROR_ACCESS_DENIED)。失败在校验任何模块之前,本次不会有模块被拒。"
+            -104  = "加固无法创建 VM 子进程 —— CreateProcessW 被系统拒绝(ERROR_ACCESS_DENIED)。失败在校验任何模块之前,本次不会有模块被拒。该项偶发,不由 Windows 版本决定;失败时 VM 未启动,重复尝试即可。"
         }
 
         if (-not $hp.Failed) {
