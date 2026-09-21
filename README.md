@@ -111,7 +111,7 @@ NE9000 这几台跑在完整虚拟机里、各配 4 GB 内存，同时拉起多�
   一律按"不执行"处理 —— 要跳过确认请显式写 `-Yes`。
 - **报告没有报错,不等于环境完全没有问题** —— 安装器自身的校验(由 `安装.bat` 核对)与
   设备包镜像的内容(不随本工具分发)不在覆盖范围内。
-- **修复路径的验证范围** —— 判定规则由 `build/testdata\` 下的夹具驱动、共 298 条单元级
+- **修复路径的验证范围** —— 判定规则由 `build/testdata\` 下的夹具驱动、共 310 条单元级
   断言覆盖;命令行的选择、计划(`-DryRun`)、未知 id 拒绝、以及"读不到输入不执行"这条
   安全属性都在其中。机器真坏掉时,仍建议先按报告与 `docs/troubleshooting-error40.md`
   给出的步骤判断。
@@ -128,7 +128,7 @@ NE9000 这几台跑在完整虚拟机里、各配 4 GB 内存，同时拉起多�
 | [`src/`](src/)         | 垫片源码：`vbox52_proxy.cpp`、`vbox52_thunks.asm`、`spoof_thunks.cpp`、`imachine_entries.asm`、`vbox52.def` |
 | [`build/`](build/)     | `build.bat`（32 位 MSVC）和我们预编译好的 `VBox52.dll` |
 | [`patches/`](patches/) | `patch_var_plugin.py`、`patch_ngfw_plugin.py` 及插件补丁规格说明 |
-| [`registry/`](registry/) | `.reg` 文件：版本伪装、CLSID 劫持、卸载 |
+| [`registry/`](registry/) | `.reg` 文件：版本伪装、CLSID 劫持（卸载不走静态 `.reg`，见 `installer/README.md`） |
 | [`docs/`](docs/)       | 架构、vtable 映射、承重件清单 |
 | [`analysis/`](analysis/) | 支撑这一切的逆向脚本与发现 |
 

@@ -281,9 +281,12 @@ RegQueryValueExW(hKey, L"VersionExt", ...);       // ← 注意是 VersionExt
 iVar4 = __wcsicmp(version, L"5");
 ```
 
-本机 `VersionExt = "5.2.44r139111"`(32 位视图下同样存在),比较结果 >= 0,因此选
-`vfw_usg_for_vbox5.0.vbox`,该文件存在于 `plugin\ngfw\tools\ngfw\`。
+本机 `VersionExt = "5.2.44"`(两个视图都是;该调用点用 `KEY_WOW64_64KEY` 打开键,读的是
+64 位视图),比较结果 >= 0,因此选 `vfw_usg_for_vbox5.0.vbox`,该文件存在于
+`plugin\ngfw\tools\ngfw\`。
 **此步与 `Version` 伪装无关,是独立的一项;若日后改伪装值需同时维护 `VersionExt`。**
+该值不带构建号 —— 它长于 `InstallDir` 时 eNSP 的版本闸门会读失败,见
+[`architecture.md`](architecture.md) 第一节。
 
 ---
 

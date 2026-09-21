@@ -1020,4 +1020,40 @@ Assert-True ($diagText -match 'Id\s*=\s*"hostonly-route"') "hostonly: the findin
 # flags healthy machines.
 Assert-True ($diagText -match 'Get-NetRoute') "hostonly: the verdict is taken from the route table"
 
+# --- the version spoof -------------------------------------------------------
+# eNSP's VBox gate reads VersionExt (never Version), opening the key with
+# KEY_WOW64_64KEY. It probes InstallDir's length once and reuses that same
+# cbData for the VersionExt read, so when VersionExt is longer than InstallDir
+# RegQueryValueExW returns ERROR_MORE_DATA and eNSP reports "Please check
+# whether VirtualBox is installed." without ever loading the shim. Measured
+# 2026-09-21 with InstallDir at 35 chars: 35 passes, 36 fails. Oracle's own
+# installer writes both values plain, so the only safe shape is
+# VersionExt == Version with no build suffix.
+$spoofVer    = [regex]::Match($installerText, '\$SPOOF_VER\s*=\s*"([^"]+)"').Groups[1].Value
+$spoofVerExt = [regex]::Match($installerText, '\$SPOOF_VEREXT\s*=\s*"([^"]+)"').Groups[1].Value
+Assert-True  ($spoofVer.Length -gt 0) "version spoof: Version is defined"
+Assert-Equal $spoofVerExt $spoofVer "version spoof: VersionExt is byte-identical to Version"
+Assert-Match $spoofVerExt '^\d+\.\d+\.\d+$' "version spoof: no build suffix survives in VersionExt"
+
+# The restore side must derive the version from the installed VBox. A hardcoded
+# constant is wrong on every machine that runs a different build, and reading it
+# back out of the registry is useless because that is the spoofed value.
+Assert-False ($installerText -match '\$REAL_VEREXT') "version restore: no hardcoded extended version"
+Assert-False ($installerText -match '\$REAL_VER\b')  "version restore: no hardcoded fallback version"
+$unBody = $installerText.Substring($installerText.IndexOf('function Do-Uninstall'))
+Assert-True  ($unBody -match 'VBoxManage\.exe')  "version restore: asks the installed VBox for its version"
+Assert-True  ($unBody -match '"Version"\s+\$real')    "version restore: plain version goes to Version"
+Assert-True  ($unBody -match '"VersionExt"\s+\$real') "version restore: the same plain version goes to VersionExt"
+
+# The .reg files are the manual path; they must not drift from the installer.
+$regSpoofText = Get-Content -Path (Join-Path $repoRoot "registry\01_version_spoof.reg") -Raw
+$regVers = @([regex]::Matches($regSpoofText, '"Version"\s*=\s*"([^"]+)"')    | ForEach-Object { $_.Groups[1].Value })
+$regExts = @([regex]::Matches($regSpoofText, '"VersionExt"\s*=\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+Assert-Equal $regVers.Count 2 "registry: Version is written to both views"
+Assert-Equal $regExts.Count 2 "registry: VersionExt is written to both views"
+Assert-Equal ($regExts | Select-Object -Unique) ($regVers | Select-Object -Unique) "registry: VersionExt mirrors Version"
+# An uninstall .reg cannot exist: the value it would have to write depends on the
+# machine, so it could only ever be a hardcoded guess.
+Assert-False (Test-Path (Join-Path $repoRoot "registry\99_uninstall.reg")) "registry: no static uninstall .reg"
+
 Complete-TestRun

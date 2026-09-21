@@ -40,10 +40,15 @@ eNSP 是 **32 位**的，所以它底下的一切都跑在 WOW64 里，读的是
 
 ### 1. 版本伪装（注册表）
 
-`HKLM\SOFTWARE\[WOW6432Node\]Oracle\VirtualBox` 的 `Version`/`VersionExt` 被设为
-`5.2.44` / `5.2.44r139111`。二进制其实是 `7.2.x`；只有这些字符串在撒谎。
-这让 eNSP 通过它在 COM 之前的版本闸门。见
-[`registry/01_version_spoof.reg`](../registry/01_version_spoof.reg)。
+`HKLM\SOFTWARE\[WOW6432Node\]Oracle\VirtualBox` 的 `Version` 与 `VersionExt` 都被设为
+`5.2.44`。二进制其实是 `7.2.x`；只有这些字符串在撒谎。这让 eNSP 通过它在 COM 之前的
+版本闸门。见 [`registry/01_version_spoof.reg`](../registry/01_version_spoof.reg)。
+
+闸门读的是 **`VersionExt`**（`Version` 在整个 eNSP 语料里无人读取），且用
+`KEY_QUERY_VALUE | KEY_WOW64_64KEY` 打开键——32 位进程读 64 位视图。`VersionExt` 的**长度**
+是承重的：eNSP 只对 `InstallDir` 探一次缓冲区长度，读 `VersionExt` 时复用同一个值；
+`VersionExt` 比 `InstallDir` 长时 `RegQueryValueExW` 返回 `ERROR_MORE_DATA`，闸门报
+「未安装 VirtualBox」，垫片不会被加载。因此该值不带构建号，与 Oracle 安装器写出的形式一致。
 
 垫片内部还有**第二处、进程内**的版本伪装：代理的 `get_version` /
 `get_versionNormalized` / `get_revision` 这几个 vtable 槽位返回写死的

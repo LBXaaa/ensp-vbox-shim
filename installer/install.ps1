@@ -9,7 +9,7 @@
 
     五座承重的桥(详见仓库 docs/):
       1. VBox52.dll        → 覆盖全部加载位置(tools/ vboxserver/ 根 ngfw/)
-      2. 版本伪装           → 注册表 Oracle\VirtualBox Version=5.2.44
+      2. 版本伪装           → 注册表 Oracle\VirtualBox Version=VersionExt=5.2.44
       3. CLSID InprocServer → 指向我们的 DLL(按真实路径生成)
       4. VAR_Plugin.dll     → 覆盖 payload 中预构建的已补丁版本
       5. VC++ 运行时(x86) → 部署到 VBox\x86\ 子目录(干净机缺它会 error 40 / 0x800700C1)
@@ -90,10 +90,16 @@ $VCRT_X86_FILES = @(
     @{ Name = "MSVCP140.dll";     Hash = "546ee2af2ffff02a34dbc1139bc6eb0eb5d67d83b3be782cfead374d29c8e01e" }
 )
 
+# 版本伪装。VersionExt 必须与 Version 逐字相同,且不得带构建号。
+#
+# eNSP 的版本闸门(eNSP_VBoxServer!CVBoxWrapper::LoadVBox)只对 InstallDir 探一次长度,
+# 读 VersionExt 时复用同一个 cbData。一旦 len(VersionExt) > len(InstallDir),
+# RegQueryValueExW 返回 ERROR_MORE_DATA(234),eNSP 判为非零,弹
+# "Please check whether VirtualBox is installed." 并中止 —— 垫片不会被加载。
+# 2026-09-21 实测(InstallDir = 35 字符):VersionExt 35 字过,36 字起必败。
+# 原版 5.2.44 写的就是不带构建号的 5.2.44,此处与它保持一致。
 $SPOOF_VER    = "5.2.44"
-$SPOOF_VEREXT = "5.2.44r139111"
-$REAL_VER     = "7.2.8"      # 卸载还原时的兜底值;优先动态读取已装 VBox 的真实版本
-$REAL_VEREXT  = "7.2.8r173730"
+$SPOOF_VEREXT = "5.2.44"
 
 # ---------------------------------------------------------------------------
 # 输出辅助
@@ -441,7 +447,7 @@ function Do-Install {
     Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "VersionExt" $SPOOF_VEREXT
     Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "Version"    $SPOOF_VER
     Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "VersionExt" $SPOOF_VEREXT
-    Write-OK "Version=$SPOOF_VER(64 位 + 32 位视图)"
+    Write-OK "Version=VersionExt=$SPOOF_VER(64 位 + 32 位视图)"
 
     Write-Step "3/6 劫持 CLSID InprocServer32 -> 我们的 DLL"
     # 关键:路径按检测到的真实 eNSP 位置动态生成,不写死
@@ -501,23 +507,31 @@ function Do-Uninstall {
     param([string]$EnspDir, [string]$VBoxDir)
 
     Write-Step "1/6 还原版本字符串"
-    # 动态读取已装 VBox 的真实版本(VBoxManage --version 形如 7.2.14r174565);
-    # 读不到(如已卸载 VBox)才退回常量兜底值。
-    $real = $REAL_VER; $realext = $REAL_VEREXT
+    # 真实版本现场读,不写死常量:装过本垫片的机器上注册表里是伪装值,拿它还原等于没还原;
+    # 写死某个历史版本号则在别的 VBox 版本上写错值。
+    # VBoxManage --version 输出形如 "7.2.14r174565",而注册表要的是不带构建号的 "7.2.14";
+    # 该输出可能夹带 release log 头,故逐行锚定行首的数字而非取第一行。
+    $real = $null
     $vbm = Join-Path $VBoxDir "VBoxManage.exe"
     if (Test-Path $vbm) {
         try {
-            $out = (& $vbm --version 2>$null | Select-Object -First 1)
-            if ($out -match '^(\d+\.\d+\.\d+)r(\d+)$') {
-                $real = $Matches[1]; $realext = $out.Trim()
+            foreach ($l in @(& $vbm --version 2>$null)) {
+                $m = [regex]::Match("$l", '^\s*(\d+)\.(\d+)\.(\d+)')
+                if ($m.Success) { $real = $m.Value.Trim(); break }
             }
         } catch { }
     }
-    Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "Version"    $real
-    Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "VersionExt" $realext
-    Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "Version"    $real
-    Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "VersionExt" $realext
-    Write-OK "Version=$real"
+    if ($real) {
+        Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "Version"    $real
+        Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "VersionExt" $real
+        Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "Version"    $real
+        Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "VersionExt" $real
+        Write-OK "Version=VersionExt=$real(64 位 + 32 位视图)"
+    } else {
+        Write-Warn "未能从 $vbm 读到真实版本,版本字符串保持原样(仍为伪装值 $SPOOF_VER)。"
+        Write-Info "手动还原:在 VBox 安装目录跑 VBoxManage --version,取行首的 主.次.修订"
+        Write-Info "(不含 r 构建号),写回 Oracle\VirtualBox 的 Version 与 VersionExt(两个视图)。"
+    }
 
     Write-Step "2/6 还原 AR 插件 VAR_Plugin.dll"
     $varp = Join-Path $EnspDir "plugin\ar1000v\VAR_Plugin.dll"
@@ -753,8 +767,15 @@ function Do-Check {
         Write-Info "  $rel : $tag"
     }
 
-    $vk = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" -ErrorAction SilentlyContinue
-    if ($vk) { Write-Info "注册表 Version : $($vk.Version)  (伪装目标 $SPOOF_VER)" }
+    # eNSP 用 KEY_WOW64_64KEY 打开这个键,读的是 64 位视图(全语料 22 处掩码均为 0x101)。
+    $vk = Get-ItemProperty "HKLM:\SOFTWARE\Oracle\VirtualBox" -ErrorAction SilentlyContinue
+    if ($vk) {
+        Write-Info "注册表 Version/VersionExt : $($vk.Version) / $($vk.VersionExt)  (伪装目标 $SPOOF_VER)"
+        if ($vk.InstallDir -and "$($vk.VersionExt)".Length -gt "$($vk.InstallDir)".Length) {
+            Write-Warn "VersionExt 长于 InstallDir —— eNSP 读它会 ERROR_MORE_DATA,报「未安装 VirtualBox」并拒绝启动"
+            Write-Info "重跑 安装.bat 即会把它改写成 $SPOOF_VEREXT"
+        }
+    }
 
     $clsid = Get-ItemProperty "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$CLSID_VBOX\InprocServer32" -ErrorAction SilentlyContinue
     if ($clsid) { Write-Info "CLSID InprocServer32 : $($clsid.'(default)')" }

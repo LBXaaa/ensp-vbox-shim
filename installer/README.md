@@ -164,7 +164,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Check
 - **CPU / VT-x** —— 固件虚拟化开关状态、VMX 扩展可用性。启用 Hyper-V/WSL 时固件项通常显示"未启用",此为 hypervisor 接管所致。
 - **Hyper-V / WHP / 内存完整性(HVCI)/ 虚拟机平台** —— 任一项启用时,VBox 7.x 使用 WHP 后端运行。eNSP 原配的 VBox 5 与 Hyper-V 冲突,无法启动;7.x 通过 WHP 与 Hyper-V/WSL/WSA 共存,代价是设备启动时间增加(单台 3–5 分钟)。此为后端差异,不是故障,无需关闭 Hyper-V。
 - **x86 VCRT** —— `VBox\x86\` 下 `VCRUNTIME140.dll` / `MSVCP140.dll` 的存在性。缺失时产生 `0x800700C1`,进而导致 error 40;安装步骤会补入这两个文件。
-- **版本伪装** —— 注册表 `Oracle\VirtualBox\Version` 的当前值。
+- **版本伪装** —— 注册表 `Oracle\VirtualBox` 的 `Version` 与 `VersionExt` 的当前值。
 
 该快照同时写入安装日志 `%ProgramData%\ensp-vbox-shim\install.log`。
 
@@ -179,7 +179,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -EnspDir "D:\Program Files\
 ## 安装执行的操作
 
 1. **部署垫片 DLL** —— 将 `payload\VBox52.dll` 写入 eNSP 树的四个加载位置:`tools\`、`vboxserver\`、eNSP 根目录、`plugin\ngfw\tools\ngfw\`。每个位置先比对哈希:一致则跳过;不一致则备份原文件为 `.orig.bak` 后覆盖。
-2. **写入版本伪装** —— 将 `HKLM\SOFTWARE\Oracle\VirtualBox` 的 `Version` 值改为 `5.2.44`(64 位视图与 WOW6432Node 视图均写入)。eNSP 启动时读取该值,检测到 7.x 时拒绝运行。
+2. **写入版本伪装** —— 将 `HKLM\SOFTWARE\Oracle\VirtualBox` 的 `Version` 与 `VersionExt` 都改为 `5.2.44`(64 位视图与 WOW6432Node 视图均写入)。eNSP 启动时读的是 `VersionExt`(以 `KEY_WOW64_64KEY` 打开键,即 64 位视图),版本不在 4.2–5.2 内时拒绝运行。该值**不带构建号**:eNSP 读 `VersionExt` 时复用了 `InstallDir` 的缓冲区长度,一旦比 `InstallDir` 长就会读失败,报「未安装 VirtualBox」。
 3. **重定向 CLSID InprocServer32** —— 将 `CLSID\{B1A7A4F2-...}\InprocServer32` 的默认值指向 `tools\VBox52.dll` 的实际路径。路径按 eNSP 安装位置生成。
 4. **覆盖 AR 插件** —— 以 `payload\VAR_Plugin.dll`(预构建补丁版)覆盖 `plugin\ar1000v\VAR_Plugin.dll`,原文件备份为 `.orig.bak`。不在运行时执行字节补丁。
 5. **部署 x86 VC++ 运行时** —— 将 `VCRUNTIME140.dll` / `MSVCP140.dll` 写入 VirtualBox 的 `x86\` 子目录。
@@ -229,7 +229,7 @@ VirtualBox 安装器将该 CLSID 恢复为 Oracle 原生的 proxy/stub。其余�
 
 **窗口中文乱码** —— `.bat` 按 GBK + `chcp 936` 编码。出现乱码通常表示文件被其他编辑器另存修改了编码。
 
-**安装后 eNSP 仍报版本错误** —— 运行 `-Check`,确认注册表 `Version` 为 `5.2.44`、CLSID 指向 `tools` 下的 DLL。
+**安装后 eNSP 仍报版本错误** —— 运行 `-Check`,确认注册表 `Version` 与 `VersionExt` 均为 `5.2.44`、CLSID 指向 `tools` 下的 DLL。若 eNSP 反过来报「未安装 VirtualBox」,检查 `VersionExt` 是否比 `InstallDir` 长。
 
 **设备启动耗时 3–5 分钟** —— 后端差异,非卡死。本机启用 WSL2/Hyper-V 时,VirtualBox 7.x 无法使用 VT-x 硬件加速,运行在 Hyper-V 之上,启动时间增加。
 
