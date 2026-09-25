@@ -1760,6 +1760,10 @@ try {
     if ($pk.DllPresent) {
         Write-Fact "版本 / 产品" ($pk.Version + "   " + $pk.Product)
     }
+    Write-Fact "packet.dll" ($(if ($pk.PacketPresent) { $pk.PacketPath } else { "(不存在)" }))
+    if ($pk.PacketPresent) {
+        Write-Fact "版本" ($pk.PacketVersion + $(if ($pk.PacketParsed) { "" } else { "   (不是版本号,无法比较)" }) + "   (原厂最后一版 4.1.3;4.1.3 的文件版本写作 4.1.0.2980)")
+    }
     Write-Host ("  [" + $(if ($pk.NpfService) { "运行" } else { "  - " }) + "] npf 服务 (WinPcap 的驱动)")
     Write-Host ("  [" + $(if ($pk.NpcapService) { "有  " } else { "  - " }) + "] npcap 服务 (Npcap 的驱动)")
 
@@ -1768,6 +1772,15 @@ try {
         Write-Note "  !! 系统 wpcap.dll 是 Npcap 提供的 —— eNSP 抓包不认它。"
         Write-Note "     而且 Npcap 在装时会让 WinPcap 安装程序报『已有更新版本』而拒绝安装。"
         Write-Note "     修法: 卸载 Npcap(或只保留其独立模式),再把 wpcap.dll 换回 WinPcap 4.1.3。"
+    } elseif ($pk.PacketTooNew) {
+        Write-Host ""
+        Write-Note ("  !! packet.dll 的版本(" + $pk.PacketVersion + ")高于原厂最后一版 WinPcap(4.1.3)。")
+        Write-Note "     原厂 WinPcap 停在 4.1.3,不存在更高版本 —— 报到更高版本的是替代品的兼容层。"
+        Write-Note "     Npcap 勾选 WinPcap API-compatible Mode 安装时,会把自己的 packet.dll 写进系统"
+        Write-Note "     目录并报内部版本 5.1.83.730;Win10Pcap 同类。eNSP 直接 import 的就是这个文件,"
+        Write-Note "     抓包与部分设备的启动会失败。"
+        Write-Note "     修法: 控制面板卸载 Npcap(或 Win10Pcap),再把 WinPcap 4.1.3 装回来。"
+        Write-Note "     装 WinPcap 若报『已有更新版本』,是同一个成因 —— 替代品清掉后即可装上。"
     } elseif ($pk.WinPcapUsable) {
         Write-Note "  WinPcap 就位,eNSP 抓包路径可用。"
         if ($pk.NpcapInstalled) {

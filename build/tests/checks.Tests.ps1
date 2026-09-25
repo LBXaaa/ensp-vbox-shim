@@ -1056,4 +1056,40 @@ Assert-Equal ($regExts | Select-Object -Unique) ($regVers | Select-Object -Uniqu
 # machine, so it could only ever be a hardcoded guess.
 Assert-False (Test-Path (Join-Path $repoRoot "registry\99_uninstall.reg")) "registry: no static uninstall .reg"
 
+# --- packet.dll version ceiling ---------------------------------------------
+# WinPcap's last official release was 4.1.3 and the project is discontinued, so
+# nothing genuine reports above it. Anything that does is a replacement -- in
+# practice Npcap's WinPcap API-compatible mode, which writes its own packet.dll
+# reporting internal version 5.1.83.730, or Win10Pcap.
+#
+# The rule is a CEILING, not an equality: genuine WinPcap 4.1.3 reports the FILE
+# version 4.1.0.2980. Demanding "equals 4.1.3" would flag every healthy machine.
+$rvGood = ClassifyPacketDllVersion -Version "4.1.0.2980"
+Assert-True  $rvGood.Parsed "packet version: genuine WinPcap 4.1.3 parses"
+Assert-False $rvGood.TooNew "packet version: genuine WinPcap is not over the ceiling"
+Assert-False (ClassifyPacketDllVersion -Version "4.0.0.1000").TooNew "packet version: older is fine too"
+$rvNew = ClassifyPacketDllVersion -Version "5.1.83.730"
+Assert-True $rvNew.Parsed "packet version: the Npcap compatibility value parses"
+Assert-True $rvNew.TooNew "packet version: 5.1.83.730 is over the ceiling"
+# Npcap's own wpcap.dll carries this literal as its file version, so an
+# unparseable string must yield no verdict rather than a guess.
+$rvBad = ClassifyPacketDllVersion -Version "PACKAGE_VERSION_DLL"
+Assert-False $rvBad.Parsed "packet version: a non-version string does not parse"
+Assert-False $rvBad.TooNew "packet version: and therefore raises nothing"
+Assert-False (ClassifyPacketDllVersion -Version "").TooNew "packet version: empty raises nothing"
+
+# An over-ceiling packet.dll breaks the capture path, so it has to reach the
+# verdict rather than sitting in the report as a fact nobody reads.
+$dTooNew = ClassifyPacketDriver -WinPcapVersion "4.1.0.2980" -NpcapPresent $false -PacketVersionTooNew $true
+Assert-False $dTooNew.WinPcapUsable "driver: an over-ceiling packet.dll is not usable"
+Assert-True  $dTooNew.PacketVersionTooNew "driver: and the reason is carried through"
+Assert-True  (ClassifyPacketDriver -WinPcapVersion "4.1.0.2980" -NpcapPresent $false).WinPcapUsable `
+    "driver: the new parameter defaults off, so existing callers are unchanged"
+
+# diag must name packet.dll: it is the file eNSP imports and the file the
+# installer's version gate reads, and the report previously named only wpcap.dll.
+Assert-True ($diagText -match 'packet\.dll') "packet dll: diag reports the file eNSP actually imports"
+Assert-True ($diagText -match '4\.1\.3') "packet dll: the ceiling is stated in the report"
+Assert-True ($diagText -match '\$pk\.PacketTooNew') "packet dll: the finding branches on the ceiling"
+
 Complete-TestRun

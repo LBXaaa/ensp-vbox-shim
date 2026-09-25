@@ -615,13 +615,51 @@ function Test-VramTooSmall {
 # sufficient. Presence of Npcap therefore blocks a working capture path even
 # when WinPcap's files are also present.
 function ClassifyPacketDriver {
-    param([string]$WinPcapVersion, [bool]$NpcapPresent)
+    param([string]$WinPcapVersion, [bool]$NpcapPresent, [bool]$PacketVersionTooNew)
     $hasWin = (-not [string]::IsNullOrEmpty($WinPcapVersion))
     return [pscustomobject]@{
-        WinPcapPresent  = $hasWin
-        NpcapPresent    = $NpcapPresent
-        NpcapConflict   = ($NpcapPresent)
-        WinPcapUsable   = ($hasWin -and (-not $NpcapPresent))
+        WinPcapPresent      = $hasWin
+        NpcapPresent        = $NpcapPresent
+        NpcapConflict       = ($NpcapPresent)
+        PacketVersionTooNew = $PacketVersionTooNew
+        WinPcapUsable       = ($hasWin -and (-not $NpcapPresent) -and (-not $PacketVersionTooNew))
+    }
+}
+
+# The last WinPcap Riverbed ever released. The project ceased development and
+# the official download page now recommends Npcap instead, so no genuine
+# WinPcap reports a version above this. Anything that does is a substitute
+# occupying packet.dll.
+$LAST_OFFICIAL_WINPCAP = [version]"4.1.3"
+
+# Is the version on packet.dll above the last official WinPcap?
+#
+# packet.dll -- not wpcap.dll -- is the file that matters here. eNSP imports
+# packet.dll directly, and it is also the file the WinPcap installer reads when
+# it decides "A newer version of WinPcap is already installed" and aborts.
+#
+# A version above 4.1.3 therefore means a substitute. In practice that is Npcap
+# installed in its WinPcap API-compatible mode, which writes its own packet.dll
+# into the system directory carrying a WinPcap-style internal version
+# (documented as 5.1.83.730); Win10Pcap, an NDIS 6 port, lands in the same
+# place. eNSP does not accept either one.
+#
+# The comparison is a CEILING, never an equality. Genuine WinPcap 4.1.3 reports
+# a FILE version of 4.1.0.2980, not 4.1.3 -- a rule of "must equal 4.1.3" would
+# flag every healthy machine. Measured 2026-09-25 on a machine with genuine
+# WinPcap: packet.dll 4.1.0.2980 (under), the documented Npcap value 5.1.83.730
+# (over).
+#
+# An unparseable version yields no verdict rather than a guess: Npcap's own
+# wpcap.dll carries the literal string "PACKAGE_VERSION_DLL" as its file
+# version.
+function ClassifyPacketDllVersion {
+    param([string]$Version)
+    $v = $null
+    $parsed = [version]::TryParse($Version, [ref]$v)
+    return [pscustomobject]@{
+        Parsed = $parsed
+        TooNew = [bool]($parsed -and ($v -gt $LAST_OFFICIAL_WINPCAP))
     }
 }
 
@@ -1143,7 +1181,11 @@ function Get-VBoxServerAclFacts {
 # wpcap.dll, and Npcap sets its own product name even though the file name
 # and exported API are identical.
 function Get-PacketDriverFacts {
+    # Two files, two jobs. wpcap.dll is the libpcap-compatible layer eNSP links
+    # against; packet.dll is the low-level one eNSP imports directly AND the one
+    # whose version decides the ceiling above.
     $dll = Join-Path $env:SystemRoot "SysWOW64\wpcap.dll"
+    $pkt = Join-Path $env:SystemRoot "SysWOW64\packet.dll"
     $version = ""
     $product = ""
     $present = Test-Path $dll
@@ -1155,7 +1197,22 @@ function Get-PacketDriverFacts {
         } catch { }
     }
 
-    # Npcap living in its own subdirectory leaves the system wpcap.dll alone,
+    $pktVersion = ""
+    $pktPresent = Test-Path $pkt
+    if ($pktPresent) {
+        try {
+            $pktVersion = [string]([System.Diagnostics.FileVersionInfo]::GetVersionInfo($pkt)).FileVersion
+        } catch { }
+    }
+    $pv = ClassifyPacketDllVersion -Version $pktVersion
+
+    # Note the gap this leaves: Npcap's OWN wpcap.dll reports ProductName "wpcap",
+# not "Npcap" (measured 2026-09-25 in %WINDIR%\SysWOW64\Npcap\), so Npcap in
+# WinPcap API-compatible mode matches neither branch above -- IsWinPcap is false
+# and IsNpcap is false. That case is caught by the packet.dll version ceiling
+# instead, which is why both checks are needed and neither is redundant.
+#
+# Npcap living in its own subdirectory leaves the system wpcap.dll alone,
     # so the capture path still works. Both the 32- and 64-bit Npcap folders
     # are looked for because Npcap may be installed for one architecture only.
     $npcapDir = (Test-Path (Join-Path $env:SystemRoot "SysWOW64\Npcap")) -or
@@ -1164,15 +1221,22 @@ function Get-PacketDriverFacts {
     $npcapSvc = Get-Service -Name "npcap" -ErrorAction SilentlyContinue
 
     $c = ClassifyPacketDllProduct -Product $product -Present $present
-    # Only a displaced wpcap.dll breaks eNSP, so that alone feeds the verdict.
+    # Two independent ways the capture path breaks: a displaced wpcap.dll, or a
+    # packet.dll reporting a version above the last official WinPcap.
     $r = ClassifyPacketDriver -WinPcapVersion $(if ($c.IsWinPcap) { $version } else { "" }) `
-                              -NpcapPresent $c.IsNpcap
+                              -NpcapPresent $c.IsNpcap `
+                              -PacketVersionTooNew $pv.TooNew
 
     return [pscustomobject]@{
         DllPath         = $dll
         DllPresent      = $present
         Version         = $version
         Product         = $product
+        PacketPath      = $pkt
+        PacketPresent   = $pktPresent
+        PacketVersion   = $pktVersion
+        PacketParsed    = $pv.Parsed
+        PacketTooNew    = $pv.TooNew
         NpfService      = [bool]$npfSvc
         NpcapService    = [bool]$npcapSvc
         # Any form of Npcap being present, reported so the reader can see why
