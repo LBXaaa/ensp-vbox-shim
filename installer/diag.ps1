@@ -2020,11 +2020,16 @@ try {
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")) {
         if (-not (Test-Path $root)) { continue }
-        $hit = Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-            if ($p.DisplayName -like "*eNSP*" -and $p.DisplayVersion) { $p.DisplayVersion }
-        } | Select-Object -First 1
-        if ($hit) { $enspVersion = $hit; break }
+        foreach ($k in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+            # This caller reads DisplayVersion, which is not in the helper's
+            # default set -- so it names the values it wants. Reading a field
+            # the helper never asked for would silently yield $null.
+            $p = Get-UninstallEntry -Key $k.PSPath -Names @("DisplayName", "DisplayVersion")
+            if ($p -and $p.DisplayName -like "*eNSP*" -and $p.DisplayVersion) {
+                $enspVersion = $p.DisplayVersion; break
+            }
+        }
+        if ($enspVersion) { break }
     }
     $enspVersionKnown = [bool]$enspVersion
     Write-Fact "eNSP 版本" $(if ($enspVersionKnown) { $enspVersion } else { "unknown" })
