@@ -1092,4 +1092,71 @@ Assert-True ($diagText -match 'packet\.dll') "packet dll: diag reports the file 
 Assert-True ($diagText -match '4\.1\.3') "packet dll: the ceiling is stated in the report"
 Assert-True ($diagText -match '\$pk\.PacketTooNew') "packet dll: the finding branches on the ceiling"
 
+# The two standalone scripts are read for the same reason: a helper they borrow
+# has to exist in them, and a file that failed to load would make every
+# Assert-True below pass for the wrong reason.
+$cleanupPath  = Join-Path $repoRoot "installer\cleanup_orphans.ps1"
+$registerPath = Join-Path $repoRoot "installer\register_vms.ps1"
+$cleanupText  = ""
+$registerText = ""
+if (Test-Path $cleanupPath)  { $cleanupText  = Get-Content -Path $cleanupPath  -Raw }
+if (Test-Path $registerPath) { $registerText = Get-Content -Path $registerPath -Raw }
+Assert-True ($cleanupText.Length  -gt 500) "uninstall read: cleanup_orphans.ps1 was actually read"
+Assert-True ($registerText.Length -gt 500) "uninstall read: register_vms.ps1 was actually read"
+
+# --- Uninstall subkey reads must not bare-read the whole key ---------------
+# Measured 2026-10-07 on a user machine: one Uninstall subkey held a value whose
+# data will not cast to a .NET type, so the bare read threw InvalidCastException
+# even WITH -ErrorAction SilentlyContinue attached (the provider reports its own
+# errors as records, but the cast failure is raised by the .NET property adapter,
+# past the point where the cmdlet handles them). install.ps1 sets
+# $ErrorActionPreference = "Stop", so the install died there and exited 1 without
+# deploying anything.
+#
+# The fix has two halves and both are asserted: -Name so the bad value is never
+# touched, and try/catch so the read cannot fail even if it is.
+$uninstallReaders = @{
+    "installer\checks.ps1"          = $checksText
+    "installer\cleanup_orphans.ps1" = $cleanupText
+    "installer\register_vms.ps1"    = $registerText
+    "installer\diag.ps1"            = $diagText
+}
+foreach ($kv in $uninstallReaders.GetEnumerator()) {
+    Assert-True ($kv.Value -match "Get-UninstallEntry") ($kv.Key + ": goes through the defensive reader")
+}
+
+# A bare read of an Uninstall subkey is what caused the failure, so none of the
+# four may reintroduce it. A named read names the values it wants; that is the
+# whole difference.
+$bareUninstall = "Get-ItemProperty[^\r\n]*\$_.PSPath\s*\r?\n"
+foreach ($kv in $uninstallReaders.GetEnumerator()) {
+    Assert-False ($kv.Value -match $bareUninstall) ($kv.Key + ": no bare Get-ItemProperty on an Uninstall subkey")
+}
+Assert-True ($checksText -match "-Name \$Names") "uninstall read: the reader names the values instead of reading the whole key"
+Assert-True ($checksText -match "function Get-UninstallEntry") "the defensive reader is defined"
+
+# The helper returns only the values it was asked for. A caller reading a
+# DIFFERENT property off its result gets $null -- silently, because $null is a
+# valid answer. That regression shipped once already: diag.ps1 read
+# $p.DisplayVersion off a helper whose default set is DisplayName +
+# InstallLocation, so the eNSP version line read "unknown" on every machine.
+$q = [regex]::Escape([char]34)
+$defaultNamesRe = '\$Names = @\(' + $q + 'DisplayName' + $q + ', ' + $q + 'InstallLocation' + $q + '\)'
+Assert-True ($diagText -match ("-Names @\(" + $q + "DisplayName" + $q + ", " + $q + "DisplayVersion" + $q)) "uninstall read: diag.ps1 asks for DisplayVersion, the value it reads"
+Assert-True ($checksText -match $defaultNamesRe) "the defensive reader defaults to the two values the directory lookups need"
+# The standalone scripts do not dot-source checks.ps1, so a helper they borrow
+# must exist in them too -- otherwise the call fails at runtime and the script
+# dies exactly like the original bug did.
+foreach ($kv in @{ "installer\cleanup_orphans.ps1" = $cleanupText; "installer\register_vms.ps1" = $registerText }.GetEnumerator()) {
+    Assert-True ($kv.Value -match "function Get-UninstallEntry") ($kv.Key + ": carries its own copy, since it does not load checks.ps1")
+}
+
+# foreach rather than a ForEach-Object pipeline: a throw inside the pipeline
+# abandons the remaining subkeys, so one bad key would hide every good one
+# enumerated after it.
+$pipeShape = "Get-ChildItem[^\r\n]*\|\s*ForEach-Object\s*\{[^}]*Get-UninstallEntry"
+foreach ($kv in $uninstallReaders.GetEnumerator()) {
+    Assert-False ($kv.Value -match $pipeShape) ($kv.Key + ": the uninstall loop is not a ForEach-Object pipeline")
+}
+
 Complete-TestRun
