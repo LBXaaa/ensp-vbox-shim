@@ -27,7 +27,11 @@ $ErrorActionPreference = "Continue"
 
 function Find-VBoxManage {
     foreach ($k in @("HKLM:\SOFTWARE\Oracle\VirtualBox", "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox")) {
-        $d = (Get-ItemProperty $k -ErrorAction SilentlyContinue).InstallDir
+        # Named read + try/catch, matching checks.ps1 Find-VBoxDir: the same key,
+        # read the same way. Left alone it would drift the moment that one changes.
+        $p = $null
+        try { $p = Get-ItemProperty $k -Name InstallDir -ErrorAction SilentlyContinue } catch { }
+        $d = if ($p) { $p.InstallDir } else { $null }
         if ($d) {
             $p = Join-Path $d "VBoxManage.exe"
             if (Test-Path $p) { return $p }
@@ -40,6 +44,34 @@ function Find-VBoxManage {
     return $null
 }
 
+# Read one Uninstall subkey, defensively.
+#
+# -Name, because a bare Get-ItemProperty materialises EVERY value under the key.
+# These subkeys belong to other vendors, and one of them holding a value whose
+# data will not cast to a .NET type is enough to fail the whole read. We need two
+# named values; asking for two named values leaves the rest of the key untouched.
+#
+# try/catch, because -ErrorAction does NOT cover that failure: SilentlyContinue
+# suppresses what the registry provider itself reports (missing key, access
+# denial), while the cast failure is raised by the .NET property adapter while it
+# enumerates values -- past the point where the cmdlet turns errors into records.
+# Measured 2026-10-07 on a user machine: install.ps1, which sets
+# $ErrorActionPreference = "Stop", died there and exited 1 before deploying
+# anything. $null skips that one subkey, which is right: it belongs to some other
+# product and says nothing about eNSP.
+#
+# This script is standalone -- it does not dot-source checks.ps1 -- so the helper
+# is defined here too. checks.ps1 carries the same function for the callers that
+# do load it.
+function Get-UninstallEntry {
+    param([string]$Key, [string[]]$Names = @("DisplayName", "InstallLocation"))
+    try {
+        return Get-ItemProperty -Path $Key -Name $Names -ErrorAction SilentlyContinue
+    } catch {
+        return $null
+    }
+}
+
 function Find-EnspDir {
     $keys = @("HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
               "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
@@ -47,8 +79,8 @@ function Find-EnspDir {
     # 函数会继续跑,结果被重复追加(eNSP 目录曾因此出现两次)。
     foreach ($k in $keys) {
         foreach ($it in (Get-ChildItem $k -ErrorAction SilentlyContinue)) {
-            $p = Get-ItemProperty $it.PSPath -ErrorAction SilentlyContinue
-            if ($p.DisplayName -like "*eNSP*" -and $p.InstallLocation) {
+            $p = Get-UninstallEntry -Key $it.PSPath
+            if ($p -and $p.DisplayName -like "*eNSP*" -and $p.InstallLocation) {
                 if (Test-Path (Join-Path $p.InstallLocation "tools")) { return $p.InstallLocation.TrimEnd('\') }
             }
         }

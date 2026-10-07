@@ -44,6 +44,34 @@ function Write-Info($m){ Write-Host "  [..] $m" -ForegroundColor Gray }
 function Write-Warn($m){ Write-Host "  [!!] $m" -ForegroundColor Yellow }
 function Write-Err($m) { Write-Host "  [XX] $m" -ForegroundColor Red }
 
+# Read one Uninstall subkey, defensively.
+#
+# -Name, because a bare Get-ItemProperty materialises EVERY value under the key.
+# These subkeys belong to other vendors, and one of them holding a value whose
+# data will not cast to a .NET type is enough to fail the whole read. We need two
+# named values; asking for two named values leaves the rest of the key untouched.
+#
+# try/catch, because -ErrorAction does NOT cover that failure: SilentlyContinue
+# suppresses what the registry provider itself reports (missing key, access
+# denial), while the cast failure is raised by the .NET property adapter while it
+# enumerates values -- past the point where the cmdlet turns errors into records.
+# Measured 2026-10-07 on a user machine: install.ps1, which sets
+# $ErrorActionPreference = "Stop", died there and exited 1 before deploying
+# anything. $null skips that one subkey, which is right: it belongs to some other
+# product and says nothing about eNSP.
+#
+# This script is standalone -- it does not dot-source checks.ps1 -- so the helper
+# is defined here too. checks.ps1 carries the same function for the callers that
+# do load it.
+function Get-UninstallEntry {
+    param([string]$Key, [string[]]$Names = @("DisplayName", "InstallLocation"))
+    try {
+        return Get-ItemProperty -Path $Key -Name $Names -ErrorAction SilentlyContinue
+    } catch {
+        return $null
+    }
+}
+
 function Find-EnspDir([string]$Override){
     if($Override){
         if(Test-Path (Join-Path $Override "vboxserver")){ return $Override.TrimEnd('\') }
@@ -54,11 +82,14 @@ function Find-EnspDir([string]$Override){
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
     foreach($r in $roots){
         if(-not(Test-Path $r)){ continue }
-        $hit=Get-ChildItem $r -ErrorAction SilentlyContinue | ForEach-Object {
-            $p=Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-            if($p.DisplayName -like "*eNSP*" -and $p.InstallLocation){ $p.InstallLocation }
-        } | Where-Object { $_ -and (Test-Path (Join-Path $_ "vboxserver")) } | Select-Object -First 1
-        if($hit){ return $hit.TrimEnd('\') }
+        # foreach rather than a pipeline: a throw inside ForEach-Object would
+        # abandon the remaining subkeys, hiding every good one after the bad one.
+        foreach($k in @(Get-ChildItem $r -ErrorAction SilentlyContinue)){
+            $p=Get-UninstallEntry -Key $k.PSPath
+            if($p -and $p.DisplayName -like "*eNSP*" -and $p.InstallLocation){
+                if(Test-Path (Join-Path $p.InstallLocation "vboxserver")){ return $p.InstallLocation.TrimEnd('\') }
+            }
+        }
     }
     foreach($d in @((Join-Path ${env:ProgramFiles(x86)} "Huawei\eNSP"),(Join-Path $env:ProgramFiles "Huawei\eNSP"))){
         if($d -and (Test-Path (Join-Path $d "vboxserver"))){ return $d.TrimEnd('\') }
@@ -72,8 +103,9 @@ function Find-VBoxManage([string]$Override){
     else{
         foreach($k in @("HKLM:\SOFTWARE\Oracle\VirtualBox","HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox")){
             if(-not(Test-Path $k)){ continue }
-            $p=Get-ItemProperty $k -ErrorAction SilentlyContinue
-            if($p.InstallDir -and (Test-Path $p.InstallDir)){ $dir=$p.InstallDir.TrimEnd('\'); break }
+            $p=$null
+            try{ $p=Get-ItemProperty $k -Name InstallDir -ErrorAction SilentlyContinue }catch{ }
+            if($p -and $p.InstallDir -and (Test-Path $p.InstallDir)){ $dir=$p.InstallDir.TrimEnd('\'); break }
         }
         if(-not $dir){ $def=Join-Path $env:ProgramFiles "Oracle\VirtualBox"; if(Test-Path $def){ $dir=$def } }
     }
