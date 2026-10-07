@@ -24,6 +24,41 @@
 #
 # $null rather than "" for the not-found case, so a caller can test the
 # result directly instead of guessing which empty value it got.
+
+# Reading an Uninstall subkey takes two precautions, and both are load-bearing.
+
+# 1. -Name, because a bare Get-ItemProperty materialises EVERY value under the
+#    key. These subkeys belong to other vendors, and one of them holding a value
+#    whose data will not cast to a .NET type is enough to fail the whole read.
+#    We need two named values; asking for two named values leaves the rest of
+#    the key untouched.
+
+# 2. try/catch, because -ErrorAction does NOT cover this failure. SilentlyContinue
+#    suppresses what the registry provider itself reports (a missing key, an
+#    access denial). The cast failure is raised by the .NET property adapter
+#    while it enumerates values, which is past the point where the cmdlet turns
+#    errors into records. Measured 2026-10-07 on a user machine: a bare read
+#    printed "InvalidCastException" WITH -ErrorAction SilentlyContinue attached,
+#    and install.ps1 -- which sets $ErrorActionPreference = "Stop" -- died there,
+#    exiting 1 before deploying anything.
+
+# $null skips that one subkey, which is exactly right: it belongs to some other
+# product and says nothing about eNSP.
+#
+# -Names defaults to the two this lookup normally needs; a caller wanting a
+# different value passes it. Naming the values is the point -- a caller that
+# added a field by switching back to a bare read would reintroduce the crash,
+# and one that added it to the default would make every other caller read a
+# value it does not use.
+function Get-UninstallEntry {
+    param([string]$Key, [string[]]$Names = @("DisplayName", "InstallLocation"))
+    try {
+        return Get-ItemProperty -Path $Key -Name $Names -ErrorAction SilentlyContinue
+    } catch {
+        return $null
+    }
+}
+
 function Find-EnspDir {
     param([string]$Override)
     if ($Override) {
@@ -37,11 +72,15 @@ function Find-EnspDir {
     )
     foreach ($root in $uninstRoots) {
         if (-not (Test-Path $root)) { continue }
-        $hit = Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-            if ($p.DisplayName -like "*eNSP*" -and $p.InstallLocation) { $p.InstallLocation }
-        } | Where-Object { $_ -and (Test-Path (Join-Path $_ "tools")) } | Select-Object -First 1
-        if ($hit) { return $hit.TrimEnd('\') }
+        # foreach + continue rather than a ForEach-Object pipeline: a throw inside
+        # the pipeline abandons the remaining subkeys, so one bad key would hide
+        # every good one after it.
+        foreach ($k in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+            $p = Get-UninstallEntry -Key $k.PSPath
+            if ($p -and $p.DisplayName -like "*eNSP*" -and $p.InstallLocation) {
+                if (Test-Path (Join-Path $p.InstallLocation "tools")) { return $p.InstallLocation.TrimEnd('\') }
+            }
+        }
     }
     # 2) default install locations
     $defaults = @(
@@ -72,8 +111,12 @@ function Find-VBoxDir {
     )
     foreach ($k in $keys) {
         if (-not (Test-Path $k)) { continue }
-        $p = Get-ItemProperty $k -ErrorAction SilentlyContinue
-        if ($p.InstallDir -and (Test-Path $p.InstallDir)) { return $p.InstallDir.TrimEnd('\') }
+        # Named read plus try/catch, same reasoning as Get-UninstallEntry: this
+        # key is Oracle's, but the version spoof and a Repair both rewrite
+        # it, and a read that cannot fail is worth more than the microseconds.
+        $p = $null
+        try { $p = Get-ItemProperty $k -Name InstallDir -ErrorAction SilentlyContinue } catch { }
+        if ($p -and $p.InstallDir -and (Test-Path $p.InstallDir)) { return $p.InstallDir.TrimEnd('\') }
     }
     $def = Join-Path $env:ProgramFiles "Oracle\VirtualBox"
     if (Test-Path $def) { return $def.TrimEnd('\') }
