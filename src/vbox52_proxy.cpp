@@ -663,15 +663,40 @@ static void ngfw_take_link_snapshot(const wchar_t* base) {
     if (!cpw) { DBG("[lazyreg] snapshot: no CreateProcessW"); return; }
 
     // VBoxManage location: registry first, then the default install path.
+    //
+    // BOTH registry views are read, 64-bit first. A 32-bit process asking for
+    // KEY_READ alone is served from WOW6432Node, and Oracle's installer writes
+    // InstallDir to the 64-bit view -- so that read returns nothing, the lookup
+    // falls through to the default path below, and on a machine where
+    // VirtualBox lives anywhere else the snapshot is silently never taken.
+    // Measured 2026-09-25 on a user machine: VirtualBox in D:\VirtualBox,
+    // and the log read
+    //   [lazyreg] snapshot: VBoxManage not found at C:\Program Files\...
+    // The USG6000V then failed every start with error 40 while the environment
+    // report stayed green -- vfw_usg is the one base VM whose _Link snapshot
+    // nothing else creates, so no other check notices it is missing.
+    //
+    // eNSP opens this same key with KEY_WOW64_64KEY (0x101); this now matches.
+    // The 32-bit view is still tried, because which view Oracle's installer
+    // writes is not guaranteed across versions.
     wchar_t vbm[MAX_PATH] = L"C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe";
-    HKEY hk = NULL;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Oracle\\VirtualBox", 0, KEY_READ, &hk) == ERROR_SUCCESS) {
+    static const REGSAM kViews[2] = {
+        KEY_READ | KEY_WOW64_64KEY,
+        KEY_READ | KEY_WOW64_32KEY,
+    };
+    for (int view = 0; view < 2; ++view) {
+        HKEY hk = NULL;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Oracle\\VirtualBox",
+                          0, kViews[view], &hk) != ERROR_SUCCESS) {
+            continue;
+        }
         wchar_t dir[MAX_PATH] = {0}; DWORD cb = sizeof(dir); DWORD type = 0;
         if (RegQueryValueExW(hk, L"InstallDir", NULL, &type, (BYTE*)dir, &cb) == ERROR_SUCCESS && dir[0]) {
             _snwprintf(vbm, MAX_PATH, L"%sVBoxManage.exe", dir);
             vbm[MAX_PATH-1] = 0;
         }
         RegCloseKey(hk);
+        if (GetFileAttributesW(vbm) != INVALID_FILE_ATTRIBUTES) { break; }
     }
     if (GetFileAttributesW(vbm) == INVALID_FILE_ATTRIBUTES) {
         DBG("[lazyreg] snapshot: VBoxManage not found at %S", vbm);
