@@ -1433,6 +1433,23 @@ try {
             Write-Fact "VBox 网络名" $i.VBoxNetworkName 20
             $ifNames += $i.Name
         }
+
+        # 多块 host-only 适配器是一个已知陷阱:VM 是按【名字】绑的
+        # (hostonlyadapterN="VirtualBox Host-Only Ethernet Adapter"),而 Windows/VBox
+        # 允许同时存在多块同名适配器 —— 客机可能被挂到没有 192.168.56.1 的那一块上,
+        # 永远够不到宿主。现象是进度条走不完,与「补丁打错」无法区分。
+        # 2026-10-10 实测:某机有两块(第二块叫 ...Adapter #2、IP 192.168.23.1),
+        # 而报告全绿 —— 因为当时没有任何一处数过它们。
+        # 只报告,不改网络(与 install.ps1 的 Write-EnvReportHostOnly 同一判据)。
+        if ($ifs.Count -gt 1) {
+            Write-Host ""
+            Write-Note ("  !! 存在 " + $ifs.Count + " 块 host-only 适配器。VM 按名字绑,名字重复时")
+            Write-Note "     选哪块不确定 —— 客机可能挂到没有 192.168.56.1 的那块上,永远够不到宿主。"
+            Write-Note "     设备表现为进度条走不完,与「补丁打错」无法区分。"
+            Write-Note "     修法: VBoxManage list hostonlyifs 看有几块、名字分别是什么;"
+            Write-Note '           多余的那块用 VBoxManage hostonlyif remove "<名字>" 删除。'
+            Write-Note "           该命令只认名字不认 GUID,同名时多删几次并逐次核对。"
+        }
     }
 } catch {
     Write-Fail "第 3 层" $_.Exception.Message

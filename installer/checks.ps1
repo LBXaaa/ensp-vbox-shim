@@ -806,19 +806,41 @@ function Get-EnspServerPortsInUse {
 # None of the three is checked by anything else in this file, and (1)+(2) are
 # the ones that actually broke on 2026-09-16.
 
-# The five base VMs eNSP link-clones from. The directory name under
-# vboxserver\ is also the VM name, which is what makes the join below possible
-# without asking VirtualBox anything.
+# The base VMs eNSP link-clones from. Each entry carries its own directory,
+# because they do not all live under vboxserver\: vfw_usg (USG6000V) sits
+# in the plugin tree. The directory name is also the VM name, which is what
+# makes the join below possible without asking VirtualBox anything.
+#
+# vfw_usg is listed even though its device package may not be installed. A
+# missing directory reads as "package not installed, skipped", and the summary
+# filters on DirPresent, so its absence raises nothing. Leaving it out was the
+# bug: it is the one base VM whose _Link snapshot nothing else creates -- the
+# shim's lazy registration is the only thing that takes it -- so when that
+# snapshot went missing no check said so, and the USG failed every start with
+# error 40 against an all-green report. Measured 2026-09-25.
 function Get-BaseVmDirs {
     param(
         [string]$EnspDir,
-        [string[]]$BaseVms = @("AR_Base", "WLAN_AC_Base", "WLAN_AD_Base", "WLAN_AP_Base", "WLAN_SAP_Base")
+        [array]$BaseVms
     )
+    if (-not $BaseVms) {
+        $BaseVms = @(
+            @{ Name = "AR_Base";      Rel = "vboxserver\AR_Base" },
+            @{ Name = "WLAN_AC_Base"; Rel = "vboxserver\WLAN_AC_Base" },
+            @{ Name = "WLAN_AD_Base"; Rel = "vboxserver\WLAN_AD_Base" },
+            @{ Name = "WLAN_AP_Base"; Rel = "vboxserver\WLAN_AP_Base" },
+            @{ Name = "WLAN_SAP_Base"; Rel = "vboxserver\WLAN_SAP_Base" },
+            @{ Name = "vfw_usg";      Rel = "plugin\ngfw\tools\ngfw" }
+        )
+    }
     $items = @()
     if (-not $EnspDir) { return $items }
-    $root = Join-Path $EnspDir "vboxserver"
-    foreach ($vm in $BaseVms) {
-        $dir = Join-Path $root $vm
+    foreach ($spec in $BaseVms) {
+        # A bare string still means "under vboxserver\", so a caller wanting
+        # only a subset can keep passing names.
+        if ($spec -is [string]) { $vm = $spec; $rel = Join-Path "vboxserver" $spec }
+        else                    { $vm = $spec.Name; $rel = $spec.Rel }
+        $dir = Join-Path $EnspDir $rel
         $present = Test-Path $dir
         $vboxFile = ""
         if ($present) {

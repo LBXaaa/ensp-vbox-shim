@@ -35,8 +35,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# eNSP 的 5 个基础设备 VM(vboxserver 下的目录名即 VM 名)
-$BASE_VMS = @("AR_Base","WLAN_AC_Base","WLAN_AD_Base","WLAN_AP_Base","WLAN_SAP_Base")
+# eNSP 的基础设备 VM。每项自带目录 —— 它们不全在 vboxserver\ 下:
+# vfw_usg(USG6000V)在插件树里。目录名即 VM 名。
+#
+# vfw_usg 也列在这里,虽然设备包可能没导入 —— 目录不存在时下面打印
+# 「无此目录,跳过」,不会误报。原来漏掉它:它是唯一一个 _Link 快照没有别的
+# 东西负责创建的基础 VM(只有垫片的惰性注册会建),所以那份快照缺失时没有任何
+# 检查会说话,USG 每次启动报 40 而环境报告全绿。2026-09-25 实测。
+$BASE_VMS = @(
+    @{ Name="AR_Base";       Rel="vboxserver\AR_Base" },
+    @{ Name="WLAN_AC_Base";  Rel="vboxserver\WLAN_AC_Base" },
+    @{ Name="WLAN_AD_Base";  Rel="vboxserver\WLAN_AD_Base" },
+    @{ Name="WLAN_AP_Base";  Rel="vboxserver\WLAN_AP_Base" },
+    @{ Name="WLAN_SAP_Base"; Rel="vboxserver\WLAN_SAP_Base" },
+    @{ Name="vfw_usg";       Rel="plugin\ngfw\tools\ngfw" }
+)
 
 function Write-Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Write-OK($m)  { Write-Host "  [OK] $m" -ForegroundColor Green }
@@ -260,7 +273,6 @@ $ensp=Find-EnspDir $EnspDir
 if(-not $ensp){ Write-Err "未能定位 eNSP 安装目录。请用 -EnspDir 手动指定。"; exit 1 }
 $vbm=Find-VBoxManage $VBoxDir
 if(-not $vbm){ Write-Err "未能定位 VBoxManage.exe。请用 -VBoxDir 手动指定。"; exit 1 }
-$vbsrv=Join-Path $ensp "vboxserver"
 
 Write-Host "eNSP       : $ensp"
 Write-Host "VBoxManage : $vbm"
@@ -288,8 +300,9 @@ function Reconcile-Snapshot([string]$vm){
     }
 }
 
-foreach($vm in $BASE_VMS){
-    $dir=Join-Path $vbsrv $vm
+foreach($spec in $BASE_VMS){
+    $vm=$spec.Name
+    $dir=Join-Path $ensp $spec.Rel
     if(-not(Test-Path $dir)){ Write-Info "$vm : 无此目录,跳过(未装该设备包)"; $miss++; continue }
     if($running.ContainsKey($vm)){ Write-Warn "$vm : 正在运行,跳过(请先在 eNSP/VBox 里关掉再跑本脚本)"; $skiprun++; continue }
 

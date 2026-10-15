@@ -1159,4 +1159,34 @@ foreach ($kv in $uninstallReaders.GetEnumerator()) {
     Assert-False ($kv.Value -match $pipeShape) ($kv.Key + ": the uninstall loop is not a ForEach-Object pipeline")
 }
 
+# --- vfw_usg must be in the base-VM sweep -----------------------------------
+# It is the one base VM whose _Link snapshot nothing else creates -- the shim's lazy
+# registration is the only thing that takes it. Leaving it out of both sweeps
+# is why a missing snapshot produced an all-green report while the USG failed
+# every start with error 40. Measured 2026-09-25.
+$bogus = "C:\__no_such_ensp__"
+$specs = @(Get-BaseVmDirs -EnspDir $bogus)
+Assert-Equal $specs.Count 6 "base vms: six entries are swept, not five"
+$fw = @($specs | Where-Object { $_.Name -eq "vfw_usg" })
+Assert-Equal $fw.Count 1 "base vms: vfw_usg is swept"
+Assert-Match $fw[0].Dir "plugin\\ngfw\\tools\\ngfw$" "base vms: vfw_usg resolves to the plugin tree"
+Assert-Equal (@($specs | Where-Object { $_.Name -eq "AR_Base" })).Count 1 "base vms: AR_Base still swept"
+Assert-Match (@($specs | Where-Object { $_.Name -eq "AR_Base" })[0].Dir) "vboxserver\\AR_Base$" "base vms: AR_Base stays under vboxserver"
+
+# A caller passing bare names keeps working -- the old shape must not break.
+$subset = @(Get-BaseVmDirs -EnspDir $bogus -BaseVms @("AR_Base"))
+Assert-Equal $subset.Count 1 "base vms: a bare-name list is still accepted"
+Assert-Equal $subset[0].Name "AR_Base" "base vms: and resolves the name"
+
+# The repair path must sweep the same set, or the advice the report prints
+# ("run register_vms.ps1") names a script that cannot fix what it pointed at.
+Assert-True ($registerText -match "vfw_usg") "register_vms: sweeps vfw_usg too"
+Assert-True ($registerText -match "Rel=") "register_vms: uses per-VM directories"
+
+# Layer 3 must count the adapters. Several same-named host-only adapters let a
+# guest land on one without 192.168.56.1 and never reach the host; the report
+# stayed green on 2026-10-10 because nothing counted them.
+Assert-True ($diagText -match '\$ifs\.Count -gt 1') "hostonly: layer 3 counts the adapters"
+Assert-True ($diagText -match "hostonlyif remove") "hostonly: and names the removal command"
+
 Complete-TestRun
