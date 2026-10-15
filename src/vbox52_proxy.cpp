@@ -666,24 +666,33 @@ static void ngfw_take_link_snapshot(const wchar_t* base) {
     //
     // BOTH registry views are read, 64-bit first. A 32-bit process asking for
     // KEY_READ alone is served from WOW6432Node, and Oracle's installer writes
-    // InstallDir to the 64-bit view -- so that read returns nothing, the lookup
-    // falls through to the default path below, and on a machine where
-    // VirtualBox lives anywhere else the snapshot is silently never taken.
-    // Measured 2026-09-25 on a user machine: VirtualBox in D:\VirtualBox,
-    // and the log read
+    // InstallDir to the 64-bit view -- so that read returned nothing, the lookup
+    // fell through to the default path below, and on a machine where VirtualBox
+    // lives anywhere else the snapshot was silently never taken. Measured
+    // 2026-09-25 on a user machine: VirtualBox in D:\VirtualBox, and the log
+    // read
     //   [lazyreg] snapshot: VBoxManage not found at C:\Program Files\...
     // The USG6000V then failed every start with error 40 while the environment
     // report stayed green -- vfw_usg is the one base VM whose _Link snapshot
     // nothing else creates, so no other check notices it is missing.
     //
-    // eNSP opens this same key with KEY_WOW64_64KEY (0x101); this now matches.
-    // The 32-bit view is still tried, because which view Oracle's installer
-    // writes is not guaranteed across versions.
-    wchar_t vbm[MAX_PATH] = L"C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe";
+    // eNSP opens this same key with KEY_QUERY_VALUE|KEY_WOW64_64KEY (0x101).
+    // KEY_WOW64_64KEY on its own is 0x100; what this uses is
+    // KEY_READ|KEY_WOW64_64KEY (0x20119). Named so nobody "fixes" the code to
+    // match a constant it never used. The 32-bit view is still tried, because
+    // which view Oracle's installer writes is not guaranteed across versions.
+    //
+    // A candidate that fails the existence check is DISCARDED rather than
+    // carried into the next iteration: carrying it lets a stale InstallDir in
+    // one view shadow the default below, which is the same silent failure this
+    // block exists to fix, approached from the other side.
+    static const wchar_t kDefaultVbm[] =
+        L"C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe";
     static const REGSAM kViews[2] = {
         KEY_READ | KEY_WOW64_64KEY,
         KEY_READ | KEY_WOW64_32KEY,
     };
+    wchar_t vbm[MAX_PATH] = {0};
     for (int view = 0; view < 2; ++view) {
         HKEY hk = NULL;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Oracle\\VirtualBox",
@@ -691,12 +700,29 @@ static void ngfw_take_link_snapshot(const wchar_t* base) {
             continue;
         }
         wchar_t dir[MAX_PATH] = {0}; DWORD cb = sizeof(dir); DWORD type = 0;
-        if (RegQueryValueExW(hk, L"InstallDir", NULL, &type, (BYTE*)dir, &cb) == ERROR_SUCCESS && dir[0]) {
-            _snwprintf(vbm, MAX_PATH, L"%sVBoxManage.exe", dir);
-            vbm[MAX_PATH-1] = 0;
-        }
+        LONG qr = RegQueryValueExW(hk, L"InstallDir", NULL, &type, (BYTE*)dir, &cb);
         RegCloseKey(hk);
+        if (qr != ERROR_SUCCESS || dir[0] == 0) { continue; }
+        // Some installers write this as REG_EXPAND_SZ. Using the literal would
+        // fail the existence check on a path that is really there.
+        if (type == REG_EXPAND_SZ) {
+            wchar_t ex[MAX_PATH] = {0};
+            DWORD need = ExpandEnvironmentStringsW(dir, ex, MAX_PATH);
+            if (need == 0 || need > MAX_PATH || ex[0] == 0) { continue; }
+            for (int i = 0; i < MAX_PATH; ++i) { dir[i] = ex[i]; if (ex[i] == 0) { break; } }
+        }
+        // InstallDir may or may not carry its trailing separator.
+        size_t n = 0;
+        while (n + 1 < MAX_PATH && dir[n] != 0) { ++n; }
+        const wchar_t* sep = (n > 0 && (dir[n - 1] == L'\\' || dir[n - 1] == L'/')) ? L"" : L"\\";
+        _snwprintf(vbm, MAX_PATH, L"%s%sVBoxManage.exe", dir, sep);
+        vbm[MAX_PATH - 1] = 0;
         if (GetFileAttributesW(vbm) != INVALID_FILE_ATTRIBUTES) { break; }
+        vbm[0] = 0;
+    }
+    if (vbm[0] == 0) {
+        for (int i = 0; i + 1 < MAX_PATH && kDefaultVbm[i] != 0; ++i) { vbm[i] = kDefaultVbm[i]; }
+        vbm[MAX_PATH - 1] = 0;
     }
     if (GetFileAttributesW(vbm) == INVALID_FILE_ATTRIBUTES) {
         DBG("[lazyreg] snapshot: VBoxManage not found at %S", vbm);
