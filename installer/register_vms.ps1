@@ -35,20 +35,30 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# eNSP 的基础设备 VM。每项自带目录 —— 它们不全在 vboxserver\ 下:
-# vfw_usg(USG6000V)在插件树里。目录名即 VM 名。
+# eNSP 的基础设备 VM。
 #
-# vfw_usg 也列在这里,虽然设备包可能没导入 —— 目录不存在时下面打印
-# 「无此目录,跳过」,不会误报。原来漏掉它:它是唯一一个 _Link 快照没有别的
-# 东西负责创建的基础 VM(只有垫片的惰性注册会建),所以那份快照缺失时没有任何
-# 检查会说话,USG 每次启动报 40 而环境报告全绿。2026-09-25 实测。
+# vfw_usg(USG6000V)与其余五台有两处不同,都在下面的逻辑里体现:
+#   1. 它在插件树里,不在 vboxserver\ 下;
+#   2. 它的设备包(.vdi)要用户自己导入,而 .vbox **模板随 eNSP 出厂就在** ——
+#      "目录存在"说明不了设备包导没导入,唯一诚实的判据是镜像在不在。
+#      diag.ps1 判断 CE / CX 用的就是同一个判据。
+#
+# 设备包没导入时不能注册它:那会留下一台没有镜像、也建不出 _Link 快照的 VM,
+# 而插件 FUN_1000eb40 的第一分支是"设备已存在则短路返回"——该短路假设快照已
+# 就位,于是用户日后导入设备包时插件反而跳过补快照那一步,USG 再也起不来
+# (docs/golden-vbox52-reference.md 9.2)。
+#
+# v0.2.1 少了这道门,装过的机器上可能留着这么一台。下面按「注册项应与设备包
+# 一致」这条不变量收尾:没导入却注册了、且没有快照的,注销掉恢复原状;有快照
+# 的不动 —— 那可能是导入过又删了镜像,不该毁掉还能用的东西。
 $BASE_VMS = @(
     @{ Name="AR_Base";       Rel="vboxserver\AR_Base" },
     @{ Name="WLAN_AC_Base";  Rel="vboxserver\WLAN_AC_Base" },
     @{ Name="WLAN_AD_Base";  Rel="vboxserver\WLAN_AD_Base" },
     @{ Name="WLAN_AP_Base";  Rel="vboxserver\WLAN_AP_Base" },
     @{ Name="WLAN_SAP_Base"; Rel="vboxserver\WLAN_SAP_Base" },
-    @{ Name="vfw_usg";       Rel="plugin\ngfw\tools\ngfw" }
+    @{ Name="vfw_usg";       Rel="plugin\ngfw\tools\ngfw";
+       Requires="plugin\ngfw\Database\vfw_usg.vdi" }
 )
 
 function Write-Step($m){ Write-Host "`n==> $m" -ForegroundColor Cyan }
@@ -283,7 +293,7 @@ $srcmap=Get-UuidSrcMap
 $running=Get-RunningVMs $vbm
 
 Write-Step $(if($Check){"检测(只看,不改动)"}else{"注册 / 重注册基础设备 VM"})
-$reg=0; $rereg=0; $skiprun=0; $miss=0; $snapMade=0; $snapWarn=0
+$reg=0; $rereg=0; $skiprun=0; $miss=0; $snapMade=0; $snapWarn=0; $orphan=0
 
 # 注册成功后调用:确保基础盘有 <VM>_Link 快照(eNSP 链接克隆所必需),缺则补建。
 # 更新 $script:snapMade / $script:snapWarn 计数。
@@ -304,6 +314,23 @@ foreach($spec in $BASE_VMS){
     $vm=$spec.Name
     $dir=Join-Path $ensp $spec.Rel
     if(-not(Test-Path $dir)){ Write-Info "$vm : 无此目录,跳过(未装该设备包)"; $miss++; continue }
+
+    # 设备包没导入 —— 只可能发生在 vfw_usg 上。什么都不注册。
+    if($spec.Requires -and -not(Test-Path (Join-Path $ensp $spec.Requires))){
+        if(-not $uuids.ContainsKey($vm)){
+            Write-Info "$vm : 未导入设备包,跳过"
+        } elseif(Has-Snapshot $vbm $vm "${vm}_Link"){
+            Write-Info "$vm : 未导入设备包,但已有快照,保留不动"
+        } elseif($Check){
+            Write-Info "$vm : 未导入设备包却已注册(无快照)-> 将【注销】"; $orphan++
+        } else {
+            $u=& $vbm unregistervm "$vm" 2>&1
+            if($LASTEXITCODE -eq 0){ Write-OK "$vm : 未导入设备包 -> 已注销(不带 --delete,不动磁盘)"; $orphan++ }
+            else{ Write-Warn "$vm : 未导入设备包,注销失败:$u" }
+        }
+        continue
+    }
+
     if($running.ContainsKey($vm)){ Write-Warn "$vm : 正在运行,跳过(请先在 eNSP/VBox 里关掉再跑本脚本)"; $skiprun++; continue }
 
     $isReg=$uuids.ContainsKey($vm)
@@ -352,9 +379,9 @@ Write-Step "当前已注册的 VM"
 & $vbm list vms 2>$null | Where-Object { $_ -match '\S' } | ForEach-Object { Write-Host "  $_" }
 
 Write-Host ""
-if($Check){ Write-Host "检测完成:待注册 $reg,待重注册 $rereg,待补建快照 $snapMade,缺快照告警 $snapWarn,运行中跳过 $skiprun,缺目录/无配置 $miss。" -ForegroundColor Green }
+if($Check){ Write-Host "检测完成:待注册 $reg,待重注册 $rereg,待补建快照 $snapMade,缺快照告警 $snapWarn,运行中跳过 $skiprun,缺目录/无配置 $miss,待注销残留 $orphan。" -ForegroundColor Green }
 else{
     $color = if($snapWarn -gt 0){"Yellow"}else{"Green"}
-    Write-Host "完成:新注册 $reg,重注册 $rereg,补建快照 $snapMade,缺快照告警 $snapWarn,运行中跳过 $skiprun,缺目录/无配置 $miss。" -ForegroundColor $color
+    Write-Host "完成:新注册 $reg,重注册 $rereg,补建快照 $snapMade,缺快照告警 $snapWarn,运行中跳过 $skiprun,缺目录/无配置 $miss,注销残留 $orphan。" -ForegroundColor $color
 }
 Write-Host "撤销某台:VBoxManage unregistervm `"<VM名>`"(不加 --delete 不会动磁盘)。" -ForegroundColor Gray
