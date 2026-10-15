@@ -1170,65 +1170,44 @@ foreach ($kv in $uninstallReaders.GetEnumerator()) {
     Assert-False ($kv.Value -match $pipeShape) ($kv.Key + ": the uninstall loop is not a ForEach-Object pipeline")
 }
 
-# --- vfw_usg must be in the base-VM sweep -----------------------------------
+# --- vfw_usg is NOT swept with the other base VMs ---------------------------
 # It is the one base VM whose _Link snapshot nothing else creates -- the shim's lazy
-# registration is the only thing that takes it. Leaving it out of both sweeps
-# is why a missing snapshot produced an all-green report while the USG failed
-# every start with error 40. Measured 2026-09-25.
+# registration is the only thing that takes it -- so a missing snapshot has to
+# be reported somewhere. But it does not belong in Get-BaseVmDirs.
+#
+# Its base is written by the NGFW plugin the first time a user starts a USG, and
+# the registration is the shim's job. At install time that base does not exist
+# yet -- the folder holds only the TEMPLATE that ships with eNSP -- so a sweep
+# including it can only register the template, then fail to make a snapshot.
+# That is the exact state the plugin's "device already exists" short circuit
+# assumes it will never see (docs/golden-vbox52-reference.md 9.2).
+#
+# The check that IS wanted looks at the failure state directly: registered, but
+# no _Link snapshot. Registered means the plugin already ran.
 $bogus = "C:\__no_such_ensp__"
 $specs = @(Get-BaseVmDirs -EnspDir $bogus)
-Assert-Equal $specs.Count 6 "base vms: six entries are swept, not five"
-$fw = @($specs | Where-Object { $_.Name -eq "vfw_usg" })
-Assert-Equal $fw.Count 1 "base vms: vfw_usg is swept"
-Assert-Match $fw[0].Dir "plugin\\ngfw\\tools\\ngfw$" "base vms: vfw_usg resolves to the plugin tree"
-Assert-Equal (@($specs | Where-Object { $_.Name -eq "AR_Base" })).Count 1 "base vms: AR_Base still swept"
+Assert-Equal $specs.Count 5 "base vms: the five eNSP base VMs are swept"
+Assert-Equal (@($specs | Where-Object { $_.Name -eq "vfw_usg" })).Count 0 ("base vms: vfw_usg is NOT swept" + " -- its base belongs to the plugin")
 Assert-Match (@($specs | Where-Object { $_.Name -eq "AR_Base" })[0].Dir) "vboxserver\\AR_Base$" "base vms: AR_Base stays under vboxserver"
-
-# vfw_usg is gated on its DISK IMAGE, not on its folder.
-#
-# A .vbox TEMPLATE for vfw_usg ships with eNSP, so the folder is there on a
-# fresh install while the 940 MB image is not. A vfw_usg without its image can
-# never start, so reporting it -- or registering it -- is a false alarm on every
-# machine that does not use the firewall. v0.2.1 shipped without this gate and
-# registered the VM anyway, leaving a base VM with no disk and no _Link
-# snapshot: exactly the state the plugin's "device already exists" short circuit
-# assumes it will never see (docs/golden-vbox52-reference.md 9.2).
-$tmp = Join-Path ([IO.Path]::GetTempPath()) ("bvd_" + [Guid]::NewGuid().ToString("N"))
-$fwDir = Join-Path $tmp "plugin\ngfw\tools\ngfw"
-$null = New-Item -ItemType Directory -Path $fwDir -Force
-$null = New-Item -ItemType Directory -Path (Join-Path $tmp "plugin\ngfw\Database") -Force
-Set-Content -Path (Join-Path $fwDir "vfw_usg_for_vbox5.0.vbox") -Value '<Machine name="vfw_usg" />'
-
-$noImg = @(Get-BaseVmDirs -EnspDir $tmp)
-$fwNo  = @($noImg | Where-Object { $_.Name -eq "vfw_usg" })[0]
-Assert-True  (Test-Path $fwNo.Dir)  "base vms: the template folder really is there"
-Assert-False $fwNo.DirPresent       "base vms: folder without image => not reported"
-
-Set-Content -Path (Join-Path $tmp "plugin\ngfw\Database\vfw_usg.vdi") -Value "x"
-$withImg = @(Get-BaseVmDirs -EnspDir $tmp)
-$fwYes   = @($withImg | Where-Object { $_.Name -eq "vfw_usg" })[0]
-Assert-True $fwYes.DirPresent "base vms: image present => reported"
-
-Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-
-# register_vms.ps1 needs the same gate, or it registers a VM that cannot run.
-Assert-True ($registerText -match "vfw_usg") "register_vms: still sweeps vfw_usg"
-Assert-True ($registerText -match "Requires") "register_vms: only via the package gate"
-Assert-True ($registerText -match "Database\\vfw_usg\.vdi") "register_vms: gated on the disk image"
-# An already-registered vfw_usg with no image and no snapshot is v0.2.1 leftover;
-# it has to be cleaned up, or importing the package later hits the short circuit.
-Assert-True ($registerText -match "unregistervm") "register_vms: can undo the leftover"
-Assert-True ($registerText -match "Has-Snapshot") "register_vms: and spares one that has a snapshot"
 
 # A caller passing bare names keeps working -- the old shape must not break.
 $subset = @(Get-BaseVmDirs -EnspDir $bogus -BaseVms @("AR_Base"))
 Assert-Equal $subset.Count 1 "base vms: a bare-name list is still accepted"
 Assert-Equal $subset[0].Name "AR_Base" "base vms: and resolves the name"
 
-# The repair path must sweep the same set, or the advice the report prints
-# ("run register_vms.ps1") names a script that cannot fix what it pointed at.
-Assert-True ($registerText -match "vfw_usg") "register_vms: sweeps vfw_usg too"
-Assert-True ($registerText -match "Rel=") "register_vms: uses per-VM directories"
+# register_vms.ps1 must not touch it either: registering needs a base that does
+# not exist at install time, and the repair for a half-registered one is a
+# SNAPSHOT, not a registration.
+Assert-False ($registerText -match "vfw_usg") "register_vms: leaves vfw_usg alone"
+
+# The diagnostic looks at the failure state instead.
+Assert-True ($diagText -match "FwUsg") "vfw_usg: diag probes it separately"
+Assert-True ($diagText -match "vfw_usg_Link") "vfw_usg: and checks for the link snapshot"
+Assert-True ($diagText -match 'Id\s*=\s*"fwvm"') "vfw_usg: the finding reaches the plan"
+Assert-True ($diagText -match 'VBoxManage snapshot "vfw_usg" take') "vfw_usg: with the exact command"
+# Registered is what licenses the check: no registration means the plugin never
+# ran, so there is nothing to say about it.
+Assert-True ($diagText -match '\$regVms\.ContainsKey') "vfw_usg: gated on being registered at all"
 
 # Layer 3 must count the adapters. Several same-named host-only adapters let a
 # guest land on one without 192.168.56.1 and never reach the host; the report

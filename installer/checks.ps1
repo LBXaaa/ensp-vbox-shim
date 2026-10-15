@@ -806,52 +806,20 @@ function Get-EnspServerPortsInUse {
 # None of the three is checked by anything else in this file, and (1)+(2) are
 # the ones that actually broke on 2026-09-16.
 
-# The base VMs eNSP link-clones from. Each entry carries its own directory,
-# because they do not all live under vboxserver\: vfw_usg (USG6000V) sits
-# in the plugin tree. The directory name is also the VM name, which is what
-# makes the join below possible without asking VirtualBox anything.
-#
-# vfw_usg also carries Requires -- its disk image. The .vbox TEMPLATE ships
-# with eNSP and is present on a fresh install, so the directory existing says
-# NOTHING about whether the user ever imported the device package; the image is
-# the only honest signal. Without it the VM cannot run, and reporting it as a
-# missing base VM would be a false alarm on every machine that does not use the
-# firewall. diag.ps1 already gates the CE / CX packages the same way, and
-# register_vms.ps1 uses this same path to decide whether to touch vfw_usg.
-#
-# It is listed at all because it is the one base VM whose _Link snapshot nothing
-# else creates -- the shim's lazy registration is the only thing that takes it --
-# so when that snapshot went missing no check said so and the USG failed every
-# start with error 40 against an all-green report. Measured 2026-09-25.
+# The five base VMs eNSP link-clones from. The directory name under
+# vboxserver\ is also the VM name, which is what makes the join below possible
+# without asking VirtualBox anything.
 function Get-BaseVmDirs {
     param(
         [string]$EnspDir,
-        [array]$BaseVms
+        [string[]]$BaseVms = @("AR_Base", "WLAN_AC_Base", "WLAN_AD_Base", "WLAN_AP_Base", "WLAN_SAP_Base")
     )
-    if (-not $BaseVms) {
-        $BaseVms = @(
-            @{ Name = "AR_Base";      Rel = "vboxserver\AR_Base" },
-            @{ Name = "WLAN_AC_Base"; Rel = "vboxserver\WLAN_AC_Base" },
-            @{ Name = "WLAN_AD_Base"; Rel = "vboxserver\WLAN_AD_Base" },
-            @{ Name = "WLAN_AP_Base"; Rel = "vboxserver\WLAN_AP_Base" },
-            @{ Name = "WLAN_SAP_Base"; Rel = "vboxserver\WLAN_SAP_Base" },
-            @{ Name = "vfw_usg";      Rel = "plugin\ngfw\tools\ngfw";
-               Requires = "plugin\ngfw\Database\vfw_usg.vdi" }
-        )
-    }
     $items = @()
     if (-not $EnspDir) { return $items }
-    foreach ($spec in $BaseVms) {
-        # A bare string still means "under vboxserver\", so a caller wanting
-        # only a subset can keep passing names.
-        if ($spec -is [string]) { $vm = $spec; $rel = Join-Path "vboxserver" $spec; $req = "" }
-        else                    { $vm = $spec.Name; $rel = $spec.Rel; $req = $spec.Requires }
-        $dir = Join-Path $EnspDir $rel
-        # DirPresent answers "should this base VM be reported on", not "is the
-        # folder there" -- a vfw_usg whose package was never imported exists on
-        # disk but can never run, and flagging it would be a false alarm.
+    $root = Join-Path $EnspDir "vboxserver"
+    foreach ($vm in $BaseVms) {
+        $dir = Join-Path $root $vm
         $present = Test-Path $dir
-        if ($present -and $req) { $present = Test-Path (Join-Path $EnspDir $req) }
         $vboxFile = ""
         if ($present) {
             $vboxFile = Find-MachineConfig -Dir $dir

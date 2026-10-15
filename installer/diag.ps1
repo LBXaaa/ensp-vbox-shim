@@ -636,6 +636,37 @@ function Get-RepairFindings {
         }
     } catch { }
 
+    # --- vfw_usg 缺 _Link 快照 -------------------------------------------------
+    #
+    # 不并进 basemvms:那一项走 register_vms.ps1,而它【不碰】vfw_usg —— 那台的
+    # base 归插件、注册归垫片,安装期还没有东西可供注册。这里要做的只是补一个
+    # 快照,与"重注册基础 VM"是两回事,合成一项会让证据和修法对不上。
+    #
+    # 归 manual 档而不是 lossless:补快照要连上当前账户的 VBoxSVC,而本工具
+    # 只读采集、不代跑 VBoxManage 写操作。报告里给出确切命令即可。
+    try {
+        if ($EnspDir) {
+            $fwSheet = Get-BaseVmFactSheet -EnspDir $EnspDir -VBoxManage $vboxManage
+            if ($fwSheet.FwUsg -and $fwSheet.FwUsg.Registered -and (-not $fwSheet.FwUsg.LinkSnapshot)) {
+                $items += [pscustomobject]@{
+                    Id       = "fwvm"
+                    Tier     = "manual"
+                    Title    = "vfw_usg 已注册但缺 _Link 快照"
+                    Symptom  = "USG6000V 每次启动都报 40,而报告的其余各节全绿"
+                    Evidence = "vfw_usg 在已注册列表里,但查不到 vfw_usg_Link 快照"
+                    Impact   = @()
+                    Steps    = @()
+                    Manual   = @(
+                        "在 VirtualBox 安装目录下执行:"
+                        '     VBoxManage snapshot "vfw_usg" take "vfw_usg_Link"'
+                        "要求 vfw_usg 处于关机状态;poweroff 与 aborted 都满足,running 不满足。"
+                        "补完后 USG6000V 即可正常克隆启动。"
+                    )
+                }
+            }
+        }
+    } catch { }
+
     # --- eNSP 关闭后残留的 VirtualBox 进程 -----------------------------------
     #
     # 只在【eNSP 已关】且【确有属于 eNSP 的 VM 还在跑】时才提供。用户自己从
@@ -1906,6 +1937,8 @@ function Get-BaseVmFactSheet {
         ProbeErrors = @()
         XmlPath     = ""
         XmlPresent  = $false
+        # vfw_usg 单独一项,理由见它下面那段注释。
+        FwUsg       = $null
     }
     if (-not $EnspDir) { $script:BaseVmSheet = $sheet; return $sheet }
 
@@ -1947,6 +1980,26 @@ function Get-BaseVmFactSheet {
         if (-not (Test-LinkSnapshotPresent -SnapshotNames $snaps -VmName $b.Name)) {
             $stProbe = Invoke-Probe -Exe $VBoxManage -Arguments @("showvminfo", $b.Name, "--machinereadable")
             if ($stProbe.Ok) { $vmStates[$b.Name] = Parse-VmState -Lines $stProbe.Lines }
+        }
+    }
+
+    # vfw_usg 不跟那五台一起清点。它的 base 由插件在用户第一次启动 USG 时写出,
+# 注册由垫片代劳 —— 安装期它甚至还不存在,那时报它缺注册是假警。
+#
+# 但有一种状态只有这里看得见:【已注册,却没有 _Link 快照】。那说明垫片的惰性
+# 注册只做成了一半,而插件 FUN_1000eb40 一旦看到"设备已存在"就短路返回、不会再
+# 补 —— USG6000V 从此每次启动都报 40,而报告其余各节全绿。
+# (docs/golden-vbox52-reference.md 9.2)
+#
+# 判据只取"已注册"这一件事:没注册 = 这台机器还没用过 USG = 无话可说。
+    if ($regVms.ContainsKey("vfw_usg")) {
+        $fwProbe = Invoke-Probe -Exe $VBoxManage -Arguments @("snapshot", "vfw_usg", "list", "--machinereadable")
+        $fwSnaps = @()
+        if ($fwProbe.Ok) { $fwSnaps = @(Parse-VBoxSnapshotList -Lines $fwProbe.Lines) }
+        else { $sheet.ProbeErrors += ("vfw_usg snapshot list: " + $fwProbe.Error) }
+        $sheet.FwUsg = [pscustomobject]@{
+            Registered   = $true
+            LinkSnapshot = [bool](Test-LinkSnapshotPresent -SnapshotNames $fwSnaps -VmName "vfw_usg")
         }
     }
 
@@ -2013,9 +2066,22 @@ try {
             }
         }
 
+        # vfw_usg:base 由插件写、注册由垫片代劳,安装期还不存在,所以不在上面
+        # 那份清点里。这里只报一种状态 —— 已注册却没有 _Link 快照。
+        $fwBad = $false
+        if ($sheet.FwUsg -and $sheet.FwUsg.Registered) {
+            Write-Host "  * vfw_usg"
+            if ($sheet.FwUsg.LinkSnapshot) {
+                Write-Host "      [ OK ] _Link 快照: 有"
+            } else {
+                Write-Host "      [ !! ] _Link 快照: 缺   (垫片的惰性注册只做成了一半)"
+                $fwBad = $true
+            }
+        }
+
         $badReg  = @($vmFacts | Where-Object { $_.DirPresent -and ((-not $_.Registered) -or (-not $_.PathValid)) })
         $badSnap = @($vmFacts | Where-Object { $_.DirPresent -and $_.Registered -and (-not $_.LinkSnapshot) })
-        if (($badReg.Count -gt 0) -or ($badSnap.Count -gt 0)) {
+        if (($badReg.Count -gt 0) -or ($badSnap.Count -gt 0) -or $fwBad) {
             Write-Host ""
             Write-Note "  !! 上面标 !! 的项会让对应设备一拉就报 40,而垫片日志里看不出异常。"
             Write-Note "     修法: 双击 注册设备.bat —— 它按需重注册并补建缺失的 _Link 快照,"
