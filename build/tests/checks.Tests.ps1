@@ -1,4 +1,15 @@
 # Requires: . build/tests/harness.ps1 ; . installer/checks.ps1
+
+# Stop on error, so a broken assertion cannot pass unnoticed.
+#
+# Assert-* receive their condition as an ARGUMENT. If evaluating that argument
+# throws, the function is never entered, no counter moves, and the run still
+# prints "ALL PASS" -- the assertion simply vanishes. Measured twice: a
+# double-quoted -match pattern with an interpolated $Names left a dangling
+# backslash, and that assertion was silently skipped for two rounds while the
+# suite reported success. A terminating error here is loud and exits non-zero,
+# which is what a broken assertion deserves.
+$ErrorActionPreference = "Stop"
 Write-Host "=== Task 1: VBoxDrvInst list parser ==="
 
 $healthy = Get-Content (Get-TestDataPath "vboxdrvinst_healthy.txt")
@@ -1132,7 +1143,7 @@ $bareUninstall = "Get-ItemProperty[^\r\n]*\$_.PSPath\s*\r?\n"
 foreach ($kv in $uninstallReaders.GetEnumerator()) {
     Assert-False ($kv.Value -match $bareUninstall) ($kv.Key + ": no bare Get-ItemProperty on an Uninstall subkey")
 }
-Assert-True ($checksText -match "-Name \$Names") "uninstall read: the reader names the values instead of reading the whole key"
+Assert-True ($checksText -match '-Name \$Names') "uninstall read: the reader names the values instead of reading the whole key"
 Assert-True ($checksText -match "function Get-UninstallEntry") "the defensive reader is defined"
 
 # The helper returns only the values it was asked for. A caller reading a
@@ -1188,5 +1199,34 @@ Assert-True ($registerText -match "Rel=") "register_vms: uses per-VM directories
 # stayed green on 2026-10-10 because nothing counted them.
 Assert-True ($diagText -match '\$ifs\.Count -gt 1') "hostonly: layer 3 counts the adapters"
 Assert-True ($diagText -match "hostonlyif remove") "hostonly: and names the removal command"
+
+# --- the VBox version gate must compare the MINOR version -------------------
+# The shim asks VirtualBox for IVirtualBox by IID, and 7.0 VBoxSVC does not
+# implement it: CoCreateInstance returns REGDB_E_CLASSNOTREG, the shim hands
+# eNSP a null object, and devices fail with "error 43". Measured 2026-10-08 on
+# a machine running 7.0.8, whose MAJOR version is 7 -- so the old major-only
+# gate passed it and the install went ahead into a guaranteed failure.
+$verFns = ""
+foreach ($fn in "Get-VBoxVersionString", "Test-VBoxVersionTooOld") {
+    $m = [regex]::Match($allText, "(?s)function $fn \{.*?\r?\n\}")
+    if ($m.Success) { $verFns += $m.Value + "`r`n" }
+}
+Assert-True ($verFns.Length -gt 200) "vbox version: both functions were extracted"
+. ([scriptblock]::Create($verFns))
+
+Assert-Equal (Get-VBoxVersionString -Lines @("7.2.16r174877")) "7.2.16" "vbox version: parses the real output"
+Assert-Equal (Get-VBoxVersionString -Lines @("7.0.8r156879")) "7.0.8" "vbox version: parses 7.0.8"
+Assert-False (Test-VBoxVersionTooOld -Version "7.2.16") "vbox version: 7.2.16 is new enough"
+Assert-True  (Test-VBoxVersionTooOld -Version "7.0.8")  "vbox version: 7.0.8 is too old"
+Assert-True  (Test-VBoxVersionTooOld -Version "7.1.0")  "vbox version: 7.1.0 is too old"
+Assert-True  (Test-VBoxVersionTooOld -Version "6.1.50") "vbox version: 6.x is too old"
+Assert-False (Test-VBoxVersionTooOld -Version "7.2.0")  "vbox version: 7.2.0 is new enough"
+# No version string means no verdict -- refusing to answer beats guessing.
+Assert-True ($null -eq (Test-VBoxVersionTooOld -Version "")) "vbox version: an unparseable string yields no verdict"
+# A release-log preamble must not be mistaken for the version.
+Assert-Equal (Get-VBoxVersionString -Lines @("Log opened 2026-10-08T09:00:00Z", "7.0.8r156879")) "7.0.8" "vbox version: finds the version line, not the log timestamp"
+# The old gate is gone.
+Assert-False ($allText -match '\[int\]\$VBoxMajor') "vbox version: the major-only comparison is gone"
+Assert-True  ($allText -match "VBoxTooOld") "vbox version: the gate uses the minor-aware verdict"
 
 Complete-TestRun

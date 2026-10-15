@@ -124,7 +124,7 @@ function Invoke-ReadOnlyProbe {
     }
 }
 
-# 纯解析:从命令输出里取 VBox 主版本号。
+# 纯解析:从命令输出里取 VirtualBox 的真实版本号,形如 "7.2.16"。
 #
 # 只取真实版本,绝不读注册表 —— 注册表的 Version 就是本垫片伪装改写的那个值,
 # 装过垫片的机器上它是 5.2.x,拿它判定会把每台正常机器都拦下。VBoxManage
@@ -134,13 +134,32 @@ function Invoke-ReadOnlyProbe {
 # 逐行锚定行首匹配 "N.N",所以带 release log 的输出里 "Log opened 2026-09-16T..."
 # 与 "OS Release: 10.0.29667.1000" 都不会被误取(两者行首都不是数字)。取不到
 # 返回 $null —— "无法确定"不是缺陷,由调用方决定怎么说。
-function Get-VBoxMajorVersion {
+function Get-VBoxVersionString {
     param([string[]]$Lines)
     foreach ($l in @($Lines)) {
-        $m = [regex]::Match("$l", '^\s*(\d+)\.(\d+)')
-        if ($m.Success) { return [int]$m.Groups[1].Value }
+        $m = [regex]::Match("$l", '^\s*(\d+)\.(\d+)(?:\.(\d+))?')
+        if ($m.Success) { return $m.Value }
     }
     return $null
+}
+
+# 垫片需要 7.2 或更新 —— 判据是小版本,不只是主版本。
+#
+# 垫片按 IID 向 VirtualBox 要 IVirtualBox,而 7.0 的 VBoxSVC 不实现那个接口:
+# CoCreateInstance 返回 REGDB_E_CLASSNOTREG (0x80004002),垫片把空对象交给 eNSP,
+# 设备报「错误 43 / 虚拟机初始化失败」。2026-10-08 一位用户正是 7.0.8 —— 并从
+# 7.0.8 安装包里的 VBoxSVC 二进制核对过:里面一个 IVirtualBox 的 IID 都没有,
+# 而 7.2.16 的有三处。
+#
+# 原来只比主版本,而 7.0.8 的主版本就是 7,于是放行。README 一直写的是
+# 「VirtualBox 7.2.x」,这里让检查与它一致。
+function Test-VBoxVersionTooOld {
+    param([string]$Version)
+    $m = [regex]::Match("$Version", '^(\d+)\.(\d+)')
+    if (-not $m.Success) { return $null }
+    $maj = [int]$m.Groups[1].Value
+    $min = [int]$m.Groups[2].Value
+    return (($maj -lt 7) -or (($maj -eq 7) -and ($min -lt 2)))
 }
 
 function Test-CurrentProcessElevated {
@@ -192,7 +211,7 @@ function Get-PreInstallFacts {
 
     # 驱动与版本都要跑 VBox 目录里的程序,定位不到就都留 $null(无法判定)。
     $driver = $null
-    $major  = $null
+    $ver    = $null
     $drvOk  = $false
     if ($vbox) {
         $drvProbe = Invoke-ReadOnlyProbe -Exe (Join-Path $vbox "VBoxDrvInst.exe") -Arguments @("list")
@@ -202,7 +221,7 @@ function Get-PreInstallFacts {
         }
 
         $verProbe = Invoke-ReadOnlyProbe -Exe (Join-Path $vbox "VBoxManage.exe") -Arguments @("--version")
-        if ($verProbe.Ok) { $major = Get-VBoxMajorVersion -Lines $verProbe.Lines }
+        if ($verProbe.Ok) { $ver = Get-VBoxVersionString -Lines $verProbe.Lines }
     }
 
     # 性能计数器:判据是【实跑一次计数器】,不是去看 Perflib 注册表键 —— 那个键
@@ -236,7 +255,8 @@ function Get-PreInstallFacts {
     return [pscustomobject]@{
         EnspDir        = $ensp
         VBoxDir        = $vbox
-        VBoxMajor      = $major
+        VBoxVersion    = $ver
+        VBoxTooOld     = (Test-VBoxVersionTooOld -Version $ver)
         Driver         = $driver
         # 驱动层是否真的判过。取不到值不阻断,但也不能装作查过 —— 干净路径据此多
         # 说一句话(见下方调用点)。
@@ -271,7 +291,7 @@ function New-PreInstallFinding {
 
 # 判据(纯函数):事实进,发现清单出。不采集、不打印、不退出。
 #
-# $Driver / $VBoxMajor / $TargetWritable / $PerfFunctional 为 $null 一律表示
+# $Driver / $VBoxVersion / $VBoxTooOld / $TargetWritable / $PerfFunctional 为 $null 一律表示
 # "取不到、无法判定",不当作缺陷 —— 探测拿不到值就判成有问题,是在凭空制造故障
 # (checks.ps1 的 Test-VramTooSmall 记的是同一条教训)。同理,防火墙读到 0 条
 # ($FirewallRuleCount 为 0)不下结论:它和"读不到"分不开。
@@ -281,7 +301,8 @@ function Get-PreInstallFindings {
     param(
         [string]$EnspDir,
         [string]$VBoxDir,
-        $VBoxMajor,
+        $VBoxVersion,
+        $VBoxTooOld,
         $Driver,
         $TargetWritable,
         $PerfFunctional,
@@ -300,10 +321,10 @@ function Get-PreInstallFindings {
         $found += New-PreInstallFinding -Id "vboxdir" -Tier "report" `
             -Detail "找不到 VirtualBox 安装目录(可用 -VBoxDir 手动指定)"
     }
-    # 垫片面向 7.x;5.2 是 eNSP 原生支持的版本,不需要也不该装本垫片。
-    if ($null -ne $VBoxMajor -and [int]$VBoxMajor -lt 7) {
+    # 垫片面向 7.2 及以上;5.2 是 eNSP 原生支持的版本,不需要也不该装本垫片。
+    if ($VBoxTooOld -eq $true) {
         $found += New-PreInstallFinding -Id "vboxver" -Tier "report" `
-            -Detail "VirtualBox 主版本是 $VBoxMajor,垫片只适用于 7.x"
+            -Detail "VirtualBox $VBoxVersion 太旧 —— 垫片需要 7.2 或更新(7.0/7.1 不提供它要的接口,设备会报「错误 43」)"
     }
     if ($TargetWritable -eq $false) {
         $found += New-PreInstallFinding -Id "writable" -Tier "report" `
@@ -424,7 +445,8 @@ function Invoke-PreInstallCheck {
     Write-Info "正在采集(其中防火墙规则枚举约需数秒)⋯"
     $facts = Get-PreInstallFacts -EnspDir $EnspDir -VBoxDir $VBoxDir
     $found = @(Get-PreInstallFindings -EnspDir $facts.EnspDir -VBoxDir $facts.VBoxDir `
-                                      -VBoxMajor $facts.VBoxMajor `
+                                      -VBoxVersion $facts.VBoxVersion `
+                                      -VBoxTooOld  $facts.VBoxTooOld `
                                       -Driver $facts.Driver `
                                       -TargetWritable $facts.TargetWritable `
                                       -PerfFunctional $facts.PerfFunctional `
@@ -446,7 +468,7 @@ function Invoke-PreInstallCheck {
     if ($found.Count -eq 0) {
         # 干净机器上只说一句通过,不逐条罗列非问题 —— 健康用户不该在这里被拦下问话,
         # 更不该被问到修复。
-        $verText = if ($null -ne $facts.VBoxMajor) { "VBox 主版本 $($facts.VBoxMajor)" } else { "VBox 版本未知" }
+        $verText = if ($facts.VBoxVersion) { "VBox $($facts.VBoxVersion)" } else { "VBox 版本未知" }
         Write-OK "通过:eNSP 与 VirtualBox 均可定位,host-only 驱动齐全,性能计数器与防火墙放行正常,$verText。"
         return [pscustomobject]@{ Plan = @(); Proceed = $true }
     }
