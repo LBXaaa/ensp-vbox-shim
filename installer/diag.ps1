@@ -198,13 +198,13 @@ function Get-HypervisorFacts {
 
     $vbs = $false
     try {
-        $dg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard" -ErrorAction Stop
+        $dg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard" -Name EnableVirtualizationBasedSecurity -ErrorAction Stop
         if ($dg.EnableVirtualizationBasedSecurity -eq 1) { $vbs = $true }
     } catch { }
 
     $hvci = $false
     try {
-        $hv = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -ErrorAction Stop
+        $hv = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name Enabled -ErrorAction Stop
         if ($hv.Enabled -eq 1) { $hvci = $true }
     } catch { }
 
@@ -642,8 +642,10 @@ function Get-RepairFindings {
     # base 归插件、注册归垫片,安装期还没有东西可供注册。这里要做的只是补一个
     # 快照,与"重注册基础 VM"是两回事,合成一项会让证据和修法对不上。
     #
-    # 归 manual 档而不是 lossless:补快照要连上当前账户的 VBoxSVC,而本工具
-    # 只读采集、不代跑 VBoxManage 写操作。报告里给出确切命令即可。
+    # 归 manual 档,不是因为它有损,而是因为【本工具没有对应的修复原语】:
+    # basemvms 那条走 register_vms.ps1,而那个脚本扫的是 vboxserver\ 下五台,
+    # 不碰 vfw_usg。为一件罕见事写一条新的写操作原语不划算 —— 报告里给出确切
+    # 命令,用户照做即可。
     try {
         if ($EnspDir) {
             $fwSheet = Get-BaseVmFactSheet -EnspDir $EnspDir -VBoxManage $vboxManage
@@ -657,6 +659,8 @@ function Get-RepairFindings {
                     Impact   = @()
                     Steps    = @()
                     Manual   = @(
+                        "【必须用平时启动 eNSP 的那个账户运行】—— vfw_usg 注册在那个账户的"
+                        "%USERPROFILE%\.VirtualBox\VirtualBox.xml 里,换了账户会报找不到该 VM。"
                         "在 VirtualBox 安装目录下执行:"
                         '     VBoxManage snapshot "vfw_usg" take "vfw_usg_Link"'
                         "要求 vfw_usg 处于关机状态;poweroff 与 aborted 都满足,running 不满足。"
@@ -1086,7 +1090,7 @@ $vboxVerSeen = $false
 foreach ($k in $vboxVerKeys) {
     try {
         if (-not (Test-Path $k)) { continue }
-        $v = (Get-ItemProperty $k -ErrorAction Stop).Version
+        $v = (Get-ItemProperty $k -Name Version -ErrorAction Stop).Version
         if ($v) {
             Write-Fact "注册表版本" ($v + "   <- " + $k)
             $vboxVerSeen = $true
@@ -1217,7 +1221,9 @@ try {
         foreach ($v in $cj.Views) {
             $vn = "64 位视图"
             if ($v.Name -eq "32") { $vn = "32 位视图" }
-            if (-not $v.Present) {
+            if ($v.Error) {
+                Write-Fail ("CLSID " + $vn) ("读取失败,本视图状态未知 —— " + $v.Error)
+            } elseif (-not $v.Present) {
                 Write-Host ("  [缺失] " + $vn + " : 没有 InprocServer32 项")
             } elseif ($v.PointsAtShim) {
                 Write-Host ("  [ OK  ] " + $vn + " : " + $v.Server)
@@ -1225,7 +1231,10 @@ try {
                 Write-Host ("  [不符] " + $vn + " : " + $v.Server)
             }
         }
-        if (-not $cj.PrimaryShim) {
+        $viewErrs = @($cj.Views | Where-Object { $_.Error })
+        if ($viewErrs.Count -gt 0) {
+            Write-Note "  !! 有视图读不出来,上面那条结论不成立 —— 先解决读取失败再判断。"
+        } elseif (-not $cj.PrimaryShim) {
             Write-Note "  !! eNSP 是 32 位进程,读的正是上面那个 32 位视图。它不指向垫片时,"
             Write-Note "     eNSP 拿到的是 Oracle 的真接口,版本号报 7.x,于是弹那句"
             Write-Note "     「VirtualBox version is not supported.」,设备走不到启动这一步。"
@@ -2084,9 +2093,18 @@ try {
         if (($badReg.Count -gt 0) -or ($badSnap.Count -gt 0) -or $fwBad) {
             Write-Host ""
             Write-Note "  !! 上面标 !! 的项会让对应设备一拉就报 40,而垫片日志里看不出异常。"
-            Write-Note "     修法: 双击 注册设备.bat —— 它按需重注册并补建缺失的 _Link 快照,"
-            Write-Note "     幂等且不删磁盘。补快照要求 VM 没有内存镜像:poweroff 与 aborted"
-            Write-Note "     都满足,running / paused / saved 不满足(那几种状态请先关掉设备)。"
+            if (($badReg.Count -gt 0) -or ($badSnap.Count -gt 0)) {
+                Write-Note "     修法: 双击 注册设备.bat —— 它按需重注册并补建缺失的 _Link 快照,"
+                Write-Note "     幂等且不删磁盘。补快照要求 VM 没有内存镜像:poweroff 与 aborted"
+                Write-Note "     都满足,running / paused / saved 不满足(那几种状态请先关掉设备)。"
+            }
+            if ($fwBad) {
+                # 单独说:注册设备.bat 扫的是 vboxserver\ 下那五台,vfw_usg 的注册由
+                # 垫片代劳。指过去等于给一个修不了它的办法 —— 正是这一项要避免的事。
+                Write-Note "     vfw_usg 不归 注册设备.bat 管 —— 它的注册由垫片代劳,要补的是快照:"
+                Write-Note '         VBoxManage snapshot "vfw_usg" take "vfw_usg_Link"'
+                Write-Note "     第 [9] 节有同一条,含前置条件。"
+            }
         }
     }
 } catch {

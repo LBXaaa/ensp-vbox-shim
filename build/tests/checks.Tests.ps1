@@ -1136,13 +1136,42 @@ foreach ($kv in $uninstallReaders.GetEnumerator()) {
     Assert-True ($kv.Value -match "Get-UninstallEntry") ($kv.Key + ": goes through the defensive reader")
 }
 
-# A bare read of an Uninstall subkey is what caused the failure, so none of the
-# four may reintroduce it. A named read names the values it wants; that is the
-# whole difference.
-$bareUninstall = "Get-ItemProperty[^\r\n]*\$_.PSPath\s*\r?\n"
+# A bare read of ANY key is the shape that caused the failure: it materialises
+# every value under the key, and one foreign-typed value is enough to make the
+# .NET property adapter throw a cast error -ErrorAction cannot suppress. So the
+# invariant is "no bare read anywhere", checked by counting LINES rather than by
+# matching one hand-written shape.
+#
+# The self-test is the part that was missing. The previous version of this check
+# was a regex that could not match anything at all: it required a newline
+# directly after $_.PSPath, and the line it named continued with
+# " -ErrorAction SilentlyContinue", so it demanded the absence of a character
+# that was always present. It reported success for two releases while the bug it
+# named sat in the tree in front of it. A detector that has never matched
+# anything is indistinguishable from one with nothing to match; a self-test
+# against a known-bad sample is what tells them apart.
+#
+# Measured against c4970e8^ (the pre-fix source): checks.ps1 3 bare reads,
+# cleanup_orphans.ps1 2, and the checks.ps1 pipeline detector fires once.
+$knownBare = '            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue'
+$knownBareHit = @(($knownBare -split "\r?\n") | Where-Object { $_ -match 'Get-ItemProperty' -and $_ -notmatch '-Name' }).Count
+Assert-Equal $knownBareHit 1 "bare-read filter: flags a known-bare sample"
+
+$gipLines = @()
 foreach ($kv in $uninstallReaders.GetEnumerator()) {
-    Assert-False ($kv.Value -match $bareUninstall) ($kv.Key + ": no bare Get-ItemProperty on an Uninstall subkey")
+    foreach ($ln in ($kv.Value -split "\r?\n")) {
+        if ($ln -match 'Get-ItemProperty' -and $ln -notmatch '^\s*#') {
+            $gipLines += [pscustomobject]@{ File = $kv.Key; Line = $ln.Trim() }
+        }
+    }
 }
+# Population guard: the filter above is only meaningful if it was handed
+# something. Without this, deleting every Get-ItemProperty from the four files
+# would make the assertion below pass for the wrong reason.
+Assert-True ($gipLines.Count -ge 10) ("bare-read scan: found the calls it exists to judge (found " + $gipLines.Count + ")")
+$bareGip = @($gipLines | Where-Object { $_.Line -notmatch '-Name' })
+$bareGipList = (($bareGip | ForEach-Object { $_.File + " :: " + $_.Line }) -join " | ")
+Assert-Equal $bareGip.Count 0 ("no bare Get-ItemProperty remains: " + $bareGipList)
 Assert-True ($checksText -match '-Name \$Names') "uninstall read: the reader names the values instead of reading the whole key"
 Assert-True ($checksText -match "function Get-UninstallEntry") "the defensive reader is defined"
 
@@ -1162,12 +1191,23 @@ foreach ($kv in @{ "installer\cleanup_orphans.ps1" = $cleanupText; "installer\re
     Assert-True ($kv.Value -match "function Get-UninstallEntry") ($kv.Key + ": carries its own copy, since it does not load checks.ps1")
 }
 
-# foreach rather than a ForEach-Object pipeline: a throw inside the pipeline
-# abandons the remaining subkeys, so one bad key would hide every good one
-# enumerated after it.
-$pipeShape = "Get-ChildItem[^\r\n]*\|\s*ForEach-Object\s*\{[^}]*Get-UninstallEntry"
+# foreach rather than a ForEach-Object pipeline: a script block cannot be
+# abandoned part-way, so a throw inside ForEach-Object abandons the remaining
+# subkeys and one other vendor's bad value hides every entry enumerated after
+# it -- turning a loud crash into a silent wrong answer.
+#
+# Phrased around Get-ItemProperty rather than Get-UninstallEntry on purpose: the
+# pre-fix code called Get-ItemProperty inline in the pipeline body, so a pattern
+# naming the helper matches nothing in the very version this is meant to catch.
+# That is how the previous version of this check was vacuous twice over -- wrong
+# on the adjacency, and named after something the bad version never contained.
+$pipelineRe = 'ForEach-Object\s*\{[\s\S]{0,300}?Get-ItemProperty'
+$knownPipe = "Get-ChildItem `$r | ForEach-Object {`n  `$p = Get-ItemProperty `$_.PSPath -ErrorAction SilentlyContinue`n}"
+$knownPipeHits = ([regex]::Matches($knownPipe, $pipelineRe)).Count
+Assert-Equal $knownPipeHits 1 "pipeline detector: matches a known-bad pipeline sample"
 foreach ($kv in $uninstallReaders.GetEnumerator()) {
-    Assert-False ($kv.Value -match $pipeShape) ($kv.Key + ": the uninstall loop is not a ForEach-Object pipeline")
+    $pipeHits = ([regex]::Matches($kv.Value, $pipelineRe)).Count
+    Assert-Equal $pipeHits 0 ($kv.Key + ": no ForEach-Object body reads the registry")
 }
 
 # --- vfw_usg is NOT swept with the other base VMs ---------------------------
@@ -1231,6 +1271,15 @@ Assert-True ($verFns.Length -gt 200) "vbox version: both functions were extracte
 
 Assert-Equal (Get-VBoxVersionString -Lines @("7.2.16r174877")) "7.2.16" "vbox version: parses the real output"
 Assert-Equal (Get-VBoxVersionString -Lines @("7.0.8r156879")) "7.0.8" "vbox version: parses 7.0.8"
+# The getter and the gate are two halves of one decision, and they disagree
+# about leading whitespace: the getter's pattern allows it, the gate's anchors
+# on ^\d. Feeding the getter's own output to the gate is the invariant, and it
+# is the one the earlier tests missed -- every sample they used had no indent.
+$indentedVer = Get-VBoxVersionString -Lines @("   7.0.8r156879")
+Assert-Equal $indentedVer "7.0.8" "vbox version: leading whitespace is trimmed off the result"
+Assert-True (Test-VBoxVersionTooOld -Version $indentedVer) "vbox version: the parsed value survives the gate (an indented 7.0.8 is still too old)"
+$indentedNew = Get-VBoxVersionString -Lines @("  7.2.16r174877")
+Assert-False (Test-VBoxVersionTooOld -Version $indentedNew) "vbox version: and an indented 7.2.16 still passes"
 Assert-False (Test-VBoxVersionTooOld -Version "7.2.16") "vbox version: 7.2.16 is new enough"
 Assert-True  (Test-VBoxVersionTooOld -Version "7.0.8")  "vbox version: 7.0.8 is too old"
 Assert-True  (Test-VBoxVersionTooOld -Version "7.1.0")  "vbox version: 7.1.0 is too old"

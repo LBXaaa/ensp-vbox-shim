@@ -768,7 +768,7 @@ function Do-Check {
     }
 
     # eNSP 用 KEY_WOW64_64KEY 打开这个键,读的是 64 位视图(全语料 22 处掩码均为 0x101)。
-    $vk = Get-ItemProperty "HKLM:\SOFTWARE\Oracle\VirtualBox" -ErrorAction SilentlyContinue
+    $vk = Get-ItemProperty "HKLM:\SOFTWARE\Oracle\VirtualBox" -Name Version,VersionExt,InstallDir -ErrorAction SilentlyContinue
     if ($vk) {
         Write-Info "注册表 Version/VersionExt : $($vk.Version) / $($vk.VersionExt)  (伪装目标 $SPOOF_VER)"
         if ($vk.InstallDir -and "$($vk.VersionExt)".Length -gt "$($vk.InstallDir)".Length) {
@@ -777,7 +777,7 @@ function Do-Check {
         }
     }
 
-    $clsid = Get-ItemProperty "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$CLSID_VBOX\InprocServer32" -ErrorAction SilentlyContinue
+    $clsid = Get-ItemProperty "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$CLSID_VBOX\InprocServer32" -Name '(default)' -ErrorAction SilentlyContinue
     if ($clsid) { Write-Info "CLSID InprocServer32 : $($clsid.'(default)')" }
 
     $varp = Join-Path $EnspDir "plugin\ar1000v\VAR_Plugin.dll"
@@ -869,7 +869,7 @@ function Write-EnvReportHyperV {
             Write-Info "代价仅是设备启动变慢(单台 3-5 分钟),不是故障,耐心等即可。"
         }
         # 内存完整性(HVCI)也会拉起 hypervisor,同样落到 WHP 后端,行为同上(慢,非故障)。
-        $hvci = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -ErrorAction SilentlyContinue
+        $hvci = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name Enabled -ErrorAction SilentlyContinue
         if ($hvci -and $hvci.Enabled -eq 1) {
             Write-Info "内存完整性(HVCI)已开,同样拉起 hypervisor → 走 WHP 后端(慢,非故障)。"
         }
@@ -949,7 +949,7 @@ function Write-EnvReportSpoof {
         $keys = @("HKLM:\SOFTWARE\Oracle\VirtualBox","HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox")
         $found = $false
         foreach ($k in $keys) {
-            $v = (Get-ItemProperty $k -ErrorAction SilentlyContinue).Version
+            $v = (Get-ItemProperty $k -Name Version -ErrorAction SilentlyContinue).Version
             if ($v) { Write-Info ("版本伪装 : {0} = {1}" -f $k, $v); $found = $true }
         }
         if (-not $found) { Write-Info "版本伪装 : 注册表暂无 Oracle\VirtualBox\Version(安装步骤会写)。" }

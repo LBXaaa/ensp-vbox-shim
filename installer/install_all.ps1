@@ -138,7 +138,12 @@ function Get-VBoxVersionString {
     param([string[]]$Lines)
     foreach ($l in @($Lines)) {
         $m = [regex]::Match("$l", '^\s*(\d+)\.(\d+)(?:\.(\d+))?')
-        if ($m.Success) { return $m.Value }
+        # -.Trim() matters: the pattern above allows leading whitespace, so
+        # $m.Value carries it, and Test-VBoxVersionTooOld anchors on '^\d'.
+        # An indented line therefore produced a version string the gate could not
+        # parse, the gate returned $null, and an unsupported VirtualBox passed
+        # unnoticed -- a false negative in the one check that exists to stop it.
+        if ($m.Success) { return $m.Value.Trim() }
     }
     return $null
 }

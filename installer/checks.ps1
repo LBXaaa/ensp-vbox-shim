@@ -1700,7 +1700,7 @@ function Get-ClsidHijackFacts {
         $err = ""
         try {
             if (Test-Path $v.Key) {
-                $p = Get-ItemProperty -Path $v.Key -ErrorAction Stop
+                $p = Get-ItemProperty -Path $v.Key -Name '(default)','ThreadingModel' -ErrorAction Stop
                 $present = $true
                 $server = [string]$p.'(default)'
                 $threading = [string]$p.ThreadingModel
