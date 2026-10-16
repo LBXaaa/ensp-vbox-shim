@@ -655,9 +655,12 @@ function Write-EnvReportHostOnly {
                 Write-Info ("  host-only 第 3 层(VBox 接口): {0}  ->  {1}" -f $i.Name, $(if ($i.IPAddress) { $i.IPAddress } else { "(无 IP)" }))
                 $ifNames += $i.Name
             }
-            if ($ifs.Count -gt 1) {
-                $problems += ("存在 {0} 块 host-only 适配器。VM 按名字绑(hostonlyadapterN),名字重复时" -f $ifs.Count) +
-                             "VBox 选哪块不确定 —— 客机可能挂到没有 IP 的那块上"
+            # 判据是【名字重复】,不是【块数大于一】—— eNSP 把 hostonlyadapterN 写成模板里那个名字,
+            # VBox 按名字精确匹配,名字各不相同的多块不是故障(模板名命不命得中由第 6 层判)。
+            $dupNames = @(Get-DuplicateHostOnlyName -HostOnlyIfs $ifs)
+            if ($dupNames.Count -gt 0) {
+                $problems += ("有 {0} 个 host-only 名字被多块网卡共用:{1}。VM 按名字绑(hostonlyadapterN)," -f $dupNames.Count, ($dupNames -join " | ")) +
+                             "重名时 VBox 取哪块不确定 —— 客机可能挂到没有 IP 的那块上"
             }
             # 192.168.56.1 必须真的配在某一块上
             $withIp = @($ifs | Where-Object { $_.IPAddress -eq "192.168.56.1" })
@@ -714,7 +717,9 @@ function Write-EnvReportHostOnly {
                 if ($cmp.HasMismatch) {
                     Write-Info ("  host-only 第 6 层(模板名比对): 匹配 {0} / {1}" -f $cmp.MatchedCount, $tplNames.Count)
                     $problems += ("模板里有 " + $cmp.MissingInVBox.Count + " 个接口名在实际接口中不存在:" + ($cmp.MissingInVBox -join " | ")) +
-                                 '。修法是重新注册设备(会重写模板里的名字),而不是把 "#2" 本身当成故障'
+                                 '。名字必须精确命中,带 "#2" 就等于命不中 —— 修法是改网卡' +
+                                 '(删掉带后缀那块 → VBoxManage hostonlyif create → 配 192.168.56.1 → 禁用再启用),' +
+                                 '不是重新注册设备(它只读模板,从不把网卡名写回去)'
                 } else {
                     Write-Info ("  host-only 第 6 层(模板名比对): 一致({0} 个)。" -f $cmp.MatchedCount)
                 }
@@ -729,9 +734,10 @@ function Write-EnvReportHostOnly {
         foreach ($p in $problems) { Write-Warn "       - $p" }
         Write-Warn "  修复思路(本脚本不擅自改网络,请手工处理):"
         Write-Warn "    1. VBoxManage list hostonlyifs 看有几块、名字分别是什么"
-        Write-Warn "    2. 多余的同名适配器用 VBoxManage hostonlyif remove `"<名字>`" 删除"
+        Write-Warn "    2. 重名的、或名字带 #2 后缀的那块,用 VBoxManage hostonlyif remove `"<名字>`" 删除"
         Write-Warn "       (该命令只认名字不认 GUID;同名时多删几次并逐次核对)"
-        Write-Warn "    3. 保证剩下那块名字与设备模板一致、IP 为 192.168.56.1/24"
+        Write-Warn "    3. 删完再 hostonlyif create 建一块,名字应为 VirtualBox Host-Only Ethernet Adapter,"
+        Write-Warn "       再 hostonlyif ipconfig 配 192.168.56.1/24;最后禁用再启用一次该网卡"
         Write-Warn "    4. VBoxManage list dhcpservers 确认 DHCP 的 NetworkName 指向该适配器"
         Write-Warn "       (本自检不含 DHCP 绑定,须手工核对)"
         Write-Warn "  另:设备起不来时先确认没有杀不掉的僵尸 eNSP_VBoxServer 进程,有就重启。"

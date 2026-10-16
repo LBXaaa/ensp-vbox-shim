@@ -231,7 +231,27 @@ function Parse-HostOnlyIfs {
     return $out
 }
 
-# --- host-only DHCP servers ------------------------------------------------
+# --- host-only DHCP servers ------------------------------------------------# --- layer 3: duplicate adapter names --------------------------------------
+#
+# The device templates bind with hostonlyadapterN="<name>", that name being the
+# literal string stored in the .vbox file, and VirtualBox resolves it exactly --
+# the same exactness Compare-HostOnlyName relies on further down.
+#
+# So "more than one host-only adapter" is not by itself a fault. An adapter
+# named "... Adapter" and another named "... Adapter #2" coexist harmlessly:
+# the template name still resolves to exactly one of them. A device fails only
+# when the template name resolves to nothing, and layer 6 is what catches that.
+#
+# What IS undetermined is two adapters sharing one name: which one VirtualBox
+# returns is unspecified, and the one it returns may be the one without
+# 192.168.56.1.
+function Get-DuplicateHostOnlyName {
+    param($HostOnlyIfs)
+    $names = @($HostOnlyIfs | ForEach-Object { $_.Name } | Where-Object { $_ })
+    return @($names | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+}
+
+
 #
 # `VBoxManage list dhcpservers` prints one block per server:
 #

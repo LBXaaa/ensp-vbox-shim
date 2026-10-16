@@ -64,6 +64,29 @@ $cmpOk = Compare-HostOnlyName -VBoxNames @("VirtualBox Host-Only Ethernet Adapte
                               -TemplateNames @("VirtualBox Host-Only Ethernet Adapter")
 Assert-False $cmpOk.HasMismatch "clean case has no mismatch"
 
+# Layer 3's judgement is "two adapters share a name", not "there is more than
+# one adapter". The suffixed fixture beside the clean one is the shape that
+# produced a false alarm on a real machine: two adapters, two distinct names,
+# and the template name still resolving to exactly one of them.
+$twoDistinct = @(Parse-HostOnlyIfs -Lines $ifsNormal) + @(Parse-HostOnlyIfs -Lines $ifsSuffixed)
+Assert-Equal @($twoDistinct).Count 2 "two fixtures combine into two adapters"
+Assert-Equal @(Get-DuplicateHostOnlyName -HostOnlyIfs $twoDistinct).Count 0 "distinct names are not a duplicate"
+
+# Self-test: the detector has to bite on a sample that IS duplicated, or the
+# assertion above proves nothing about it.
+$knownDup = @(
+    [pscustomobject]@{ Name = "VirtualBox Host-Only Ethernet Adapter" }
+    [pscustomobject]@{ Name = "VirtualBox Host-Only Ethernet Adapter" }
+)
+$knownDupHit = @(Get-DuplicateHostOnlyName -HostOnlyIfs $knownDup)
+Assert-Equal $knownDupHit.Count 1 "duplicate detector: flags a known-duplicate sample"
+Assert-Equal $knownDupHit[0] "VirtualBox Host-Only Ethernet Adapter" "duplicate detector: names the offending name"
+Assert-Equal @(Get-DuplicateHostOnlyName -HostOnlyIfs @($ifsNormal)).Count 0 "one adapter, no duplicate"
+Assert-Equal @(Get-DuplicateHostOnlyName -HostOnlyIfs @()).Count 0 "no adapters, no duplicate"
+# A suffixed name and a clean name are different names, not a collision.
+Assert-Equal @(Get-DuplicateHostOnlyName -HostOnlyIfs (@($ifsNormal) + @($ifsSuffixed))).Count 0 "a #2 suffix does not collide with the clean name"
+
+
 Write-Host "=== Task 4: eNSP-native layer ==="
 
 $fwLines = @(
@@ -1031,6 +1054,21 @@ Assert-True ($diagText -match 'Id\s*=\s*"hostonly-route"') "hostonly: the findin
 # flags healthy machines.
 Assert-True ($diagText -match 'Get-NetRoute') "hostonly: the verdict is taken from the route table"
 
+# Layer 6 used to send users to the device-registration script, claiming it
+# would rewrite the template's adapter name. That script only ever READS the
+# template -- it never writes the name back -- so the advice was wrong, and it
+# was wrong in both copies of the check. Escapes keep this file pure ASCII.
+$reReg = "\u91cd\u65b0\u6ce8\u518c\u8bbe\u5907"
+$claims = $reReg + ".{0,24}\u4f1a\u91cd\u5199"
+Assert-False ($diagText      -match $claims) "hostonly: diag.ps1 no longer claims re-registration rewrites the name"
+Assert-False ($installerText -match $claims) "hostonly: install.ps1 no longer claims re-registration rewrites the name"
+# The advice that replaced it has to be there, or the assertions above are
+# satisfied by simply deleting the sentence.
+$fixAdvice = "\u5220\u6389\u5e26\u540e\u7f00"
+Assert-True ($diagText      -match $fixAdvice) "hostonly: diag.ps1 tells the user to remove the suffixed adapter"
+Assert-True ($installerText -match $fixAdvice) "hostonly: install.ps1 tells the user to remove the suffixed adapter"
+
+
 # --- the version spoof -------------------------------------------------------
 # eNSP's VBox gate reads VersionExt (never Version), opening the key with
 # KEY_WOW64_64KEY. It probes InstallDir's length once and reuses that same
@@ -1249,10 +1287,15 @@ Assert-True ($diagText -match 'VBoxManage snapshot "vfw_usg" take') "vfw_usg: wi
 # ran, so there is nothing to say about it.
 Assert-True ($diagText -match '\$regVms\.ContainsKey') "vfw_usg: gated on being registered at all"
 
-# Layer 3 must count the adapters. Several same-named host-only adapters let a
-# guest land on one without 192.168.56.1 and never reach the host; the report
-# stayed green on 2026-10-10 because nothing counted them.
-Assert-True ($diagText -match '\$ifs\.Count -gt 1') "hostonly: layer 3 counts the adapters"
+# Layer 3's judgement is duplicate NAMES, not the adapter count. Two adapters
+# sharing one name let a guest land on the one without 192.168.56.1 and never
+# reach the host. The count alone is not a fault: when the names differ, the
+# template name still resolves to exactly one adapter -- a machine with
+# "... Adapter" beside "... Adapter #2" was reported as broken on 2026-10-10
+# for that reason alone.
+Assert-True ($checksText    -match '(?m)^function\s+Get-DuplicateHostOnlyName\b') "hostonly: the judgement lives in checks.ps1"
+Assert-True ($diagText      -match 'Get-DuplicateHostOnlyName') "hostonly: layer 3 judges on duplicate names"
+Assert-True ($installerText -match 'Get-DuplicateHostOnlyName') "hostonly: install.ps1 uses the same judgement, not its own"
 Assert-True ($diagText -match "hostonlyif remove") "hostonly: and names the removal command"
 
 # --- the VBox version gate must compare the MINOR version -------------------

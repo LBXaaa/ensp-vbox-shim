@@ -1474,21 +1474,27 @@ try {
             $ifNames += $i.Name
         }
 
-        # 多块 host-only 适配器是一个已知陷阱:VM 是按【名字】绑的
-        # (hostonlyadapterN="VirtualBox Host-Only Ethernet Adapter"),而 Windows/VBox
-        # 允许同时存在多块同名适配器 —— 客机可能被挂到没有 192.168.56.1 的那一块上,
-        # 永远够不到宿主。现象是进度条走不完,与「补丁打错」无法区分。
-        # 2026-10-10 实测:某机有两块(第二块叫 ...Adapter #2、IP 192.168.23.1),
-        # 而报告全绿 —— 因为当时没有任何一处数过它们。
+        # 判据是【名字重复】,不是【块数大于一】。
+        # eNSP 把 hostonlyadapterN 写成模板里那个名字,VBox 按名字精确匹配 ——
+        # 名字各不相同的多块(...Adapter 与 ...Adapter #2 并存)不是故障:模板名照样只命中一块。
+        # 真故障是模板名一块都命不中,那是第 6 层判的。
+        # 有歧义的只有【两块同名】—— VBox 取哪块未定义,取到的那块可能没配 192.168.56.1。
+        # 2026-10-10 那台机器是「Adapter + Adapter #2」两块不同名,报告却报了错,
+        # 就是这里把块数当成了判据。
         # 只报告,不改网络(与 install.ps1 的 Write-EnvReportHostOnly 同一判据)。
-        if ($ifs.Count -gt 1) {
+        $dupNames = @(Get-DuplicateHostOnlyName -HostOnlyIfs $ifs)
+        if ($dupNames.Count -gt 0) {
             Write-Host ""
-            Write-Note ("  !! 存在 " + $ifs.Count + " 块 host-only 适配器。VM 按名字绑,名字重复时")
-            Write-Note "     选哪块不确定 —— 客机可能挂到没有 192.168.56.1 的那块上,永远够不到宿主。"
+            Write-Note ("  !! 有 " + $dupNames.Count + " 个 host-only 名字被多块网卡共用:")
+            foreach ($dn in $dupNames) { Write-Note ("       " + $dn) }
+            Write-Note "     VM 按名字绑(hostonlyadapterN),重名时 VBox 取哪块不确定 ——"
+            Write-Note "     客机可能挂到没有 192.168.56.1 的那块上,永远够不到宿主。"
             Write-Note "     设备表现为进度条走不完,与「补丁打错」无法区分。"
             Write-Note "     修法: VBoxManage list hostonlyifs 看有几块、名字分别是什么;"
-            Write-Note '           多余的那块用 VBoxManage hostonlyif remove "<名字>" 删除。'
+            Write-Note '           多出来的那块用 VBoxManage hostonlyif remove "<名字>" 删除。'
             Write-Note "           该命令只认名字不认 GUID,同名时多删几次并逐次核对。"
+        } elseif ($ifs.Count -gt 1) {
+            Write-Note ("  共 " + $ifs.Count + " 块 host-only 适配器,名字互不相同 —— 模板名能精确命中,不算问题。")
         }
     }
 } catch {
@@ -1560,8 +1566,10 @@ try {
                 if ($cmp.HasMismatch) {
                     Write-Host ("  [ !! ] 模板里有 " + $cmp.MissingInVBox.Count + " 个名字在实际接口中不存在:")
                     foreach ($m in $cmp.MissingInVBox) { Write-Host ("         " + $m) }
-                    Write-Note "  这是 「#2」 类问题的正确判据。修法是重新注册设备(会重写模板中的名字);"
-                    Write-Note "  名字一致时带后缀也能用,不用去动 「#2」 本身。"
+                    Write-Note "  这是 「#2」 类问题的正确判据:名字必须【精确】命中,带后缀就等于命不中。"
+                    Write-Note "  修法是改网卡,不是重新注册设备 —— 注册设备只读模板,从不把网卡名写回去。"
+                    Write-Note "  删掉带后缀那块 → VBoxManage hostonlyif create → 配 192.168.56.1 →"
+                    Write-Note "  禁用再启用一次该网卡(让过滤驱动重新进数据路径)。"
                 } else {
                     Write-Host "  [ OK ] 模板中的接口名与实际接口一致。"
                 }
