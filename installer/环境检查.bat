@@ -22,7 +22,7 @@ echo   用途:采集 eNSP 与 VirtualBox 的环境事实,产出一份报告文件,
 echo         可直接附进 issue。报告第 [9] 节列出本机查出的问题、
 echo         影响、以及确切的修复命令。
 echo   安全性:不带 -Fix 时全程只读,不修改任何系统设置。
-echo
+echo.
 echo   参数:
 echo     不带参数               只出报告(只读)
 echo     -Fix                  执行全部【无损】档的修复
