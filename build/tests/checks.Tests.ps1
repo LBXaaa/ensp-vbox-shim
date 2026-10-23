@@ -802,6 +802,57 @@ foreach ($constName in @("DLL_SHA256", "DLL_NAME", "CLSID_VBOX", "VARP_SHA256",
 $dllNameConst = [regex]::Match($installerText, '\$DLL_NAME\s*=\s*"([^"]*)"').Groups[1].Value
 Assert-Equal $dllNameConst "VBox52.dll" "const: the CLSID target filename is unchanged"
 
+# --- CLSID registration: the 32-bit view only --------------------------------
+# eNSP is a 32-bit process; its CoCreateInstance only ever reads
+# WOW6432Node\CLSID. In a stock 7.2 install the 64-bit view holds
+# LocalServer32 (VBoxSVC.exe) and no InprocServer32. Writing one there that
+# points at our 32-bit DLL makes any 64-bit client using CLSCTX_ALL fail with
+# 0x800700C1 while doing nothing for eNSP.
+Assert-True  ($installerText -match 'Set-RegValue\s+\$base32\s+""') "clsid: the 32-bit view is written"
+Assert-False ($installerText -match 'Set-RegValue\s+\$base64\s+""') "clsid: the 64-bit view is NOT written"
+Assert-True  ($installerText -match 'Remove-Item\s+\$base64\s+-Recurse') "clsid: a 64-bit entry left by an older installer is removed"
+
+# --- upgrade installs must not adopt an old shim as the "original" -----------
+# vboxserver\ and the eNSP root never had a VBox52.dll. Treating the previous
+# shim as the original saves it as .orig.bak, and uninstall then "restores"
+# that shim instead of deleting it.
+Assert-True ($installerText -match '\$PREV_DLL_SHA256\s*=\s*@\(') "deploy: previous shim hashes are listed"
+foreach ($h in @(
+    "0cfc86524b21d981b244b0026f7525e5312e79a9007f7e092fe198d6702ce8cc",
+    "4cbb1ace15f768291a6d3da4afcbf11201a4a630e738bd2c2d69fe68e8af3306",
+    "73c89b3ee1efda481d7b1c57bc12f59a78b8c0ce9ae9067be67360d1dab7cb18",
+    "6d2aadce202a740e128add181dcac1b81ae060c1b508f1a6d8cfdbb2fef69efe")) {
+    Assert-True ($installerText -match [regex]::Escape($h)) ("deploy: previous shim " + $h.Substring(0, 8) + " is recognised")
+}
+Assert-True ($installerText -match 'PREV_DLL_SHA256\s+-contains\s+\$destHash') "deploy: a previous shim is overwritten, not backed up"
+Assert-True ($installerText -match 'Remove-DeployedFile\s+\$p\s+\(@\(\$DLL_SHA256\)\s+\+\s+\$PREV_DLL_SHA256\)') "uninstall: every shim we ever shipped is removed"
+
+# --- the shipped payload and the pinned hash must agree ----------------------
+# Forgetting this after a rebuild makes every install die with "payload hash
+# mismatch" and nothing else in this suite notices (measured once already, on a
+# released zip). Cheap to assert, expensive to miss.
+$payloadPath = Join-Path $repoRoot "installer\payload\VBox52.dll"
+Assert-True (Test-Path $payloadPath) "shim: the payload DLL is present"
+$payloadHash = (Get-FileHash $payloadPath -Algorithm SHA256).Hash.ToLower()
+$pinnedHash  = [regex]::Match($installerText, '\$DLL_SHA256\s*=\s*"([0-9a-fA-F]{64})"').Groups[1].Value.ToLower()
+Assert-Equal $pinnedHash $payloadHash "shim: the pinned hash matches the shipped payload"
+
+# --- the use-after-free guard ------------------------------------------------
+# 2026-10-23, USG6000V: the plugin kept its wrapper across a device teardown, then
+# handed back a released IVirtualBox. QI(IDispatch) read its vtable and faulted
+# (AV READ, unmapped address), which killed eNSP_VBoxServer -- the device simply
+# dropped out of the topology with no visible error. These keep the guard wired.
+$proxySrc = Get-Content -Path (Join-Path $repoRoot "src\vbox52_proxy.cpp") -Raw
+Assert-True ($proxySrc -match 'static bool com_object_usable\(') "shim: the COM liveness guard exists"
+Assert-True ($proxySrc -match 'static IUnknown\* resolve_live_vbox\(') "shim: a stale instance is re-acquired"
+Assert-True ($proxySrc -match 'if \(!com_object_usable\(realVBox\)\)') "shim: the clone check re-checks its argument"
+Assert-True ($proxySrc -match 'if \(g_cached_proxy == \&root->view\) g_cached_proxy = NULL') "shim: the singleton cache is cleared on release"
+# The crash log has to say WHERE. A bare EIP could not be attributed to anything.
+Assert-True ($proxySrc -match 'describe_addr\(where') "shim: the crash log names the EIP module"
+Assert-True ($proxySrc -match 'dump_modules\(mods') "shim: the crash log dumps the module list"
+
+
+
 Write-Host "=== Task 14: the repair command-line surface ==="
 
 # The interactive menu and its console layer were replaced by a command line.
@@ -818,6 +869,27 @@ $menuFns = @("Show-RepairMenu", "Invoke-RepairMenuEntry", "Read-RepairChoiceTui"
 $diagText = ""
 if (Test-Path $diagPath) { $diagText = Get-Content -Path $diagPath -Raw }
 Assert-True ($diagText.Length -gt 1000) "cli: diag.ps1 was actually read"
+# The 64-bit view having no InprocServer32 is the CORRECT state, not a defect.
+# The report used to print it as [missing] next to the real 32-bit verdict.
+$noInproc = "\u65e0 InprocServer32"
+Assert-True ($diagText -match $noInproc) "clsid: an absent 64-bit InprocServer32 is not reported as missing"
+
+# --- a backup that is itself a shim is not an "original" ---------------------
+# Older installers had no list of previous shims, so an upgrade saved our own
+# VBox52.dll as .orig.bak. Uninstall then "restores" that shim instead of
+# deleting a file that was never the user's. The installer now heals it on sight,
+# including when the payload is already current (which is the common case).
+Assert-True ($installerText -match 'PREV_DLL_SHA256\s+-contains\s+\$bakHash') "deploy: a bogus .orig.bak is recognised"
+Assert-True ($installerText -match 'Remove-Item\s+\$bak\s+-Force') "deploy: and discarded"
+
+# --- no TerminatingError records on the happy path ---------------------------
+# A named read with -ErrorAction Stop writes an error record even when the throw
+# is caught. On a machine that lacks the value, that record lands in the report
+# and reads as a fault -- seen in a user's diag on 2026-10-22.
+Assert-False ($diagText -match 'EnableVirtualizationBasedSecurity\s+-ErrorAction\s+Stop') "diag: the DeviceGuard probe leaves no error record"
+Assert-False ($installerText -match 'Get-ItemProperty\s+-Path\s+\$base64\s+-Name\s+.(default).\s+-ErrorAction\s+Stop') "install: the CLSID cleanup leaves no error record"
+
+
 
 Assert-False (Test-Path (Join-Path $repoRoot "installer\tui.ps1")) "cli: tui.ps1 is gone from the package tree"
 Assert-False ($diagText -match 'tui\.ps1') "cli: diag.ps1 no longer loads tui.ps1"

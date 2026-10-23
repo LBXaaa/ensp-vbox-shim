@@ -69,7 +69,18 @@ if (Test-Path $fixPs1) { . $fixPs1 }
 # ---------------------------------------------------------------------------
 $CLSID_VBOX   = "{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}"  # CLSID_VirtualBox
 $DLL_NAME     = "VBox52.dll"
-$DLL_SHA256       = "033636cedb8d6cbc4371d0010474671349051d958982a4e17953bf25adf709b7"
+$DLL_SHA256       = "61d9033c18b346a2913ad656e062fc65ed0c1ef80f146bddc81c791ea76e488b"
+# 历次发布过的垫片 DLL。升级安装时碰到它们要直接覆盖,不能当成"原文件"备份成
+# .orig.bak —— vboxserver\ 与 eNSP 根目录原本没有 VBox52.dll,旧垫片一旦被当成
+# "原版"存下来,卸载时会把它"还原"回去而不是删掉。卸载也按这份清单认脸。
+# 取值来自各 tag 的 installer/payload/VBox52.dll 哈希,不要手工编。
+$PREV_DLL_SHA256  = @(
+    "0cfc86524b21d981b244b0026f7525e5312e79a9007f7e092fe198d6702ce8cc",  # v0.1.0-beta
+    "4cbb1ace15f768291a6d3da4afcbf11201a4a630e738bd2c2d69fe68e8af3306",  # v0.1.1 / v0.1.2-beta
+    "73c89b3ee1efda481d7b1c57bc12f59a78b8c0ce9ae9067be67360d1dab7cb18",  # v0.1.3-beta
+    "6d2aadce202a740e128add181dcac1b81ae060c1b508f1a6d8cfdbb2fef69efe",  # v0.1.4 / v0.2.0-beta
+    "033636cedb8d6cbc4371d0010474671349051d958982a4e17953bf25adf709b7"   # v0.2.1-beta
+)
 # NGFW_Plugin.dll 的三态哈希 —— 仅用于 Do-Check 报告状态,安装器不改这个文件。
 # 必要性未经证实:2026-09-10 在 inst-51 上做的受控 A/B 显示,出厂原版与 22 站点
 # 补丁版都以完全相同的签名失败(VM 存活 5546 vs 5547 ms),而 host 上出厂原版
@@ -141,9 +152,21 @@ function Deploy-PayloadFile($PayloadName, $DestPath, $ExpectedHash) {
     if (-not (Test-Path $destDir)) { New-Item -Path $destDir -ItemType Directory -Force | Out-Null }
     if (Test-Path $DestPath) {
         $destHash = (Get-FileHash $DestPath -Algorithm SHA256).Hash.ToLower()
-        if ($destHash -eq $ExpectedHash.ToLower()) { Write-OK "已是最新版,跳过: $(Split-Path $DestPath -Leaf)"; return }
         $bak = "$DestPath.orig.bak"
-        if (-not (Test-Path $bak)) { Copy-Item $DestPath $bak; Write-Info "原文件已备份 -> $(Split-Path $bak -Leaf)" }
+        # 修掉旧安装器留下的假备份:更早的版本没有这份清单,把【我们自己的旧垫片】
+        # 当成"原文件"存成了 .orig.bak。留着它,卸载就会把那个旧垫片"还原"回来,
+        # 而不是删掉本该删掉的文件。这一段放在"已是最新版"之前,升级和重跑都能自愈。
+        if ((Test-Path $bak) -and $PayloadName -eq $DLL_NAME) {
+            $bakHash = (Get-FileHash $bak -Algorithm SHA256).Hash.ToLower()
+            if ($PREV_DLL_SHA256 -contains $bakHash) {
+                Remove-Item $bak -Force
+                Write-Info "丢弃伪造的 .orig.bak(里面是旧垫片,不是原文件): $(Split-Path $DestPath -Leaf)"
+            }
+        }
+        if ($destHash -eq $ExpectedHash.ToLower()) { Write-OK "已是最新版,跳过: $(Split-Path $DestPath -Leaf)"; return }
+        if ($PayloadName -eq $DLL_NAME -and ($PREV_DLL_SHA256 -contains $destHash)) {
+            Write-Info "覆盖旧版垫片(不作为原文件备份): $(Split-Path $DestPath -Leaf)"
+        } elseif (-not (Test-Path $bak)) { Copy-Item $DestPath $bak; Write-Info "原文件已备份 -> $(Split-Path $bak -Leaf)" }
     }
     Copy-Item $src $DestPath -Force
     Write-OK "已部署 -> $DestPath"
@@ -167,7 +190,8 @@ function Remove-DeployedFile($DestPath, $ExpectedSha256) {
     if (-not $ExpectedSha256) { return }
     if (Test-Path "$DestPath.orig.bak") { return }   # 有备份的交给 Restore-FromBak
     $h = (Get-FileHash $DestPath -Algorithm SHA256).Hash.ToLower()
-    if ($h -eq $ExpectedSha256.ToLower()) {
+    # 可传单个哈希,也可传一组(当前版 + 历次旧版垫片)
+    if (@($ExpectedSha256 | ForEach-Object { "$_".ToLower() }) -contains $h) {
         Remove-Item $DestPath -Force
         Write-OK "已移除安装器新建的文件: $(Split-Path $DestPath -Leaf)"
     } else {
@@ -458,11 +482,25 @@ function Do-Install {
     }
     $base64 = "HKLM:\SOFTWARE\Classes\CLSID\$CLSID_VBOX\InprocServer32"
     $base32 = "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$CLSID_VBOX\InprocServer32"
-    foreach ($k in @($base64, $base32)) {
-        Set-RegValue $k ""                $destDll
-        Set-RegValue $k "ThreadingModel"  "Both"
+    # 只写 32 位视图:eNSP 是 32 位进程,它的 CoCreateInstance 只看 WOW6432Node\CLSID。
+    # 64 位视图里原版 7.2 只有 LocalServer32(VBoxSVC.exe);往那里塞一个指向 32 位 DLL
+    # 的 InprocServer32,只会让 64 位客户端以 CLSCTX_ALL 激活 CLSID_VirtualBox 时报
+    # 0x800700C1,对 eNSP 毫无作用。
+    Set-RegValue $base32 ""               $destDll
+    Set-RegValue $base32 "ThreadingModel" "Both"
+    Write-OK "InprocServer32(32 位视图) -> $destDll"
+    # 清掉旧版安装器写进 64 位视图的那一项 —— 只删指向我们 DLL 的,别人的不动。
+    $old64 = ""
+    # Test-Path first: on a machine that never had the key, a named read with
+    # -ErrorAction Stop still writes a TerminatingError record to the error
+    # stream, which lands in install.log looking like a failure.
+    if (Test-Path $base64) {
+        $old64 = [string](Get-ItemProperty -Path $base64 -Name '(default)' -ErrorAction SilentlyContinue).'(default)'
     }
-    Write-OK "InprocServer32 -> $destDll"
+    if ($old64 -and ($old64 -ieq $destDll)) {
+        Remove-Item $base64 -Recurse -Force
+        Write-OK "已移除 64 位视图里旧版安装器写入的 InprocServer32"
+    }
 
     Write-Step "4/6 部署 AR 路由器插件(预构建 VAR_Plugin.dll)"
     $varp = Join-Path $EnspDir "plugin\ar1000v\VAR_Plugin.dll"
@@ -553,7 +591,7 @@ function Do-Uninstall {
     foreach ($dir in $vboxDirs) {
         $p = Join-Path $dir $DLL_NAME
         Restore-FromBak $p
-        Remove-DeployedFile $p $DLL_SHA256
+        Remove-DeployedFile $p (@($DLL_SHA256) + $PREV_DLL_SHA256)
     }
 
     Write-Step "5/6 CLSID InprocServer32(需手动)"

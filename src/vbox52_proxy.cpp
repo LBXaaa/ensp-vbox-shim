@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <objbase.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <cstdio>
 #include <cstring>
 #include <oleauto.h>
@@ -43,25 +44,86 @@ static bool GetLogPath(char* out, size_t cap, const char* fname) {
 // heap-corruption (c0000374) / stack-cookie (c0000409) first-chance faults were
 // invisible. This version logs ALL exception codes and NEVER changes control flow.
 extern "C" volatile LONG g_last_method_idx;   // updated by diag_method_call
+
+// ===== crash-log attribution =====
+// The bare EIP the handler used to write could not be attributed to anything:
+// "0x50282283" means nothing until you know which image was mapped there, and
+// the base differs per process because the DLL is relocated. These walk the real
+// module list (Toolhelp) instead of guessing.
+static void describe_addr(char* out, size_t cap, DWORD addr) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snap != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32 me; me.dwSize = sizeof(me);
+        if (Module32First(snap, &me)) {
+            do {
+                DWORD base = (DWORD)(DWORD_PTR)me.modBaseAddr;
+                if (addr >= base && addr < base + me.modBaseSize) {
+                    _snprintf(out, cap, "%s+0x%lX (base %08lX)", me.szModule,
+                              (unsigned long)(addr - base), base);
+                    out[cap - 1] = 0;
+                    CloseHandle(snap);
+                    return;
+                }
+            } while (Module32Next(snap, &me));
+        }
+        CloseHandle(snap);
+    }
+    _snprintf(out, cap, "<no module> (%08lX)", addr);
+    out[cap - 1] = 0;
+}
+
+// "<base> <name>" per module, capped. Without this the address in a stale
+// pointer cannot be traced back to the image that used to live there.
+static void dump_modules(char* out, size_t cap, int maxmods) {
+    size_t n = 0;
+    out[0] = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return;
+    MODULEENTRY32 me; me.dwSize = sizeof(me);
+    int cnt = 0;
+    if (Module32First(snap, &me)) {
+        do {
+            if (cap <= n + 1) break;
+            int w = _snprintf(out + n, cap - n, "\n    %08lX %s",
+                              (DWORD)(DWORD_PTR)me.modBaseAddr, me.szModule);
+            if (w < 0 || (size_t)w >= cap - n) break;
+            n += (size_t)w;
+            if (++cnt >= maxmods) break;
+        } while (Module32Next(snap, &me));
+    }
+    CloseHandle(snap);
+}
+
+// Re-entrancy guard: the handler now walks the module list (Toolhelp) and reads
+// process memory. If the crash it is describing was heap corruption, doing that
+// work could fault too -- and a fault inside the handler re-enters it forever.
+static volatile LONG g_veh_busy = 0;
 static LONG WINAPI CrashVEH(EXCEPTION_POINTERS* ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     // Ignore benign/noise: debug prints, C++ EH unwind, breakpoints, guard pages.
     if (code == 0x40010006 || code == 0xE06D7363 || code == 0x80000003 ||
         code == 0x4001000A || code == 0x406D1388) return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedExchange(&g_veh_busy, 1) != 0) return EXCEPTION_CONTINUE_SEARCH;
 
     CONTEXT* c = ep->ContextRecord;
     DWORD esp = c->Esp;
-    char buf[1600]; int n = 0;
+    char buf[4096]; int n = 0;
+    char where[200], avwhere[200], mods[1200];
+    describe_addr(where, sizeof(where), c->Eip);
+    dump_modules(mods, sizeof(mods), 24);
     n += sprintf(buf + n, "%lu [VEH:%lu] code=0x%08lX firstchance EIP=0x%08lX lastMethod=%ld\n",
         GetTickCount(), GetCurrentProcessId(), code, c->Eip, g_last_method_idx);
+    n += sprintf(buf + n, "  EIP module: %s\n", where);
     n += sprintf(buf + n, "  EAX=%08lX EBX=%08lX ECX=%08lX EDX=%08lX\n",
         c->Eax, c->Ebx, c->Ecx, c->Edx);
     n += sprintf(buf + n, "  ESI=%08lX EDI=%08lX EBP=%08lX ESP=%08lX\n",
         c->Esi, c->Edi, c->Ebp, esp);
     if (ep->ExceptionRecord->NumberParameters >= 2) {
-        n += sprintf(buf + n, "  AV: %s addr=%08lX\n",
+        DWORD avAddr = (DWORD)ep->ExceptionRecord->ExceptionInformation[1];
+        describe_addr(avwhere, sizeof(avwhere), avAddr);
+        n += sprintf(buf + n, "  AV: %s addr=%08lX  %s\n",
             ep->ExceptionRecord->ExceptionInformation[0] ? "WRITE" : "READ",
-            (DWORD)ep->ExceptionRecord->ExceptionInformation[1]);
+            avAddr, avwhere);
     }
     n += sprintf(buf + n, "  bytes@EIP:");
     for (int i = 0; i < 16; i++) {
@@ -73,13 +135,14 @@ static LONG WINAPI CrashVEH(EXCEPTION_POINTERS* ep) {
         DWORD v; if (ReadProcessMemory(GetCurrentProcess(), (void*)(esp + i*4), &v, 4, NULL))
             n += sprintf(buf + n, " %08lX", v); else { n += sprintf(buf + n, " ????????"); break; }
     }
-    n += sprintf(buf + n, "\n");
+    n += sprintf(buf + n, "\n  modules:%s\n", mods);
     char lp[MAX_PATH];
     if (GetLogPath(lp, sizeof(lp), "vbox52_crash.log")) {
         HANDLE h = CreateFileA(lp, FILE_APPEND_DATA, FILE_SHARE_READ|FILE_SHARE_WRITE,
             NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (h != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(h, buf, n, &w, NULL); CloseHandle(h); }
     }
+    InterlockedExchange(&g_veh_busy, 0);
     return EXCEPTION_CONTINUE_SEARCH;   // never alter control flow
 }
 
@@ -332,10 +395,79 @@ extern "C" ULONG __stdcall helper_Release(IUnknown* realVBox) {
         }
         LeaveCriticalSection(&g_proxy_lock);
         if (root->view.realVBox) root->view.realVBox->Release();
+        // The singleton cache must not outlive the object. Leaving it set here
+        // is what let a later ngfw_lazy_from_hook read a freed proxy.
+        if (g_cached_proxy == &root->view) g_cached_proxy = NULL;
         HeapFree(GetProcessHeap(), 0, root);
         return 0;
     }
     return (ULONG)ref;
+}
+
+// ===== stale-pointer guards =====
+//
+// The proxy can be released to zero by whoever holds it, at any moment. A caller
+// that kept the raw IVirtualBox pointer will then hand us freed memory, and
+// dereferencing it to read the vtable faults (0xC0000005). That kills
+// eNSP_VBoxServer, so the device silently drops out of the topology.
+//
+// Observed 2026-10-23 on a USG6000V: the same realVBox answered three
+// findMachine calls, the device was then torn down, and ten minutes later
+// QI(IDispatch) on that pointer faulted reading its vtable. The address held
+// 0x50200338, which was not mapped.
+//
+// These helpers answer "is it still safe to dereference?" WITHOUT touching the
+// memory first: VirtualQuery reports the page state, and only then do we read.
+static bool range_readable(const void* p, size_t len) {
+    if (!p || !len) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    const BYTE* regionEnd = (const BYTE*)mbi.BaseAddress + mbi.RegionSize;
+    return ((const BYTE*)p + len) <= regionEnd;
+}
+
+static bool addr_executable(const void* p) {
+    if (!p) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    DWORD prot = mbi.Protect & 0xFF;
+    return prot == PAGE_EXECUTE || prot == PAGE_EXECUTE_READ ||
+           prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY;
+}
+
+// A COM object is usable iff its vtable pointer is readable and the three
+// IUnknown slots (QueryInterface/AddRef/Release) are executable code. A freed
+// heap block still passes the first check -- the page stays committed -- so the
+// vtable check is the one that actually catches the stale case.
+static bool com_object_usable(IUnknown* obj) {
+    if (!range_readable(obj, sizeof(void*))) return false;
+    void** vt = *(void***)obj;
+    if (!range_readable(vt, 3 * sizeof(void*))) return false;
+    for (int i = 0; i < 3; i++) if (!addr_executable(vt[i])) return false;
+    return true;
+}
+
+// Resolve an IVirtualBox that is safe to call: `hint` when it still works, else a
+// freshly created instance. *tempOut receives the new one (caller releases) or
+// NULL when `hint` was fine. Returns NULL when neither is available.
+static IUnknown* resolve_live_vbox(IUnknown* hint, IUnknown** tempOut) {
+    *tempOut = NULL;
+    if (com_object_usable(hint)) return hint;
+    DBG("[guard] IVirtualBox %p is no longer usable -> re-acquiring", hint);
+    IUnknown* fresh = NULL;
+    HRESULT hr = CoCreateInstance(CLSID_VirtualBox, NULL, CLSCTX_LOCAL_SERVER,
+                                  IID_VBox7_IVirtualBox, (void**)&fresh);
+    if (FAILED(hr) || !fresh) {
+        DBG("[guard] re-acquire failed hr=0x%08lX", hr);
+        return NULL;
+    }
+    DBG("[guard] re-acquired IVirtualBox=%p", fresh);
+    *tempOut = fresh;
+    return fresh;
 }
 
 // Late-bound findMachine via IDispatch (7.2 IVirtualBox is a dual interface).
@@ -344,6 +476,12 @@ extern "C" ULONG __stdcall helper_Release(IUnknown* realVBox) {
 // gating on base existence alone is enough to unblock the CLI clone (which itself
 // validates the snapshot), and avoids a second late-bind that could fail spuriously.
 static HRESULT clone_check_by_name(IUnknown* realVBox, BSTR base, const wchar_t* snap) {
+    // Belt and braces. Callers resolve a live instance first, but this is the
+    // function that faulted, so it re-checks instead of trusting its argument.
+    if (!com_object_usable(realVBox)) {
+        DBG("[clonecheck] refusing unusable IVirtualBox %p", realVBox);
+        return (HRESULT)0x80004002;   // E_NOINTERFACE: "cannot verify", no crash
+    }
     IDispatch* disp = NULL;
     HRESULT hr = realVBox->QueryInterface(IID_IDispatch, (void**)&disp);
     if (FAILED(hr) || !disp) {
@@ -585,6 +723,10 @@ static void ngfw_take_link_snapshot(const wchar_t* base);   // defined below
 // Returns true if `base` ended up registered (or was already).
 static bool ngfw_ensure_registered(IUnknown* realVBox, const wchar_t* base) {
     if (!realVBox || !base || !base[0]) return false;
+    if (!com_object_usable(realVBox)) {
+        DBG("[lazyreg] refusing stale IVirtualBox %p", realVBox);
+        return false;
+    }
 
     // Only for the NGFW base VM, and only when the plugin has already written
     // its settings file. Registering before that would either fail or record a
@@ -766,10 +908,15 @@ static void ngfw_lazy_from_hook(void) {
     // The guard also stops recursion: registerMachine can make VBoxSVC spawn a
     // process, which re-enters this very hook.
     g_lazyreg_busy = true;
-    if (ngfw_ensure_registered(p->realVBox, L"vfw_usg")) {
+    IUnknown* tempVBox = NULL;
+    IUnknown* vb = resolve_live_vbox(p->realVBox, &tempVBox);
+    if (!vb) {
+        DBG("[lazyreg] late trigger: no usable IVirtualBox");
+    } else if (ngfw_ensure_registered(vb, L"vfw_usg")) {
         g_lazyreg_done = true;
         DBG("[lazyreg] late trigger succeeded");
     }
+    if (tempVBox) tempVBox->Release();
     g_lazyreg_busy = false;
 }
 
@@ -789,8 +936,20 @@ extern "C" HRESULT __stdcall helper_clone_check(IUnknown* realVBox, const wchar_
 
     if (!realVBox) { if (pOut) *pOut = (HRESULT)0xFFFFFFFE; return (HRESULT)0xFFFFFFFE; }
 
+    // The pointer arrives from a caller that may have outlived the object it
+    // came from -- the plugin keeps its wrapper across device teardown. Resolve
+    // a usable instance before touching it; this is the exact site that faulted
+    // on 2026-10-23 (AV READ on the vtable during QI(IDispatch)).
+    IUnknown* tempVBox = NULL;
+    IUnknown* vb = resolve_live_vbox(realVBox, &tempVBox);
+    if (!vb) {
+        DBG("[clonecheck] no usable IVirtualBox -> reporting cannot-verify");
+        if (pOut) *pOut = (HRESULT)0x80004002;
+        return (HRESULT)0x80004002;
+    }
+
     BSTR bBase = cstring_to_bstr(base);
-    HRESULT hr = clone_check_by_name(realVBox, bBase, snap);
+    HRESULT hr = clone_check_by_name(vb, bBase, snap);
 
     if (FAILED(hr)) {
         // "Not registered" is exactly the state that makes eNSP give up with
@@ -798,8 +957,8 @@ extern "C" HRESULT __stdcall helper_clone_check(IUnknown* realVBox, const wchar_
         // here and re-check; eNSP's own chain then does clonevm + startvm, same
         // as it does on the factory VBox 5.2.
         DBG("[clonecheck] '%S' absent -> attempting lazy registration", base ? base : L"(null)");
-        if (ngfw_ensure_registered(realVBox, base)) {
-            hr = clone_check_by_name(realVBox, bBase, snap);
+        if (ngfw_ensure_registered(vb, base)) {
+            hr = clone_check_by_name(vb, bBase, snap);
             DBG("[clonecheck] re-check after lazy registration: hr=0x%08lX", hr);
         }
     }
@@ -809,6 +968,7 @@ extern "C" HRESULT __stdcall helper_clone_check(IUnknown* realVBox, const wchar_
     // because a machine was found -- see the comment there.
 
     if (bBase) SysFreeString(bBase);
+    if (tempVBox) tempVBox->Release();
     if (pOut) *pOut = hr;
     return hr;   // 0 => eNSP proceeds with clonevm; nonzero => eNSP skips (no crash)
 }

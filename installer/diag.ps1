@@ -196,17 +196,22 @@ function Get-HypervisorFacts {
         }
     } catch { }
 
+    # 这两个值在很多机器上本来就不存在。具名读配 -ErrorAction Stop 虽然会被
+    # catch 住,却仍往错误流写一条 TerminatingError —— 它会原样落进报告,
+    # 看着像故障。先 Test-Path,再静默读:读不到就是"没有",这正是本意。
     $vbs = $false
-    try {
-        $dg = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard" -Name EnableVirtualizationBasedSecurity -ErrorAction Stop
-        if ($dg.EnableVirtualizationBasedSecurity -eq 1) { $vbs = $true }
-    } catch { }
+    $dgKey = "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard"
+    if (Test-Path $dgKey) {
+        $dg = Get-ItemProperty $dgKey -Name EnableVirtualizationBasedSecurity -ErrorAction SilentlyContinue
+        if ($dg -and $dg.EnableVirtualizationBasedSecurity -eq 1) { $vbs = $true }
+    }
 
     $hvci = $false
-    try {
-        $hv = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name Enabled -ErrorAction Stop
-        if ($hv.Enabled -eq 1) { $hvci = $true }
-    } catch { }
+    $hvKey = "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity"
+    if (Test-Path $hvKey) {
+        $hv = Get-ItemProperty $hvKey -Name Enabled -ErrorAction SilentlyContinue
+        if ($hv -and $hv.Enabled -eq 1) { $hvci = $true }
+    }
 
     return [pscustomobject]@{
         Known      = $known
@@ -1223,8 +1228,10 @@ try {
             if ($v.Name -eq "32") { $vn = "32 位视图" }
             if ($v.Error) {
                 Write-Fail ("CLSID " + $vn) ("读取失败,本视图状态未知 —— " + $v.Error)
-            } elseif (-not $v.Present) {
+            } elseif (-not $v.Present -and $v.Primary) {
                 Write-Host ("  [缺失] " + $vn + " : 没有 InprocServer32 项")
+            } elseif (-not $v.Present) {
+                Write-Host ("  [ 正常 ] " + $vn + " : 无 InprocServer32(原版 VBox 7 只有 LocalServer32,不需要它)")
             } elseif ($v.PointsAtShim) {
                 Write-Host ("  [ OK  ] " + $vn + " : " + $v.Server)
             } else {
@@ -1238,7 +1245,7 @@ try {
             Write-Note "  !! eNSP 是 32 位进程,读的正是上面那个 32 位视图。它不指向垫片时,"
             Write-Note "     eNSP 拿到的是 Oracle 的真接口,版本号报 7.x,于是弹那句"
             Write-Note "     「VirtualBox version is not supported.」,设备走不到启动这一步。"
-            Write-Note "     修法: 重跑 安装.bat —— 它会重写这两个键。"
+            Write-Note "     修法: 重跑 安装.bat —— 它会重写 32 位视图那个键。"
         }
     }
 } catch {
