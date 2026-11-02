@@ -912,6 +912,21 @@ Assert-True ($diagText -match '(?m)^\s*\[switch\]\$NoMenu\b') "cli: the old -NoM
 # returns $null at EOF, and the $null case has to return not-go-ahead.
 Assert-True ($diagText -match '\[Console\]::ReadLine\(\)') "cli: the go-ahead reader is [Console]::ReadLine()"
 
+# --- the post-report "press y" offer ----------------------------------------
+# The report itself stays read-only and pasteable; the offer is printed after
+# Stop-Transcript, so it never lands in the file. It exists because remembering
+# -Fix all is exactly the kind of thing a first-time user will not do.
+# A redirected stdin must not count as consent -- same hazard the per-item
+# prompt already guards against, and the reason this reads with
+# [Console]::ReadLine() rather than Read-Host.
+Assert-True ($diagText -match '\u6309 y \u56de\u8f66') "cli: the report offers a one-key repair"
+Assert-True ($diagText -match '\[Console\]::IsInputRedirected') "cli: the offer is skipped when stdin is redirected"
+Assert-True ($diagText -match '\$NoMenu\.IsPresent') "cli: -NoMenu suppresses the offer"
+Assert-True ($diagText -match '\$selectAll = "all"') "cli: y runs every tier, not just lossless"
+Assert-True ($diagText -match '\$runNow') "cli: the answer is carried into the repair call"
+Assert-True ($diagText -match 'AssumeYes \(\$Yes\.IsPresent -or \$runNow\)') "cli: and it skips the per-item prompt it already answered"
+
+
 $liveReadHost = @([regex]::Split($diagText, '\r?\n') | Where-Object {
     ($_ -match 'Read-Host') -and ($_.TrimStart() -notmatch '^#')
 })

@@ -33,7 +33,7 @@ param(
     [string]$Fix = "",
     [switch]$Yes,             # 跳过逐条确认(无人值守;与 -Fix 合用)
     [switch]$DryRun,          # 只列计划,不执行任何修复
-    [switch]$NoMenu,          # 旧参数:现在是默认行为,接受但不起作用
+    [switch]$NoMenu,          # 报告之后不要问「按 y 执行」(给脚本/无人值守用)
     [string]$ReportPath = "", # 默认 %ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt
     # 把本机【可修】项写成清单(一行一条:<档位>\t<id>),供安装器攒修复计划。
     # 默认不写。
@@ -357,6 +357,22 @@ function Get-RepairTierText {
     }
 }
 
+# 修 host-only 时该动哪一块网卡:带 192.168.56.1 的那块。
+#
+# 设备模板把 hostonlyadapterN 写死成 "VirtualBox Host-Only Ethernet Adapter",
+# 客机要回连的也是 192.168.56.1。机器上同时存在 "#2" 之类时,Repair-BounceAdapter
+# 拒绝自己挑 —— 它无从判断哪块是"那块"。诊断知道:看 IP。
+#
+# 挑不出来就返回空串,让修复层如实拒绝。猜一块去禁用再启用,会闪断一块跟 eNSP
+# 无关的网络,而且修不好问题。
+function Get-HostOnlyTargetAdapter {
+    $facts = @(Get-HostOnlyNetAdapterFacts)
+    $withIp = @($facts | Where-Object { $_.IPv4 -eq "192.168.56.1" })
+    if ($withIp.Count -eq 1) { return [string]$withIp[0].InterfaceName }
+    if ($withIp.Count -eq 0 -and $facts.Count -eq 1) { return [string]$facts[0].InterfaceName }
+    return ""
+}
+
 function Get-RepairFindings {
     param([string]$VBoxDir = "", [string]$EnspDir = "")
 
@@ -364,6 +380,9 @@ function Get-RepairFindings {
     $vboxDirFound = Find-VBoxDir -Override $VBoxDir
     $vboxManage = ""
     if ($vboxDirFound) { $vboxManage = Join-Path $vboxDirFound "VBoxManage.exe" }
+
+    # 下面两处 host-only 修复都要挑一块网卡。挑不出来就传空,由修复层拒绝。
+    $bounceAdapter = Get-HostOnlyTargetAdapter
 
     # --- host-only(第 1 层驱动注册 / 第 3 层接口是否存在)-------------------
     try {
@@ -405,7 +424,7 @@ function Get-RepairFindings {
                     Steps   = @(
                         [pscustomobject]@{ Fn = "Repair-InstallNetAdp";    Args = @{ VBoxDir = $vboxDirFound } }
                         [pscustomobject]@{ Fn = "Repair-InstallNetLwf";    Args = @{ VBoxDir = $vboxDirFound } }
-                        [pscustomobject]@{ Fn = "Repair-BounceAdapter";    Args = @{} }
+                        [pscustomobject]@{ Fn = "Repair-BounceAdapter";    Args = $(if ($bounceAdapter) { @{ AdapterName = $bounceAdapter } } else { @{} }) }
                         [pscustomobject]@{ Fn = "Repair-CreateHostOnlyIf"; Args = @{ VBoxDir = $vboxDirFound } }
                     )
                     Manual  = @()
@@ -603,7 +622,7 @@ function Get-RepairFindings {
                     "Hyper-V 虚拟交换机都会闪断。"
                     "这一项【不重装驱动包、也不重建接口】,只做重绑;驱动缺失的情形在上一项。"
                 )
-                Steps    = @( [pscustomobject]@{ Fn = "Repair-BounceAdapter"; Args = @{} } )
+                Steps    = @( [pscustomobject]@{ Fn = "Repair-BounceAdapter"; Args = $(if ($bounceAdapter) { @{ AdapterName = $bounceAdapter } } else { @{} }) } )
                 Manual   = @()
             }
         }
@@ -2789,7 +2808,12 @@ if ($fxItems.Count -eq 0) {
             Write-Host ("      注   : 计划阶段已判定满足(执行时会再确认一次): " + (@($plan.AlreadyDone) -join ", "))
         }
 
-        Write-Host ("      执行 : 环境检查.bat -Fix " + $it.Id)
+        if ($plan -and -not $plan.Ok) {
+            # 上面已经说了「暂时不可执行」。这里再让人照着抄一遍,只会让他撞第二次。
+            Write-Host ("      执行 : 暂不可用 —— 先解决上面的原因,再执行 环境检查.bat -Fix " + $it.Id)
+        } else {
+            Write-Host ("      执行 : 环境检查.bat -Fix " + $it.Id)
+        }
         Write-Host ""
     }
 }
@@ -2865,7 +2889,45 @@ try {
 # 整段包 try/catch:它是报告之后的附加动作,出错不许影响已经落盘的报告,
 # 也不许让调用方(环境检查.bat / 脚本)拿到一个假的失败退出码。
 # ---------------------------------------------------------------------------
-if ($Fix) {
+# ---------------------------------------------------------------------------
+# 报告之后问一句
+#
+# 报告本体保持只读、可以整段附进 issue;这一问发生在 Stop-Transcript 之后,
+# 不会写进报告。按 y 就跑全部(含需确认项),不再逐条问 —— 这一步的用途就是
+# 让人不用记参数、不用读第 [9] 节也能修好。
+#
+# 四种情形一律不问:
+#   - 已经带了 -Fix(调用方自己指定了范围)
+#   - -DryRun(明确要求不执行)
+#   - -NoMenu(脚本用)
+#   - 输入被重定向 / 不是终端(无人值守;EOF 不能当成放行)
+# ---------------------------------------------------------------------------
+$runNow    = $false
+$selectAll = $Fix
+if ((-not $Fix) -and (-not $DryRun.IsPresent) -and (-not $NoMenu.IsPresent) -and ($fxItems.Count -gt 0)) {
+    $interactive = $true
+    try { if ([Console]::IsInputRedirected) { $interactive = $false } } catch { $interactive = $false }
+    if ($interactive) {
+        Write-Host ""
+        Write-Host -NoNewline "  按 y 回车 = 现在执行以上全部修复(含需确认项);直接回车 = 不做: "
+        $ans = $null
+        try { $ans = [Console]::ReadLine() } catch { $ans = $null }
+        if ($null -eq $ans) {
+            Write-Host ""
+            Write-Note "[跳过] 读不到输入,按【不执行】处理。"
+        } else {
+            $t = ([string]$ans).Trim().ToLower()
+            if (($t -eq "y") -or ($t -eq "yes")) {
+                $runNow = $true
+                $selectAll = "all"
+            } else {
+                Write-Host "  已跳过,报告保持只读。"
+            }
+        }
+    }
+}
+
+if ($Fix -or $runNow) {
     $repairLog = ""
     if ($ReportPath) { $repairLog = [System.IO.Path]::ChangeExtension($ReportPath, ".repair.txt") }
 
@@ -2884,8 +2946,9 @@ if ($Fix) {
     #   3  执行了,但有项失败
     $fixRc = 0
     try {
-        $cliRes = Invoke-RepairCli -Select $Fix -EnspDir $EnspDir -VBoxDir $VBoxDir `
-                                   -AssumeYes $Yes.IsPresent -PlanOnly $DryRun.IsPresent
+        # $runNow 是刚问过的「y」:他已经把这一整轮都答应了,不再逐条问。
+        $cliRes = Invoke-RepairCli -Select $selectAll -EnspDir $EnspDir -VBoxDir $VBoxDir `
+                                   -AssumeYes ($Yes.IsPresent -or $runNow) -PlanOnly $DryRun.IsPresent
         if ($cliRes) {
             if ($cliRes.Refused) { $fixRc = 2 }
             elseif ($cliRes.Failed -gt 0) { $fixRc = 3 }
@@ -2917,6 +2980,13 @@ if ($Fix) {
             Write-Host "  没有需要处置的项。"
         }
     } else {
-        Write-Host "  需要执行修复:重跑 环境检查.bat -Fix(逐条见报告第 [9] 节)。"
+        # -Fix 不带 id 时只做无损项。本机只剩需确认项时叫人重跑 -Fix,等于叫他
+        # 白跑一趟 —— 这句提示必须跟着实际档位走。
+        $losslessCount = @($fxItems | Where-Object { $_.Tier -eq "lossless" }).Count
+        if ($losslessCount -gt 0) {
+            Write-Host "  需要执行修复:重跑 环境检查.bat -Fix(逐条见报告第 [9] 节)。"
+        } else {
+            Write-Host "  需要执行修复:本机只有需单独确认的项,重跑 环境检查.bat -Fix all(逐条见报告第 [9] 节)。"
+        }
     }
 }
