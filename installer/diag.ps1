@@ -33,7 +33,7 @@ param(
     [string]$Fix = "",
     [switch]$Yes,             # 跳过逐条确认(无人值守;与 -Fix 合用)
     [switch]$DryRun,          # 只列计划,不执行任何修复
-    [switch]$NoMenu,          # 报告之后不要问「按 y 执行」(给脚本/无人值守用)
+    [switch]$NoMenu,          # 报告之后不要问「回车 = 执行」(给脚本/无人值守用)
     [string]$ReportPath = "", # 默认 %ProgramData%\ensp-vbox-shim\diag-<时间戳>.txt
     # 把本机【可修】项写成清单(一行一条:<档位>\t<id>),供安装器攒修复计划。
     # 默认不写。
@@ -594,10 +594,15 @@ function Get-RepairFindings {
             if (Test-Path $d1MgmtLog) { $d1Logs += $d1MgmtLog }
         }
         foreach ($lp in $d1Logs) {
+            # 只认最近的记录:eNSP 的 VBoxManage.log 不轮转,一次早已修好的失败会永远
+            # 留在文件里。不设时限,这条【有损】修复就会反复触发,每次都闪断本机网络。
+            $ageH = -1
+            try { $ageH = ((Get-Date) - (Get-Item -LiteralPath $lp).LastWriteTime).TotalHours } catch { $ageH = -1 }
+            if ($ageH -lt 0 -or $ageH -gt 72) { continue }
             $mk = @(Find-VBoxLogMarkers -Lines @(Get-Content -Path $lp -ErrorAction SilentlyContinue) |
                     Where-Object { $_.Id -eq "intnet" })
             if ($mk.Count -gt 0) {
-                $d1Why += ("最近一次启动的日志(" + (Split-Path $lp -Leaf) + ")里出现 VERR_INTNET_FLT_IF_NOT_FOUND")
+                $d1Why += ("最近一次启动的日志(" + (Split-Path $lp -Leaf) + ", " + [int]$ageH + " 小时前)里出现 VERR_INTNET_FLT_IF_NOT_FOUND")
                 break
             }
         }
@@ -2857,7 +2862,12 @@ if ($script:DiagFailCount -eq 0) {
 Write-Host ""
 Write-Host "  本报告只覆盖上面列出的这些节,不表示环境完全无问题:"
 Write-Host "  未覆盖的是安装器自身的校验与设备包镜像内容 —— 前者由 安装.bat 自己核对,"
-Write-Host "  后者不随本工具分发。报告里没报错,只说明已覆盖的这些项没发现问题。"
+Write-Host "  后者不随本工具分发。"
+if ($fxItems.Count -gt 0) {
+    Write-Host ("  除第 [9] 节列出的 " + $fxItems.Count + " 项外,没报错的只说明已覆盖的检查没发现问题。")
+} else {
+    Write-Host "  报告里没报错,只说明已覆盖的这些项没发现问题。"
+}
 Write-Host ""
 Write-Host "  本报告全程为只读采集,不含任何交互内容 —— 修复在转录停止之后才运行,"
 Write-Host "  它那一段另写一份 <报告名>.repair.txt,不会混进本文件。"
@@ -2896,6 +2906,9 @@ try {
 # 不会写进报告。按 y 就跑全部(含需确认项),不再逐条问 —— 这一步的用途就是
 # 让人不用记参数、不用读第 [9] 节也能修好。
 #
+# 回车 = 做,只有输入 n 才是不做 —— 与逐条确认那个提示保持同一套约定
+# (「回车 = 执行这一项 / 输入 n 再回车 = 跳过」)。默认动作是执行。
+#
 # 四种情形一律不问:
 #   - 已经带了 -Fix(调用方自己指定了范围)
 #   - -DryRun(明确要求不执行)
@@ -2909,7 +2922,12 @@ if ((-not $Fix) -and (-not $DryRun.IsPresent) -and (-not $NoMenu.IsPresent) -and
     try { if ([Console]::IsInputRedirected) { $interactive = $false } } catch { $interactive = $false }
     if ($interactive) {
         Write-Host ""
-        Write-Host -NoNewline "  按 y 回车 = 现在执行以上全部修复(含需确认项);直接回车 = 不做: "
+        Write-Host ("  将要处理 " + $fxItems.Count + " 项 —— 详情见第 [9] 节:")
+        foreach ($it in $fxItems) {
+            Write-Host ("    [" + (Get-RepairTierText $it) + "] " + $it.Title)
+        }
+        Write-Host ""
+        Write-Host -NoNewline "  回车 = 现在执行以上全部修复(含需确认项);输入 n 再回车 = 不做: "
         $ans = $null
         try { $ans = [Console]::ReadLine() } catch { $ans = $null }
         if ($null -eq $ans) {
@@ -2917,11 +2935,12 @@ if ((-not $Fix) -and (-not $DryRun.IsPresent) -and (-not $NoMenu.IsPresent) -and
             Write-Note "[跳过] 读不到输入,按【不执行】处理。"
         } else {
             $t = ([string]$ans).Trim().ToLower()
-            if (($t -eq "y") -or ($t -eq "yes")) {
+            if (($t -eq "n") -or ($t -eq "no")) {
+                Write-Host "  已跳过,报告保持只读。"
+            } else {
+                # 回车(空串)与其它任何输入都按「做」处理。
                 $runNow = $true
                 $selectAll = "all"
-            } else {
-                Write-Host "  已跳过,报告保持只读。"
             }
         }
     }

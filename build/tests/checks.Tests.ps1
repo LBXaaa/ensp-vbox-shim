@@ -919,12 +919,32 @@ Assert-True ($diagText -match '\[Console\]::ReadLine\(\)') "cli: the go-ahead re
 # A redirected stdin must not count as consent -- same hazard the per-item
 # prompt already guards against, and the reason this reads with
 # [Console]::ReadLine() rather than Read-Host.
-Assert-True ($diagText -match '\u6309 y \u56de\u8f66') "cli: the report offers a one-key repair"
+Assert-True ($diagText -match '\u8f93\u5165 n \u518d\u56de\u8f66') "cli: the report offers a one-key repair"
+Assert-True ($diagText -match '\$t -eq "n"') "cli: only an explicit n declines; bare Enter runs"
 Assert-True ($diagText -match '\[Console\]::IsInputRedirected') "cli: the offer is skipped when stdin is redirected"
 Assert-True ($diagText -match '\$NoMenu\.IsPresent') "cli: -NoMenu suppresses the offer"
-Assert-True ($diagText -match '\$selectAll = "all"') "cli: y runs every tier, not just lossless"
+Assert-True ($diagText -match '\$selectAll = "all"') "cli: the go-ahead runs every tier, not just lossless"
 Assert-True ($diagText -match '\$runNow') "cli: the answer is carried into the repair call"
 Assert-True ($diagText -match 'AssumeYes \(\$Yes\.IsPresent -or \$runNow\)') "cli: and it skips the per-item prompt it already answered"
+
+# --- what the offer is about -----------------------------------------------
+# The findings live in section [9]; by the time the question is printed, that
+# list is off the top of the screen. Repeat it above the prompt so that
+# "the above" means something the reader can actually see.
+Assert-True ($diagText -match '\u5c06\u8981\u5904\u7406') "cli: the offer restates what it is about to do"
+Assert-True ($diagText -match '\[9\] \u8282') "cli: and points at the section carrying the details"
+
+# --- stale evidence --------------------------------------------------------
+# eNSP VBoxManage.log never rotates, so a single long-fixed failure keeps
+# proposing a lossy adapter bounce on every run. Only the last 72 hours count.
+Assert-True ($diagText -match '\$ageH -gt 72') "diag: intnet evidence older than 72h is ignored"
+Assert-True ($diagText -match '\$ageH = -1') "diag: an unreadable timestamp counts as stale"
+Assert-True ($diagText -match '\u5c0f\u65f6\u524d') "diag: the evidence line says how old the log is"
+
+# --- section 10 must not contradict section 9 ------------------------------
+# "no probe failed" is not "nothing was found"; the fixed sentence claimed the
+# latter even when section 9 listed an item.
+Assert-True ($diagText -match '\u9664\u7b2c \[9\] \u8282\u5217\u51fa\u7684') "diag: section 10 names the findings instead of denying them"
 
 
 $liveReadHost = @([regex]::Split($diagText, '\r?\n') | Where-Object {
