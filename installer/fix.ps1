@@ -1,4 +1,4 @@
-# fix.ps1 - repair primitives for ensp-vbox-shim.
+﻿# fix.ps1 - repair primitives for ensp-vbox-shim.
 #
 # This is the only file in the project that changes the system. Everything else
 # is read-only. The contract:
@@ -157,6 +157,9 @@ function Test-RepairRights {
 
 function Write-DryRunLine {
     param([string]$Step, [string]$Text)
+    # Start-Transcript 抓的是 host 层,6>$null 挡不住它 —— 报告那条路径要真的一句
+    # 都不打,只能在这里闭嘴。
+    if ($script:SuppressDryRun) { return }
     Write-Host ("[dry-run] " + $Step + ": " + $Text)
 }
 

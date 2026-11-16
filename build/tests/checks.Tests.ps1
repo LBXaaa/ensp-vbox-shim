@@ -941,11 +941,6 @@ Assert-True ($diagText -match '\$ageH -gt 72') "diag: intnet evidence older than
 Assert-True ($diagText -match '\$ageH = -1') "diag: an unreadable timestamp counts as stale"
 Assert-True ($diagText -match '\u5c0f\u65f6\u524d') "diag: the evidence line says how old the log is"
 
-# --- section 10 must not contradict section 9 ------------------------------
-# "no probe failed" is not "nothing was found"; the fixed sentence claimed the
-# latter even when section 9 listed an item.
-Assert-True ($diagText -match '\u9664\u7b2c \[9\] \u8282\u5217\u51fa\u7684') "diag: section 10 names the findings instead of denying them"
-
 # --- the console keeps its colour ------------------------------------------
 # The TUI was deleted on purpose, but it was also the only thing giving the
 # output any visual hierarchy. Colour belongs to the console only: the

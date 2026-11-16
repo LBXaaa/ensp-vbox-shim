@@ -94,11 +94,11 @@ function Write-Fact {
     param([string]$Label, [string]$Value, [int]$Width = 16)
     $pad = $Width - (Get-DisplayWidth $Label)
     if ($pad -lt 1) { $pad = 1 }
-    # 标签压暗、值保留原色:一屏几十行事实,先扫标签再读值,比通篇同色快。
-    Write-Host -NoNewline ("  " + $Label + (" " * $pad) + ": ") -ForegroundColor DarkGray
+    # 整行一次写出:Start-Transcript 会把 -NoNewline 的片段单独断行,报告就散了。
+    $line = "  " + $Label + (" " * $pad) + ": " + $Value
     $vc = $null
     if ($Value -eq "正常") { $vc = "Green" } elseif ($Value -eq "异常") { $vc = "Red" }
-    if ($vc) { Write-Host $Value -ForegroundColor $vc } else { Write-Host $Value }
+    if ($vc) { Write-Host $line -ForegroundColor $vc } else { Write-Host $line }
 }
 
 function Write-Section {
@@ -328,7 +328,8 @@ function Get-RepairPlan {
             # (「[dry-run] step 3 bounce: would run: ...」),一起落进要附给 issue 的
             # 那份文件里。Write-Host 走的是信息流(6),所以只按这个流抑制,
             # 返回值不受影响。
-            $r = & $step.Fn @argMap -DryRun 6>$null
+            $script:SuppressDryRun = $true
+            try { $r = & $step.Fn @argMap -DryRun 6>$null } finally { $script:SuppressDryRun = $false }
         } catch {
             $ok = $false
             $reason = ($step.Fn + " 计划阶段出错: " + $_.Exception.Message)
@@ -880,7 +881,6 @@ function Invoke-RepairRun {
 
         if ($pre -and (-not $pre.Ok)) {
             Write-Note ("eNSP 正在运行(" + (@($pre.Running) -join ", ") + ")。按设计约定,修复前必须关闭")
-            Write-Note "eNSP —— 网络组件重绑会打断正在运行的设备。本次只显示上面的命令,不执行。"
             Write-Note "关掉 eNSP 后重跑即可。"
             $skipCount++
             continue
@@ -936,7 +936,6 @@ function Invoke-RepairRun {
         }
 
         if ($failed) {
-            Write-Note "后续步骤依赖前一步,已停下。排掉上面这条原因后重跑。"
             $failCount++
         } else {
             $doneCount++
@@ -970,12 +969,11 @@ function Invoke-RepairCli {
     Write-Host "  修复"
     Write-Host ("=" * 64)
     Write-Host ""
-    Write-Note "这一段会改动系统,且只在命令行点名之后才动手。报告是只读采集,已经写完。"
 
     # 第三档与未能判定的,照旧只打印:这一段里没有它们的执行入口。
     if ($manual.Count -gt 0) {
         Write-Host ""
-        Write-Host "  以下项不由本工具自动修复(原因与手动步骤见各条):"
+        Write-Host "  以下项需要手动处理:"
         Write-Host ""
         foreach ($it in $manual) {
             Write-Host ("  * [" + (Get-RepairTierText $it) + "] " + $it.Title)
@@ -1036,7 +1034,6 @@ function Invoke-RepairCli {
     if ($PlanOnly) {
         Write-Host "  -DryRun:下面只列计划,不会执行。"
     } elseif (@($sel | Where-Object { $_.Tier -eq "confirm" }).Count -gt 0) {
-        Write-Host "  标【有损】的项会先明示影响再放行;不想逐条确认就加 -Yes。"
     }
 
     $res = Invoke-RepairRun -Items $sel -AssumeYes $AssumeYes -PlanOnly $PlanOnly
@@ -1048,7 +1045,6 @@ function Invoke-RepairCli {
         $sumColor = $(if ($res.Failed -gt 0) { "Red" } elseif ($res.Skipped -gt 0) { "Yellow" } else { "Green" })
         Write-Host ("  完成 " + $res.Done + " 项,跳过 " + $res.Skipped + " 项,失败 " + $res.Failed + " 项。") -ForegroundColor $sumColor
         if ($res.Done -gt 0) {
-            Write-Host "  修复后重跑一次 环境检查.bat 复核:报告第 [9] 节会按新的状态重新判定。"
         }
     }
 
@@ -1091,7 +1087,6 @@ Write-Host ("=" * 64)
 Write-Host "  eNSP x VirtualBox 环境诊断报告"
 Write-Host ("  生成时间 : " + (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"))
 Write-Host "  本报告为只读采集,不修改任何系统设置。"
-Write-Host "  可直接附进 issue;除系统用户名外不含个人信息。"
 Write-Host ("=" * 64)
 
 $EnspDir = Find-EnspDir -Override $EnspDir
@@ -1141,8 +1136,6 @@ foreach ($k in $vboxVerKeys) {
 if (-not $vboxVerSeen) {
     Write-Fact "注册表版本" "(两个注册表键都没有 Version)"
 }
-Write-Note "该注册表值是 eNSP 看到的那一个 —— 装有本垫片时它被改写为 5.2.x,"
-Write-Note "属伪装值,不等于真实 VBox 版本。真实版本单独探测如下。"
 
 # 真实版本必须自己跑一次 VBoxManage 才拿得到。只报注册表值等于把真实版本
 # 从报告里丢掉 —— 本报告是给人独立阅读的,不能要求读者自己补敲命令。
@@ -1177,8 +1170,6 @@ if ($nonAsciiRoots.Count -eq 0) {
     Write-Fact "非 ASCII 路径" "无"
 } else {
     Write-Host ("  [ !! ] 非 ASCII 路径: " + ($nonAsciiRoots -join " / "))
-    Write-Note "     eNSP 调用链上有若干处按 ANSI 代码页传路径,带中文的目录会让设备起不来。"
-    Write-Note "     eNSP 与 VBox 目录可以改(重装到纯英文路径);用户目录要新建账户才能改。"
 }
 
 # 垫片 DLL 的四个投放位置。期望值按文本从 install.ps1 里取,不执行该文件。
@@ -1274,9 +1265,7 @@ try {
         }
         $viewErrs = @($cj.Views | Where-Object { $_.Error })
         if ($viewErrs.Count -gt 0) {
-            Write-Note "  !! 有视图读不出来,上面那条结论不成立 —— 先解决读取失败再判断。"
         } elseif (-not $cj.PrimaryShim) {
-            Write-Note "  !! eNSP 是 32 位进程,读的正是上面那个 32 位视图。它不指向垫片时,"
             Write-Note "     eNSP 拿到的是 Oracle 的真接口,版本号报 7.x,于是弹那句"
             Write-Note "     「VirtualBox version is not supported.」,设备走不到启动这一步。"
             Write-Note "     修法: 重跑 安装.bat —— 它会重写 32 位视图那个键。"
@@ -1357,7 +1346,6 @@ try {
         $vc = Get-X86VcRuntimeFacts -VBoxDir $VBoxDir
         if (-not $vc.X86DirFound) {
             Write-Host ("  [ !! ] 没有 " + $vc.X86Dir)
-            Write-Note "     VBox 7.x 正常安装自带这个目录;它不在说明 VBox 安装异常。"
         } else {
             foreach ($vf in $vc.Files) {
                 Write-Host ("  [" + $(if ($vf.Present) { " OK " } else { "缺失" }) + "] " + $vf.Name)
@@ -1413,10 +1401,7 @@ if (-not $EnspDir) {
 }
 
 Write-Host ""
-Write-Note "分流怎么看: 宿主侧设备(S5700 等)是普通用户态进程,完全不经过 VirtualBox。"
 Write-Note "  宿主侧可用、AR 不可用  -> 故障在 VirtualBox 层,往下看第 3 节。"
-Write-Note "  宿主侧也不可用          -> 先看 eNSP 本体(安装、性能计数器、防火墙、端口)。"
-Write-Note "  上表只说明设备包在不在,不代表设备能起来;它用来缩小范围,不用于下结论。"
 
 # 虚拟化后端(Hyper-V / VBS / 内核隔离)。这一段是【信息】,不是故障判定:
 # 它们把 VirtualBox 7.x 推到 WHP 后端,代价只是设备启动变慢。此处只报事实,
@@ -1461,14 +1446,10 @@ try {
 
         if (-not ($drv.NetAdpPresent -and $drv.NetLwfPresent)) {
             Write-Host ""
-            Write-Note "  !! 这就是 2026-09-15 的故障形态:VBox 网络驱动包不在驱动库里。"
-            Write-Note "     禁用它再启用、或重新注册驱动,都修不好 —— 必须重装驱动包:"
             Write-Note "       VBoxDrvInst.exe install --inf-file <VBoxDir>\netadp6\VBoxNetAdp6.inf"
             Write-Note "       netcfg.exe -v -l <VBoxDir>\netlwf\VBoxNetLwf.inf -c s -i oracle_VBoxNetLwf"
-            Write-Note "     之后还要做一次适配器禁用/启用,否则驱动不会进入数据路径。"
             if ($drv.NetAdpPresent -and (-not $drv.NetLwfPresent)) {
                 Write-Note "     已知陷阱: 只补 netadp6 不补 netlwf 时,hostonlyif create 会成功,"
-                Write-Note "     但接口名变成 「...Adapter #2」,而 eNSP 按精确名绑定 —— 症状与完全缺失一样。"
             }
         }
     }
@@ -1489,9 +1470,7 @@ try {
         Write-Host ("  [" + $(if ($s.Running) { " OK " } else { " !! " }) + "] " + $s.Name.PadRight(12) + $state)
     }
     if (-not $layers.Layer2.AllRunning) {
-        Write-Note "  上面标 !! 的服务没有在运行。VBoxSup 不跑,虚拟机直接起不来。"
     }
-    Write-Note "  VBoxDrv(5.2 时代的驱动)不在检查范围内 —— 7.2 上本来就没有它,不是缺陷。"
 } catch {
     Write-Fail "第 2 层" $_.Exception.Message
 }
@@ -1529,11 +1508,8 @@ try {
             Write-Note ("  !! 有 " + $dupNames.Count + " 个 host-only 名字被多块网卡共用:")
             foreach ($dn in $dupNames) { Write-Note ("       " + $dn) }
             Write-Note "     VM 按名字绑(hostonlyadapterN),重名时 VBox 取哪块不确定 ——"
-            Write-Note "     客机可能挂到没有 192.168.56.1 的那块上,永远够不到宿主。"
-            Write-Note "     设备表现为进度条走不完,与「补丁打错」无法区分。"
             Write-Note "     修法: VBoxManage list hostonlyifs 看有几块、名字分别是什么;"
             Write-Note '           多出来的那块用 VBoxManage hostonlyif remove "<名字>" 删除。'
-            Write-Note "           该命令只认名字不认 GUID,同名时多删几次并逐次核对。"
         } elseif ($ifs.Count -gt 1) {
             Write-Note ("  共 " + $ifs.Count + " 块 host-only 适配器,名字互不相同 —— 模板名能精确命中,不算问题。")
         }
@@ -1556,7 +1532,6 @@ try {
         Write-Fact "状态" $a.Status 20
         Write-Fact "IPv4" $a.IPv4 20
     }
-    Write-Note "  连接名是本地化的(如「以太网 11」),不可用于匹配;InterfaceDescription 才是稳定键。"
 } catch {
     Write-Fail "第 4 层" $_.Exception.Message
 }
@@ -1572,7 +1547,6 @@ try {
     foreach ($b in $binds) {
         Write-Host ("  [" + $(if ($b.Bound -and $b.Enabled) { " OK " } else { " !! " }) + "] " + $b.InterfaceName + "   绑定=" + $b.Bound + "  启用=" + $b.Enabled)
     }
-    Write-Note "  该绑定同时挂在物理网卡与全部 Hyper-V vEthernet 上,并非 host-only 专属;"
     Write-Note "  这里只列 host-only 适配器上的那一条。"
 } catch {
     Write-Fail "第 5 层" $_.Exception.Message
@@ -1607,8 +1581,6 @@ try {
                 if ($cmp.HasMismatch) {
                     Write-Host ("  [ !! ] 模板里有 " + $cmp.MissingInVBox.Count + " 个名字在实际接口中不存在:")
                     foreach ($m in $cmp.MissingInVBox) { Write-Host ("         " + $m) }
-                    Write-Note "  这是 「#2」 类问题的正确判据:名字必须【精确】命中,带后缀就等于命不中。"
-                    Write-Note "  修法是改网卡,不是重新注册设备 —— 注册设备只读模板,从不把网卡名写回去。"
                     Write-Note "  删掉带后缀那块 → VBoxManage hostonlyif create → 配 192.168.56.1 →"
                     Write-Note "  禁用再启用一次该网卡(让过滤驱动重新进数据路径)。"
                 } else {
@@ -1646,7 +1618,6 @@ try {
     $hoAlias = @($adapters | Where-Object { $_.IPv4 } | Select-Object -First 1).InterfaceName
     if ($rt.Count -eq 0) {
         Write-Host ("  [ !! ] 路由表里没有 " + $probeNet + ".0/24 这条直连路由。")
-        Write-Note "  没有它,主机到该网段整个不通,所有设备都起不来(不只是防火墙)。"
         Write-Note "  修法:禁用再启用那块 host-only 网卡,Windows 会自动把这条直连路由重建出来。"
     } else {
         foreach ($r in $rt) {
@@ -1670,9 +1641,6 @@ try {
             Write-Fact "系统称会用的出接口" $(if ($src.InterfaceAlias) { $src.InterfaceAlias } else { "(未读到)" })
             if ($hoIp -and ($src.IPAddress -ne $hoIp)) {
                 Write-Note ("  [提示] 系统称这条路径不走 host-only(" + $hoIp + "),与上面的路由表不一致。")
-                Write-Note "  仅为提示,不作判定 —— 本项探测(Find-NetRoute)实测会骗人:在一台路由表"
-                Write-Note "  完全正确、设备也能正常启动的机器上,它对同一网段的两个地址给出了互相"
-                Write-Note "  矛盾的答案,而该机真实的 56789 连接本端地址是正确的 host-only 地址。"
                 Write-Note "  唯一判据是设备卡住时那条真实连接:"
                 Write-Note "    Get-NetTCPConnection 里找 56789 端口那条,看 LocalAddress 是不是 host-only 那块。"
                 Write-Note ("  若确证被接管,修法是在那个软件的分流或绕过列表里排除 " + $probeNet + ".0/24。")
@@ -1692,7 +1660,6 @@ try {
                                 $_.InterfaceDescription -match 'Tun|TAP|Wintun') })
     if ($tunish.Count -gt 0) {
         Write-Fact "疑似接管类网卡" (($tunish | ForEach-Object { $_.Name }) -join " | ")
-        Write-Note "  上面这些不是 VirtualBox 的网卡。若第 7 层判定为接管,来源通常就在其中。"
     }
 } catch {
     Write-Fail "第 7 层" $_.Exception.Message
@@ -1740,9 +1707,6 @@ try {
         }
 
         # 中立的收尾说明:没有它,读者无从知道上面那行「启用: 是」算不算问题。
-        Write-Note "  DHCP 该不该启用,本项目的设计(§10.1)把它列为【未核实】:"
-        Write-Note "  社区资料称 host-only 的「启用服务器」应不勾选,而本项目安装器主动创建"
-        Write-Note "  并启用了它;两者场景不同(5.2 与 7.2),尚未用实测对齐。"
         Write-Note "  因此上面只报状态。"
     }
 } catch {
@@ -1769,16 +1733,12 @@ try {
 
     if (-not $perf.Functional) {
         Write-Host ""
-        Write-Note "  !! Windows 性能计数器损坏时,设备会一直打印 '####' 而不进入 CLI。"
         Write-Note "     修法(需要管理员权限): lodctr /R"
         Write-Note "     该命令从备份重建计数器注册信息;跑完重开 eNSP 再看。"
     }
 
     Write-Host ""
-    Write-Note "  判定方式说明: 这里是真的去跑了一次计数器,而不是查注册表键"
     Write-Note "  HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\009。"
-    Write-Note "  那个键在当前 Windows 上并不存在,照它判断会把每一台健康机器都"
-    Write-Note "  报成「计数器损坏」;这个检查只会误报,故不采用。"
 } catch {
     Write-Fail "性能计数器" $_.Exception.Message
 }
@@ -1815,9 +1775,6 @@ try {
             Write-Note "  请用管理员身份重跑本节后再下结论。"
         }
         Write-Host ""
-        Write-Note "  !! eNSP 官方 FAQ 把这一条列为与性能计数器损坏相同的 '####' 卡死成因。"
-        Write-Note "     规则需要在【Domain】和【Public】两个配置文件上都处于启用状态;"
-        Write-Note "     只启用其中一个、或规则被禁用/阻止,都不算数。"
         Write-Note "     目标规则名形如 ensp_vboxserver / eNSP_VBoxServer。"
     }
 } catch {
@@ -1845,8 +1802,6 @@ try {
         Write-Note "     一直加到不再冲突为止,然后重启 eNSP。"
     }
     Write-Host ""
-    Write-Note "  注意: eNSP 正在运行时,它本来就该占着这几个端口 ——"
-    Write-Note "  判断「冲突」之前先确认 eNSP 没在跑,否则会把自己的进程算成冲突。"
 } catch {
     Write-Fail "服务端口" $_.Exception.Message
 }
@@ -1876,21 +1831,16 @@ try {
     if ($pk.NpcapDisplaced) {
         Write-Host ""
         Write-Note "  !! 系统 wpcap.dll 是 Npcap 提供的 —— eNSP 抓包不认它。"
-        Write-Note "     而且 Npcap 在装时会让 WinPcap 安装程序报『已有更新版本』而拒绝安装。"
         Write-Note "     修法: 卸载 Npcap(或只保留其独立模式),再把 wpcap.dll 换回 WinPcap 4.1.3。"
     } elseif ($pk.PacketTooNew) {
         Write-Host ""
         Write-Note ("  !! packet.dll 的版本(" + $pk.PacketVersion + ")高于原厂最后一版 WinPcap(4.1.3)。")
-        Write-Note "     原厂 WinPcap 停在 4.1.3,不存在更高版本 —— 报到更高版本的是替代品的兼容层。"
         Write-Note "     Npcap 勾选 WinPcap API-compatible Mode 安装时,会把自己的 packet.dll 写进系统"
-        Write-Note "     目录并报内部版本 5.1.83.730;Win10Pcap 同类。eNSP 直接 import 的就是这个文件,"
         Write-Note "     抓包与部分设备的启动会失败。"
         Write-Note "     修法: 控制面板卸载 Npcap(或 Win10Pcap),再把 WinPcap 4.1.3 装回来。"
-        Write-Note "     装 WinPcap 若报『已有更新版本』,是同一个成因 —— 替代品清掉后即可装上。"
     } elseif ($pk.WinPcapUsable) {
         Write-Note "  WinPcap 就位,eNSP 抓包路径可用。"
         if ($pk.NpcapInstalled) {
-            Write-Note "    另外装了 Npcap,但它没抢走系统 wpcap.dll,两者并存不影响 —— 不用动它。"
         }
     } else {
         Write-Note "  没有可用的 WinPcap。抓包与部分设备的启动会失败。"
@@ -1926,7 +1876,6 @@ try {
         Write-Host ""
         Write-Note "  !! 有不止一块网卡持有 192.168.56.x 网段的地址。eNSP 的资源文件把"
         Write-Note "     dest:192.168.56.1 写死在模板里;VPN 或 VMware 的 VMnet 适配器只要"
-        Write-Note "     占住同一网段,发往 192.168.56.1 的流量就会被路由到那块网卡上,"
         Write-Note "     设备因而连不上宿主。修法: 改掉或禁用那块多余网卡的地址。"
     } elseif ($subnetFacts.OwnerCount -eq 0) {
         Write-Note "  没有任何网卡持有 192.168.56.x 的地址 —— host-only 适配器可能没配上 IP,"
@@ -1963,11 +1912,8 @@ try {
             Write-Note "     单这一条就足以让设备起不来或连不通。修法见第 3 节第 1 / 第 5 层。"
         }
         if ($a.IPv6Enabled) {
-            Write-Note "  这块适配器上 IPv6 处于启用状态。社区流传的做法是把它取消勾选后"
-            Write-Note "  设备连通性恢复 —— 属经验做法,不代表本机存在缺陷,仅作记录。"
         }
     }
-    Write-Note "  连接名只用于显示:它是本地化的,不能当匹配键。"
 } catch {
     Write-Fail "host-only 网卡属性" $_.Exception.Message
 }
@@ -2141,7 +2087,6 @@ try {
         $badSnap = @($vmFacts | Where-Object { $_.DirPresent -and $_.Registered -and (-not $_.LinkSnapshot) })
         if (($badReg.Count -gt 0) -or ($badSnap.Count -gt 0) -or $fwBad) {
             Write-Host ""
-            Write-Note "  !! 上面标 !! 的项会让对应设备一拉就报 40,而垫片日志里看不出异常。"
             if (($badReg.Count -gt 0) -or ($badSnap.Count -gt 0)) {
                 Write-Note "     修法: 双击 注册设备.bat —— 它按需重注册并补建缺失的 _Link 快照,"
                 Write-Note "     幂等且不删磁盘。补快照要求 VM 没有内存镜像:poweroff 与 aborted"
@@ -2212,7 +2157,6 @@ try {
         $hasCx200 = Test-Path $cxPath
         Write-Host ("  [" + $(if ($hasCeDevice) { "有" } else { "无" }) + "] " + $ceRel + "   (CE6800 / CE12800)")
         Write-Host ("  [" + $(if ($hasCx200) { "有" } else { "无" }) + "] " + $cxRel + "   (CX200)")
-        Write-Note "  上面两行就是本次判定所依据的完整路径。"
     }
 } catch {
     Write-Fail "已装设备包" $_.Exception.Message
@@ -2276,9 +2220,7 @@ try {
                 }
             }
             Write-Host ""
-            Write-Note "  订正一条流传很广的说法: 「出厂默认 1 MB」出自 VirtualBox 5.0 时代。"
             Write-Note "  eNSP V1.3.00.100 上实测: AR_Base=16、vfw_usg=12、WLAN_AC_Base=16,"
-            Write-Note "  没有任何一个模板靠近 1。所以这一项防的是「被改坏」,与出厂状态无关。"
         }
     }
 } catch {
@@ -2322,7 +2264,6 @@ try {
         }
         if ($uartBad -gt 0) {
             Write-Note "  !! 上面标 !! 的模板没有可用的 COM2 命名管道,对应设备进不了 CLI。"
-            Write-Note "     模板由 eNSP 安装时生成,改动它属【有损且非必需】,本工具不自动做。"
             Write-Note "     手动修法见 docs\troubleshooting-error40.md,或重装该设备包恢复模板。"
         }
     }
@@ -2357,8 +2298,6 @@ try {
                 Write-Note "     手动等价命令见 installer\README.md 的权限一节。"
             }
             Write-Host ""
-            Write-Note "  判据说明: 这里读的是 ACL,并没有真去写一次 —— 本诊断承诺全程只读。"
-            Write-Note "  因此 deny 项与组的嵌套没有按系统的方式展开,结论偏保守:"
             Write-Note "  显示可写时基本确实可写;显示不可写时,请用【平时启动 eNSP 的账户】"
             Write-Note "  重跑本节确认后再下结论。"
         }
@@ -2458,8 +2397,6 @@ try {
             Write-Host ""
             Write-Note "  eNSP 已关闭,但仍有 VBoxHeadless 占着内存。"
             Write-Note "     CE / CX / NE 的客户机是 Linux,硬断电收尾慢,实测 5 分钟以上;"
-            Write-Note "     期间内存不释放,个别进程崩溃后弹出的「应用程序错误」框不点掉会一直挂住。"
-            Write-Note "     全部退完后内存正常归还,本工具也不把它算作故障。"
             Write-Note "     不想等就双击 清理残留.bat —— 它按归属列清单后确认,不碰用户自己的 VM。"
         } elseif ($proc.EnspRunning -and ($owned.Count -gt 0)) {
             Write-Note "  eNSP 正在运行,上面这些 VM 是它的在用设备,属正常。"
@@ -2525,14 +2462,10 @@ function Find-NewestVmLog {
     return $best
 }
 
-Write-Note "采集范围: 只取下列【当前】文件并截断尾部。同目录下数十个历史 .bak_*"
-Write-Note "一律不采 —— 全量打包会把报告撑成几十 MB 的噪音。"
 Write-Host ""
-Write-Note "后面七份里,有三份是故障定性的关键证据所在:"
 Write-Note "  * eNSP 的 vboxserver\log\VBoxManage.log —— VERR_INTNET_FLT_IF_NOT_FOUND 只在它这里出现;"
 Write-Note "  * VBox.log(最近一次启动)—— 走的是 HM 还是 NEM、网络 LUN 建没建起来,都在这里;"
 Write-Note "  * VBoxHardening.log —— 加固拒绝加载时才有,写的是【是哪个 DLL 被拒的】。"
-Write-Note "后两份取自最近被写过的那一次设备启动,因此它们反映的是【最近一次失败现场】。"
 
 # --- 最近一次启动的判读 ------------------------------------------------------
 #
@@ -2556,8 +2489,6 @@ try {
         Write-Note "  未找到 VBox.log。搜索范围:eNSP 的 vboxserver\、%LOCALAPPDATA%\eNSP、"
         Write-Note "  %USERPROFILE%\.VirtualBox\VMs —— 以各 VM 目录下的 Logs\ 为准。"
         Write-Note "  未找到不等于设备没启动过:eNSP 拆机时执行 unregistervm --delete,"
-        Write-Note "  会把克隆目录连同其中的 Logs\ 一并删除 —— 只有正在运行或卡住的设备"
-        Write-Note "  才留得下日志。设备启动过但已被正常清理时,这里同样是空的。"
     } else {
         $vl = @(Get-Content -Path $vboxLogPath -ErrorAction Stop)
         Write-Fact "VBox.log" ($vboxLogPath + "   (" + $vl.Count + " 行)")
@@ -2581,14 +2512,10 @@ try {
         } elseif ($be.Backend -eq "iem") {
             Write-Fact "执行后端" "IEM (纯解释执行)"
             Write-Host ("      [ !! ] " + $be.IemLine)
-            Write-Note "     硬件与 WHP 都用不上,guest 正被逐条解释执行 —— 会慢到不可用。"
-            Write-Note "     常见成因是嵌套虚拟化没打开:宿主没给这台客户机暴露 VT-x,"
             Write-Note "     客户机内又没有可用的 WHP。"
         } else {
             Write-Fact "执行后端" "未能判定"
-            Write-Note "     两份判据行都没出现 —— 日志可能被截断,或这次启动没走到后端初始化。"
             Write-Note "     注意不要拿 'HM: VT-x/AMD-V init method: Local' 当判据:"
-            Write-Note "     它说的是 HM 模块怎么初始化的,走 NEM 时也会出现。"
         }
 
         $markers = @(Find-VBoxLogMarkers -Lines $vl)
@@ -2625,7 +2552,6 @@ try {
     Write-Host ""
     if (-not $hardLogPath) {
         Write-Note "  未找到 VBoxHardening.log(与 VBox.log 同目录,每次启动都会生成)。"
-        Write-Note "  同上:克隆被 --delete 清理时它会一起消失,未找到不等于从未启动过设备。"
     } else {
         $hl = @(Get-Content -Path $hardLogPath -ErrorAction Stop)
         Write-Fact "VBoxHardening.log" ($hardLogPath + "   (" + $hl.Count + " 行)")
@@ -2640,7 +2566,6 @@ try {
 
         if (-not $hp.Failed) {
             Write-Fact "加固判定" "未发现加固失败"
-            Write-Note "     加固日志每次启动都会生成,它没有「结尾行」—— 判定靠的是【找不到错误"
             Write-Note "     锚点】,不是靠找到某个成功标记。"
         } else {
             Write-Host "  [ !! ] 加固判定: 失败"
@@ -2651,13 +2576,9 @@ try {
                 $note = $hardenNotes[$e.Code]
                 if ($note) { Write-Note ("          -> " + $note) }
             }
-            Write-Note "     加固是 VirtualBox 自身的行为,不是本垫片引入的;原版 VBox 同样会拒绝。"
             if (@($hp.RejectedModules).Count -gt 0) {
-                Write-Note "     它无法由本工具修复 —— 要动的是【被拒的那个模块】(卸载它 / 换签名版),"
                 Write-Note "     或用 VirtualBox 认可的方式加载。"
             } else {
-                Write-Note "     本次没有任何模块被拒 —— 加固在加载模块之前就终止了,所以没有可卸载"
-                Write-Note "     的对象。加固在官方构建里不可关闭,本工具无从绕过;改动只能落在"
                 Write-Note "     VirtualBox 或系统层面。"
             }
         }
@@ -2748,9 +2669,6 @@ $sectionsOk += "9"
 # 命令由 -DryRun 产出(fix.ps1 的契约:dry run 只列命令、不改动任何东西),
 # 所以本节仍然是只读采集的产物。
 Write-Host ""
-Write-Host "  下面是本机实际查出的问题,以及各自对应的处置。"
-Write-Host "  命令取自 -DryRun 计划(只列不改),可直接复制执行。"
-Write-Host ""
 
 try {
     $findings = @(Get-RepairFindings -VBoxDir $VBoxDir -EnspDir $EnspDir)
@@ -2799,12 +2717,7 @@ if ($fxItems.Count -eq 0) {
         $tierColor = $(if ($it.Tier -eq "lossless") { "Green" } else { "Yellow" })
         Write-Host ("  [" + (Get-RepairTierText $it) + "] " + $it.Title) -ForegroundColor $tierColor
 
-        if ($it.Symptom)  { Write-Host ("      现象 : " + $it.Symptom) }
-        if ($it.Evidence) { Write-Host ("      依据 : " + $it.Evidence) }
-        if ($it.Impact -and @($it.Impact).Count -gt 0) {
-            Write-Host "      影响 :"
-            foreach ($line in @($it.Impact)) { Write-Host ("             " + $line) }
-        }
+        if ($it.Evidence) { Write-Host ("      " + $it.Evidence) }
 
         $plan = $null
         try { $plan = Get-RepairPlan -Item $it } catch { $plan = $null }
@@ -2821,12 +2734,11 @@ if ($fxItems.Count -eq 0) {
             foreach ($c in @($plan.Commands)) { Write-Host ("             " + $c) }
         }
         if ($plan -and @($plan.AlreadyDone).Count -gt 0) {
-            Write-Host ("      注   : 计划阶段已判定满足(执行时会再确认一次): " + (@($plan.AlreadyDone) -join ", "))
         }
 
         if ($plan -and -not $plan.Ok) {
             # 上面已经说了「暂时不可执行」。这里再让人照着抄一遍,只会让他撞第二次。
-            Write-Host ("      执行 : 暂不可用 —— 先解决上面的原因,再执行 环境检查.bat -Fix " + $it.Id)
+            Write-Host "      执行 : 暂不可用"
         } else {
             Write-Host ("      执行 : 环境检查.bat -Fix " + $it.Id)
         }
@@ -2835,7 +2747,7 @@ if ($fxItems.Count -eq 0) {
 }
 
 if ($mnItems.Count -gt 0) {
-    Write-Host "  以下项不由本工具自动修复(原因与手动步骤见各条):"
+    Write-Host "  以下项需要手动处理:"
     Write-Host ""
     foreach ($it in $mnItems) {
         Write-Host ("    * [" + (Get-RepairTierText $it) + "] " + $it.Title) -ForegroundColor Yellow
@@ -2864,24 +2776,12 @@ Write-Section "[10] 收尾"
 $sectionsOk += "10"
 
 Write-Host ""
-Write-Host ("  本次诊断到此结束,已产出第 " + ($sectionsOk -join " / ") + " 节。")
+
 if ($script:DiagFailCount -eq 0) {
     Write-Host "  全部没有出现探测失败。" -ForegroundColor Green
 } else {
     Write-Host ("  全部共有 " + $script:DiagFailCount + " 处探测失败,逐条标在各节里(以 [探测失败] 开头)。") -ForegroundColor Red
 }
-Write-Host ""
-Write-Host "  本报告只覆盖上面列出的这些节,不表示环境完全无问题:"
-Write-Host "  未覆盖的是安装器自身的校验与设备包镜像内容 —— 前者由 安装.bat 自己核对,"
-Write-Host "  后者不随本工具分发。"
-if ($fxItems.Count -gt 0) {
-    Write-Host ("  除第 [9] 节列出的 " + $fxItems.Count + " 项外,没报错的只说明已覆盖的检查没发现问题。")
-} else {
-    Write-Host "  报告里没报错,只说明已覆盖的这些项没发现问题。"
-}
-Write-Host ""
-Write-Host "  本报告全程为只读采集,不含任何交互内容 —— 修复在转录停止之后才运行,"
-Write-Host "  它那一段另写一份 <报告名>.repair.txt,不会混进本文件。"
 Write-Host ""
 Write-Host ("  报告文件: " + $ReportPath)
 
