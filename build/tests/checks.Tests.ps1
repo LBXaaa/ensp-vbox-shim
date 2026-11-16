@@ -946,6 +946,17 @@ Assert-True ($diagText -match '\u5c0f\u65f6\u524d') "diag: the evidence line say
 # latter even when section 9 listed an item.
 Assert-True ($diagText -match '\u9664\u7b2c \[9\] \u8282\u5217\u51fa\u7684') "diag: section 10 names the findings instead of denying them"
 
+# --- the console keeps its colour ------------------------------------------
+# The TUI was deleted on purpose, but it was also the only thing giving the
+# output any visual hierarchy. Colour belongs to the console only: the
+# transcript is written by Write-Host and carries no escape codes, so the
+# report stays plain text and pasteable.
+Assert-True ($diagText -match '-ForegroundColor Cyan') "diag: section headers and the offer are cyan"
+Assert-True ($diagText -match 'ForegroundColor DarkGray') "diag: rules and fact labels are dimmed"
+Assert-True ($diagText -match '\$tierColor') "diag: findings are coloured by tier"
+Assert-True ($diagText -match 'StartsWith') "diag: [done]/[failed]/[skipped] are coloured by marker"
+Assert-True ($diagText -match 'ForegroundColor \$vc') "diag: a fact value of normal/abnormal is coloured"
+
 
 $liveReadHost = @([regex]::Split($diagText, '\r?\n') | Where-Object {
     ($_ -match 'Read-Host') -and ($_.TrimStart() -notmatch '^#')

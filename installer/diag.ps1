@@ -94,20 +94,29 @@ function Write-Fact {
     param([string]$Label, [string]$Value, [int]$Width = 16)
     $pad = $Width - (Get-DisplayWidth $Label)
     if ($pad -lt 1) { $pad = 1 }
-    Write-Host ("  " + $Label + (" " * $pad) + ": " + $Value)
+    # 标签压暗、值保留原色:一屏几十行事实,先扫标签再读值,比通篇同色快。
+    Write-Host -NoNewline ("  " + $Label + (" " * $pad) + ": ") -ForegroundColor DarkGray
+    $vc = $null
+    if ($Value -eq "正常") { $vc = "Green" } elseif ($Value -eq "异常") { $vc = "Red" }
+    if ($vc) { Write-Host $Value -ForegroundColor $vc } else { Write-Host $Value }
 }
 
 function Write-Section {
     param([string]$Title)
     Write-Host ""
-    Write-Host ("=" * 64)
-    Write-Host ("  " + $Title)
-    Write-Host ("=" * 64)
+    Write-Host ("=" * 64) -ForegroundColor DarkGray
+    Write-Host ("  " + $Title) -ForegroundColor Cyan
+    Write-Host ("=" * 64) -ForegroundColor DarkGray
 }
 
 function Write-Note {
     param([string]$Text)
-    Write-Host ("  " + $Text)
+    # 结论性标记统一上色,免得在一屏几百行里找 [失败] / [跳过]。
+    $c = $null
+    if ($Text.StartsWith("[完成]")) { $c = "Green" }
+    elseif ($Text.StartsWith("[失败]")) { $c = "Red" }
+    elseif ($Text.StartsWith("[跳过]")) { $c = "DarkYellow" }
+    if ($c) { Write-Host ("  " + $Text) -ForegroundColor $c } else { Write-Host ("  " + $Text) }
 }
 
 # 探测失败的统一落点:把失败打在受影响的节里,然后继续。
@@ -118,7 +127,7 @@ function Write-Note {
 function Write-Fail {
     param([string]$Where, [string]$Message)
     $script:DiagFailCount = $script:DiagFailCount + 1
-    Write-Host ("  [探测失败] " + $Where + " : " + $Message)
+    Write-Host ("  [探测失败] " + $Where + " : " + $Message) -ForegroundColor Red
 }
 
 # 只读地跑一个外部命令并取回文本行。失败返回对象,不抛出。
@@ -1036,7 +1045,8 @@ function Invoke-RepairCli {
     if ($PlanOnly) {
         Write-Host "  -DryRun 结束:以上只是计划,没有执行任何修复。去掉 -DryRun 即执行。"
     } else {
-        Write-Host ("  完成 " + $res.Done + " 项,跳过 " + $res.Skipped + " 项,失败 " + $res.Failed + " 项。")
+        $sumColor = $(if ($res.Failed -gt 0) { "Red" } elseif ($res.Skipped -gt 0) { "Yellow" } else { "Green" })
+        Write-Host ("  完成 " + $res.Done + " 项,跳过 " + $res.Skipped + " 项,失败 " + $res.Failed + " 项。") -ForegroundColor $sumColor
         if ($res.Done -gt 0) {
             Write-Host "  修复后重跑一次 环境检查.bat 复核:报告第 [9] 节会按新的状态重新判定。"
         }
@@ -1255,7 +1265,7 @@ try {
             } elseif (-not $v.Present -and $v.Primary) {
                 Write-Host ("  [缺失] " + $vn + " : 没有 InprocServer32 项")
             } elseif (-not $v.Present) {
-                Write-Host ("  [ 正常 ] " + $vn + " : 无 InprocServer32(原版 VBox 7 只有 LocalServer32,不需要它)")
+                Write-Host ("  [ 正常 ] " + $vn + " : 无 InprocServer32(原版 VBox 7 只有 LocalServer32,不需要它)") -ForegroundColor Green
             } elseif ($v.PointsAtShim) {
                 Write-Host ("  [ OK  ] " + $vn + " : " + $v.Server)
             } else {
@@ -2780,13 +2790,14 @@ if ($PlanFile) {
 }
 
 if ($fxItems.Count -eq 0) {
-    Write-Host "  没有发现可由本工具自动修复的问题。"
+    Write-Host "  没有发现可由本工具自动修复的问题。" -ForegroundColor Green
 } else {
-    Write-Host ("  可由本工具修复的共 " + $fxItems.Count + " 项:")
+    Write-Host ("  可由本工具修复的共 " + $fxItems.Count + " 项:") -ForegroundColor Cyan
     Write-Host ""
 
     foreach ($it in $fxItems) {
-        Write-Host ("  [" + (Get-RepairTierText $it) + "] " + $it.Title)
+        $tierColor = $(if ($it.Tier -eq "lossless") { "Green" } else { "Yellow" })
+        Write-Host ("  [" + (Get-RepairTierText $it) + "] " + $it.Title) -ForegroundColor $tierColor
 
         if ($it.Symptom)  { Write-Host ("      现象 : " + $it.Symptom) }
         if ($it.Evidence) { Write-Host ("      依据 : " + $it.Evidence) }
@@ -2827,7 +2838,7 @@ if ($mnItems.Count -gt 0) {
     Write-Host "  以下项不由本工具自动修复(原因与手动步骤见各条):"
     Write-Host ""
     foreach ($it in $mnItems) {
-        Write-Host ("    * [" + (Get-RepairTierText $it) + "] " + $it.Title)
+        Write-Host ("    * [" + (Get-RepairTierText $it) + "] " + $it.Title) -ForegroundColor Yellow
         foreach ($line in @($it.Manual)) { Write-Host ("        " + $line) }
         Write-Host ""
     }
@@ -2855,9 +2866,9 @@ $sectionsOk += "10"
 Write-Host ""
 Write-Host ("  本次诊断到此结束,已产出第 " + ($sectionsOk -join " / ") + " 节。")
 if ($script:DiagFailCount -eq 0) {
-    Write-Host "  全部没有出现探测失败。"
+    Write-Host "  全部没有出现探测失败。" -ForegroundColor Green
 } else {
-    Write-Host ("  全部共有 " + $script:DiagFailCount + " 处探测失败,逐条标在各节里(以 [探测失败] 开头)。")
+    Write-Host ("  全部共有 " + $script:DiagFailCount + " 处探测失败,逐条标在各节里(以 [探测失败] 开头)。") -ForegroundColor Red
 }
 Write-Host ""
 Write-Host "  本报告只覆盖上面列出的这些节,不表示环境完全无问题:"
@@ -2927,7 +2938,7 @@ if ((-not $Fix) -and (-not $DryRun.IsPresent) -and (-not $NoMenu.IsPresent) -and
             Write-Host ("    [" + (Get-RepairTierText $it) + "] " + $it.Title)
         }
         Write-Host ""
-        Write-Host -NoNewline "  回车 = 现在执行以上全部修复(含需确认项);输入 n 再回车 = 不做: "
+        Write-Host -NoNewline "  回车 = 现在执行以上全部修复(含需确认项);输入 n 再回车 = 不做: " -ForegroundColor Cyan
         $ans = $null
         try { $ans = [Console]::ReadLine() } catch { $ans = $null }
         if ($null -eq $ans) {
