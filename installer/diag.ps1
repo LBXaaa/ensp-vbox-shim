@@ -1092,6 +1092,38 @@ Write-Host ("=" * 64)
 $EnspDir = Find-EnspDir -Override $EnspDir
 $VBoxDir = Find-VBoxDir -Override $VBoxDir
 
+# 先给结论。报告有一千多行,把「这台机器有什么问题」放在第一屏,后面的节才是证据。
+try {
+    $findings = @(Get-RepairFindings -VBoxDir $VBoxDir -EnspDir $EnspDir)
+} catch {
+    $findings = @()
+    Write-Fail "本机发现" $_.Exception.Message
+}
+$fxItems = @($findings | Where-Object { ($_.Tier -eq "lossless") -or ($_.Tier -eq "confirm") })
+$mnItems = @($findings | Where-Object { $_.Tier -eq "manual" })
+$fixIds  = @($fxItems | ForEach-Object { $_.Id })
+
+Write-Section "结论"
+Write-Host ""
+if ($findings.Count -eq 0) {
+    Write-Host "  没发现问题。" -ForegroundColor Green
+} else {
+    Write-Host ("  发现 " + $findings.Count + " 个问题:") -ForegroundColor Yellow
+    Write-Host ""
+    $n = 0
+    foreach ($it in $fxItems) {
+        $n++
+        $tag = $(if ($it.Tier -eq "lossless") { "" } else { "   <有损>" })
+        Write-Host ("    " + $n + ") " + $it.Title + $tag)
+    }
+    foreach ($it in $mnItems) {
+        $n++
+        Write-Host ("    " + $n + ") " + $it.Title + "   (要手动处理)")
+    }
+    Write-Host ""
+    Write-Host "  怎么修见第 [9] 节。"
+}
+
 # VBox 的两个可执行文件在这里统一解析:第 1 节要跑 VBoxManage 取真实版本,
 # 第 3 节要跑 VBoxManage 与 VBoxDrvInst。解析一次,两节共用。
 $vboxManageExe = ""
@@ -2670,17 +2702,7 @@ $sectionsOk += "9"
 # 所以本节仍然是只读采集的产物。
 Write-Host ""
 
-try {
-    $findings = @(Get-RepairFindings -VBoxDir $VBoxDir -EnspDir $EnspDir)
-} catch {
-    $findings = @()
-    Write-Fail "本机发现" $_.Exception.Message
-}
-
-# 分两拨:能修的进上面(带命令),不自动修的进下面(只给原因与手动步骤)。
-$fxItems = @($findings | Where-Object { ($_.Tier -eq "lossless") -or ($_.Tier -eq "confirm") })
-$mnItems = @($findings | Where-Object { $_.Tier -eq "manual" })
-$fixIds  = @($fxItems | ForEach-Object { $_.Id })
+# 结论在报告开头已经算好,这里只排版。
 
 # 可修项清单,一行一条:<档位>\t<id>。
 #
@@ -2833,12 +2855,11 @@ if ((-not $Fix) -and (-not $DryRun.IsPresent) -and (-not $NoMenu.IsPresent) -and
     try { if ([Console]::IsInputRedirected) { $interactive = $false } } catch { $interactive = $false }
     if ($interactive) {
         Write-Host ""
-        Write-Host ("  将要处理 " + $fxItems.Count + " 项 —— 详情见第 [9] 节:")
-        foreach ($it in $fxItems) {
-            Write-Host ("    [" + (Get-RepairTierText $it) + "] " + $it.Title)
-        }
+        Write-Host ("  修这 " + $fxItems.Count + " 项吗?")
+        Write-Host "    回车 = 修"
+        Write-Host "    n    = 不修"
         Write-Host ""
-        Write-Host -NoNewline "  回车 = 现在执行以上全部修复(含需确认项);输入 n 再回车 = 不做: " -ForegroundColor Cyan
+        Write-Host -NoNewline "  > " -ForegroundColor Cyan
         $ans = $null
         try { $ans = [Console]::ReadLine() } catch { $ans = $null }
         if ($null -eq $ans) {

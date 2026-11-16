@@ -919,7 +919,7 @@ Assert-True ($diagText -match '\[Console\]::ReadLine\(\)') "cli: the go-ahead re
 # A redirected stdin must not count as consent -- same hazard the per-item
 # prompt already guards against, and the reason this reads with
 # [Console]::ReadLine() rather than Read-Host.
-Assert-True ($diagText -match '\u8f93\u5165 n \u518d\u56de\u8f66') "cli: the report offers a one-key repair"
+Assert-True ($diagText -match '\u4fee\u8fd9') "cli: the offer asks in plain words"
 Assert-True ($diagText -match '\$t -eq "n"') "cli: only an explicit n declines; bare Enter runs"
 Assert-True ($diagText -match '\[Console\]::IsInputRedirected') "cli: the offer is skipped when stdin is redirected"
 Assert-True ($diagText -match '\$NoMenu\.IsPresent') "cli: -NoMenu suppresses the offer"
@@ -931,7 +931,7 @@ Assert-True ($diagText -match 'AssumeYes \(\$Yes\.IsPresent -or \$runNow\)') "cl
 # The findings live in section [9]; by the time the question is printed, that
 # list is off the top of the screen. Repeat it above the prompt so that
 # "the above" means something the reader can actually see.
-Assert-True ($diagText -match '\u5c06\u8981\u5904\u7406') "cli: the offer restates what it is about to do"
+Assert-True ($diagText -match 'n    = \u4e0d\u4fee') "cli: the offer says what n does"
 Assert-True ($diagText -match '\[9\] \u8282') "cli: and points at the section carrying the details"
 
 # --- stale evidence --------------------------------------------------------
