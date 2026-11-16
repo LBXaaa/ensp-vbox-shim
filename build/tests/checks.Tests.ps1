@@ -629,6 +629,7 @@ $diagPath = Join-Path $repoRoot "installer\diag.ps1"
 # Verb -> the argument counts that are legitimate. Write-Fact takes a label and
 # a value, plus an optional column width, which is why it has two.
 $allowed = @{
+    "Write-Line"    = @(1)
     "Write-Note"    = @(1)
     "Write-Section" = @(1)
     "Write-Fact"    = @(2, 3)
@@ -949,7 +950,10 @@ Assert-True ($diagText -match '\u5c0f\u65f6\u524d') "diag: the evidence line say
 Assert-True ($diagText -match '-ForegroundColor Cyan') "diag: section headers and the offer are cyan"
 Assert-True ($diagText -match 'ForegroundColor DarkGray') "diag: rules and fact labels are dimmed"
 Assert-True ($diagText -match '\$tierColor') "diag: findings are coloured by tier"
-Assert-True ($diagText -match 'StartsWith') "diag: [done]/[failed]/[skipped] are coloured by marker"
+Assert-True ($diagText -match 'function Write-Line') "diag: one helper colours every marked line"
+Assert-True ($diagText -match '\$Text -match') "diag: the colour comes from the leading marker"
+Assert-False ($diagText -match '\[ (OK|!!|!|\?|--) *\]') "diag: no padded marker survives"
+Assert-True ($diagText -match 'function Get-StepLabel') "diag: repair progress names the action, not the function"
 Assert-True ($diagText -match 'ForegroundColor \$vc') "diag: a fact value of normal/abnormal is coloured"
 
 

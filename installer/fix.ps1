@@ -286,13 +286,13 @@ function Repair-InstallNetAdp {
     $step = "step 1 netadp6"
     if (-not (Test-ChecksAvailable)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "checks.ps1 is not loaded, so the current driver state cannot be read"
+            -Reason "checks.ps1 没加载,读不到当前驱动状态"
     }
 
     $dir = Find-VBoxDir -Override $VBoxDir
     if (-not $dir) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "VirtualBox install directory not found; pass -VBoxDir"
+            -Reason "找不到 VirtualBox 安装目录,请加 -VBoxDir"
     }
 
     $exe = Join-Path $dir "VBoxDrvInst.exe"
@@ -322,7 +322,7 @@ function Repair-InstallNetAdp {
             -Extra @{ State = "VBoxNetAdp6.NTAMD64 not registered" }
     }
     if (-not (Test-RepairRights $false)) {
-        return New-RepairResult -Ok $false -Commands $cmds -Reason "not elevated; installing a driver package needs administrator rights"
+        return New-RepairResult -Ok $false -Commands $cmds -Reason "需要管理员权限(装驱动包)"
     }
 
     $run = Invoke-Native -Exe $exe -Arguments @("install", "--inf-file", $inf)
@@ -358,13 +358,13 @@ function Repair-InstallNetLwf {
     $step = "step 2 netlwf"
     if (-not (Test-ChecksAvailable)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "checks.ps1 is not loaded, so the current filter state cannot be read"
+            -Reason "checks.ps1 没加载,读不到当前过滤驱动状态"
     }
 
     $dir = Find-VBoxDir -Override $VBoxDir
     if (-not $dir) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "VirtualBox install directory not found; pass -VBoxDir"
+            -Reason "找不到 VirtualBox 安装目录,请加 -VBoxDir"
     }
 
     $inf = Join-Path $dir "drivers\network\netlwf\VBoxNetLwf.inf"
@@ -394,7 +394,7 @@ function Repair-InstallNetLwf {
             -Extra @{ State = "VBoxNetLwf service absent" }
     }
     if (-not (Test-RepairRights $false)) {
-        return New-RepairResult -Ok $false -Commands $cmds -Reason "not elevated; registering a network component needs administrator rights"
+        return New-RepairResult -Ok $false -Commands $cmds -Reason "需要管理员权限(注册网络组件)"
     }
 
     $run = Invoke-Native -Exe $netcfg -Arguments @("-v", "-l", $inf, "-c", "s", "-i", "oracle_VBoxNetLwf")
@@ -432,11 +432,11 @@ function Repair-BounceAdapter {
     $step = "step 3 bounce"
     if (-not (Test-ChecksAvailable)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "checks.ps1 is not loaded, so the adapter cannot be resolved"
+            -Reason "checks.ps1 没加载,无法确定网卡"
     }
     if (-not (Get-Command Disable-NetAdapter -ErrorAction SilentlyContinue)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "Disable-NetAdapter is unavailable; the NetAdapter module is missing"
+            -Reason "系统里没有 Disable-NetAdapter(NetAdapter 模块缺失)"
     }
 
     $facts = @(Get-HostOnlyNetAdapterFacts)
@@ -451,7 +451,7 @@ function Repair-BounceAdapter {
         $target = $facts[0]
     } elseif ($facts.Count -eq 0) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "no VirtualBox Host-Only adapter found; run steps 1-2 and step 4 first"
+            -Reason "找不到 VirtualBox Host-Only 网卡,先跑第 1、2、4 步"
     } else {
         $names = @($facts | ForEach-Object { $_.InterfaceName })
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
@@ -471,7 +471,7 @@ function Repair-BounceAdapter {
             -Extra @{ AdapterName = $target.InterfaceName; InterfaceDescription = $target.InterfaceDescription; WasStatus = $was }
     }
     if (-not (Test-RepairRights $false)) {
-        return New-RepairResult -Ok $false -Commands $cmds -Reason "not elevated; disabling a network adapter needs administrator rights"
+        return New-RepairResult -Ok $false -Commands $cmds -Reason "需要管理员权限(禁用网卡)"
     }
 
     try {
@@ -545,13 +545,13 @@ function Repair-CreateHostOnlyIf {
     $step = "step 4 hostonlyif"
     if (-not (Test-ChecksAvailable)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "checks.ps1 is not loaded, so the current interface state cannot be read"
+            -Reason "checks.ps1 没加载,读不到当前接口状态"
     }
 
     $vbm = Resolve-VBoxManageExe -VBoxDir $VBoxDir
     if (-not $vbm) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "VirtualBox install directory not found; pass -VBoxDir"
+            -Reason "找不到 VirtualBox 安装目录,请加 -VBoxDir"
     }
     if (-not (Test-Path $vbm)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason ("VBoxManage.exe not found: " + $vbm)
@@ -630,7 +630,7 @@ function Repair-CreateHostOnlyIf {
             -Extra @{ InterfaceName = $target.Name; DhcpEnabled = $false }
     }
     if (-not (Test-RepairRights $false)) {
-        return New-RepairResult -Ok $false -Commands $cmds -Reason "not elevated; creating a host-only interface needs administrator rights"
+        return New-RepairResult -Ok $false -Commands $cmds -Reason "需要管理员权限(创建 host-only 接口)"
     }
 
     $name = $planName
@@ -703,12 +703,12 @@ function Repair-EnableHostOnlyDhcp {
     $step = "dhcp enable"
     if (-not (Test-ChecksAvailable)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "checks.ps1 is not loaded, so the current DHCP state cannot be read"
+            -Reason "checks.ps1 没加载,读不到当前 DHCP 状态"
     }
 
     $vbm = Resolve-VBoxManageExe -VBoxDir $VBoxDir
     if (-not $vbm -or -not (Test-Path $vbm)) {
-        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason "VBoxManage.exe was not found; pass -VBoxDir"
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason "找不到 VBoxManage.exe,请加 -VBoxDir"
     }
 
     $state = Get-HostOnlyState -VBoxManage $vbm
@@ -732,7 +732,7 @@ function Repair-EnableHostOnlyDhcp {
                 -Reason ("no DHCP server is attached to host-only interface '" + $InterfaceName + "'")
         }
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "no DHCP server is attached to any host-only interface; run step 4 first"
+            -Reason "host-only 网卡上还没有 DHCP 服务器,先跑第 4 步"
     }
 
     $cmds = @(Format-CommandLine -Exe $vbm -Arguments @("dhcpserver", "modify", ("--interface=" + $server.IfName), "--enable"))
@@ -749,7 +749,7 @@ function Repair-EnableHostOnlyDhcp {
             -Extra @{ InterfaceName = $server.IfName; NetworkName = $server.NetworkName; DhcpEnabled = $false }
     }
     if (-not (Test-RepairRights $false)) {
-        return New-RepairResult -Ok $false -Commands $cmds -Reason "not elevated; changing the DHCP server needs administrator rights"
+        return New-RepairResult -Ok $false -Commands $cmds -Reason "需要管理员权限(改 DHCP 服务器)"
     }
 
     $run = Invoke-Native -Exe $vbm -Arguments @("dhcpserver", "modify", ("--interface=" + $server.IfName), "--enable")
@@ -793,7 +793,7 @@ function Repair-RebuildPerfCounters {
     $step = "perf counters"
     if (-not (Test-ChecksAvailable)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "checks.ps1 is not loaded, so the current counter state cannot be read"
+            -Reason "checks.ps1 没加载,读不到当前计数器状态"
     }
 
     $lodctr = $LodctrExe
@@ -818,7 +818,7 @@ function Repair-RebuildPerfCounters {
     }
     if (-not (Test-RepairRights $false)) {
         return New-RepairResult -Ok $false -Commands $cmds `
-            -Reason "not elevated; lodctr /R needs administrator rights to rewrite the counter store"
+            -Reason "需要管理员权限(lodctr /R 重建计数器)"
     }
 
     $run = Invoke-Native -Exe $lodctr -Arguments @("/R")
@@ -873,17 +873,17 @@ function Repair-AllowEnspFirewall {
     $step = "firewall allow"
     if (-not (Test-ChecksAvailable)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "checks.ps1 is not loaded, so the current firewall state cannot be read"
+            -Reason "checks.ps1 没加载,读不到当前防火墙状态"
     }
     if (-not (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "New-NetFirewallRule is unavailable; the NetSecurity module is missing"
+            -Reason "系统里没有 New-NetFirewallRule(NetSecurity 模块缺失)"
     }
 
     $dir = Find-EnspDir -Override $EnspDir
     if (-not $dir) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "eNSP install directory not found; pass -EnspDir"
+            -Reason "找不到 eNSP 安装目录,请加 -EnspDir"
     }
     $exe = Join-Path $dir "vboxserver\eNSP_VBoxServer.exe"
     if (-not (Test-Path $exe)) {
@@ -990,7 +990,7 @@ function Repair-AllowEnspFirewall {
         }
         if (-not (Test-RepairRights $false)) {
             return New-RepairResult -Ok $false -Commands $remedyCmds `
-                -Reason "not elevated; changing a firewall rule needs administrator rights"
+                -Reason "需要管理员权限(改防火墙规则)"
         }
         try {
             Set-NetFirewallRule -DisplayName $name -Enabled True -Action Allow `
@@ -1016,7 +1016,7 @@ function Repair-AllowEnspFirewall {
     }
     if (-not (Test-RepairRights $false)) {
         return New-RepairResult -Ok $false -Commands $cmds `
-            -Reason "not elevated; creating a firewall rule needs administrator rights"
+            -Reason "需要管理员权限(建防火墙规则)"
     }
 
     try {
@@ -1090,7 +1090,7 @@ function Repair-RegisterBaseVms {
     if ($fixScriptDir) { $child = Join-Path $fixScriptDir "register_vms.ps1" }
     if ((-not $child) -or (-not (Test-Path -LiteralPath $child))) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "register_vms.ps1 is missing next to fix.ps1; the install bundle is incomplete"
+            -Reason "fix.ps1 旁边缺 register_vms.ps1,整合包不完整"
     }
 
     # -Check is the child's own plan-only switch: it scans and reports the same
@@ -1183,7 +1183,7 @@ function Repair-KillOrphans {
     if ($fixScriptDir) { $child = Join-Path $fixScriptDir "cleanup_orphans.ps1" }
     if ((-not $child) -or (-not (Test-Path -LiteralPath $child))) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "cleanup_orphans.ps1 is missing next to fix.ps1; the install bundle is incomplete"
+            -Reason "fix.ps1 旁边缺 cleanup_orphans.ps1,整合包不完整"
     }
 
     $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $child, "-Force")
@@ -1260,14 +1260,14 @@ function Repair-SetTemplateVram {
     $step = "template VRAM"
 
     if (-not $TemplatePath) {
-        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason "no template given; pass -TemplatePath"
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason "没给模板路径,请加 -TemplatePath"
     }
     if (-not (Test-Path -LiteralPath $TemplatePath -PathType Leaf)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason ("template not found: " + $TemplatePath)
     }
     if (-not (Test-ChecksAvailable)) {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason "checks.ps1 is not loaded, so the current value cannot be read"
+            -Reason "checks.ps1 没加载,读不到当前值"
     }
 
     # Resolved to an absolute path ONCE, because the write below goes through
